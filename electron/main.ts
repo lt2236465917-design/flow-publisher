@@ -1,5 +1,8 @@
 import { app, BrowserWindow } from 'electron'
 import { join } from 'path'
+import { initDatabase, closeDatabase } from './services/database'
+import { registerAccountIpcHandlers } from './ipc/account.ipc'
+import { logger } from './utils/logger'
 
 const isDev = !app.isPackaged
 
@@ -30,8 +33,11 @@ function createWindow(): void {
   }
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   app.setAppUserModelId('com.videosync.publisher')
+
+  await initDatabase()
+  registerAccountIpcHandlers()
 
   createWindow()
 
@@ -41,6 +47,7 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  closeDatabase()
   if (process.platform !== 'darwin') {
     app.quit()
   }

@@ -1,7 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 const api = {
-  // IPC methods will be added in Phase 2+
+  // Account methods exposed to renderer
+  account: {
+    list: () => ipcRenderer.invoke('account:list'),
+    login: (platformId: string) => ipcRenderer.invoke('account:login', platformId),
+    checkSession: (accountId: string) => ipcRenderer.invoke('account:check-session', accountId),
+    logout: (accountId: string) => ipcRenderer.invoke('account:logout', accountId)
+  }
 }
 
 if (process.contextIsolated) {
