@@ -1,6 +1,7 @@
 import type { BrowserContext, Page } from 'playwright-core'
 import { BasePlatformAdapter } from '../BasePlatformAdapter'
 import type { UploadProgress, SubmitContentPayload, VideoConstraints } from '../IPlatformAdapter'
+import type { PlatformFieldDefinition } from '../../../shared/types/platform-fields'
 import { DOUYIN_URLS } from './douyin-urls'
 import { DOUYIN_SELECTORS } from './douyin-selectors'
 import { logger } from '../../../utils/logger'
@@ -18,6 +19,15 @@ export class DouyinAdapter extends BasePlatformAdapter {
       maxDurationSec: 900,
       supportedFormats: ['mp4', 'mov', 'avi', 'flv', 'mkv', 'wmv']
     }
+  }
+
+  getPlatformFields(): PlatformFieldDefinition[] {
+    return [
+      { name: 'collection', type: 'select', label: '合集选择', placeholder: '选择合集', options: [] },
+      { name: 'mentions', type: 'tags', label: '@提及', placeholder: '输入要@的用户' },
+      { name: 'poiLocation', type: 'text', label: 'POI 地点', placeholder: '搜索地点' },
+      { name: 'miniApp', type: 'text', label: '小程序挂载', placeholder: '输入小程序 AppID' }
+    ]
   }
 
   async waitForQRCode(page: Page): Promise<string | null> {
@@ -146,7 +156,11 @@ export class DouyinAdapter extends BasePlatformAdapter {
 
       // Monitor upload progress
       onProgress?.({ percent: 20, stage: '视频上传中...' })
-      await this.waitForUploadComplete(page, onProgress)
+      await this.waitForUploadComplete(page, {
+        progressBar: DOUYIN_SELECTORS.progressBar,
+        uploadArea: DOUYIN_SELECTORS.uploadArea,
+        titleInput: DOUYIN_SELECTORS.titleInput
+      }, onProgress)
       onProgress?.({ percent: 100, stage: '视频上传完成' })
 
       logger.info('[douyin] Video upload complete')
@@ -238,51 +252,4 @@ export class DouyinAdapter extends BasePlatformAdapter {
     }
   }
 
-  private async humanType(page: Page, selector: string, text: string): Promise<void> {
-    const el = await page.$(selector)
-    if (!el) {
-      logger.warn(`[douyin] Selector not found for typing: ${selector}`)
-      return
-    }
-    await el.click()
-    await delay(200)
-
-    // Type character by character with random delays (50-150ms) to simulate human input
-    for (const char of text) {
-      await page.keyboard.type(char, { delay: 0 })
-      await delay(50 + Math.random() * 100)
-    }
-  }
-
-  private async waitForUploadComplete(page: Page, onProgress?: (p: UploadProgress) => void): Promise<void> {
-    const maxWait = 300_000 // 5 minutes max
-    const startTime = Date.now()
-
-    while (Date.now() - startTime < maxWait) {
-      try {
-        // Check for progress percentage in DOM
-        const progressText = await page.evaluate((sel) => {
-          const el = document.querySelector(sel)
-          return el?.textContent || ''
-        }, DOUYIN_SELECTORS.progressBar)
-
-        const match = progressText.match(/(\d+)%/)
-        if (match) {
-          const percent = Number(match[1])
-          onProgress?.({ percent: 20 + Math.round(percent * 0.8), stage: `上传中 ${percent}%` })
-          if (percent >= 100) return
-        }
-
-        // Check if upload area disappeared (upload complete)
-        const uploadArea = await page.$(DOUYIN_SELECTORS.uploadArea)
-        if (!uploadArea) return
-
-        // Check for title input (appears after upload)
-        const titleInput = await page.$(DOUYIN_SELECTORS.titleInput)
-        if (titleInput) return
-      } catch {}
-
-      await delay(2000)
-    }
-  }
 }

@@ -1,5 +1,5 @@
 import type { BrowserContext, Page } from 'playwright-core'
-import type { IPlatformAdapter, LoginResult } from './IPlatformAdapter'
+import type { IPlatformAdapter, LoginResult, UploadProgress } from './IPlatformAdapter'
 import { LoginTimeoutError } from '../../utils/errors'
 import { logger } from '../../utils/logger'
 import { delay } from '../../utils/delays'
@@ -52,4 +52,46 @@ export abstract class BasePlatformAdapter implements IPlatformAdapter {
 
   protected abstract detectLoginSuccess(page: Page): Promise<boolean>
   protected abstract extractAccountInfo(page: Page): Promise<{ displayName?: string; avatarUrl?: string }>
+
+  protected async humanType(page: Page, selector: string, text: string): Promise<void> {
+    const el = await page.$(selector)
+    if (!el) {
+      logger.warn(`[${this.platformId}] Selector not found for typing: ${selector}`)
+      return
+    }
+    await el.click()
+    await delay(200)
+    for (const char of text) {
+      await page.keyboard.type(char, { delay: 0 })
+      await delay(50 + Math.random() * 100)
+    }
+  }
+
+  protected async waitForUploadComplete(
+    page: Page,
+    selectors: { progressBar: string; uploadArea: string; titleInput: string },
+    onProgress?: (p: UploadProgress) => void
+  ): Promise<void> {
+    const maxWait = 300_000
+    const startTime = Date.now()
+    while (Date.now() - startTime < maxWait) {
+      try {
+        const progressText = await page.evaluate((sel) => {
+          const el = document.querySelector(sel)
+          return el?.textContent || ''
+        }, selectors.progressBar)
+        const match = progressText.match(/(\d+)%/)
+        if (match) {
+          const percent = Number(match[1])
+          onProgress?.({ percent: 20 + Math.round(percent * 0.8), stage: `上传中 ${percent}%` })
+          if (percent >= 100) return
+        }
+        const uploadArea = await page.$(selectors.uploadArea)
+        if (!uploadArea) return
+        const titleInput = await page.$(selectors.titleInput)
+        if (titleInput) return
+      } catch {}
+      await delay(2000)
+    }
+  }
 }

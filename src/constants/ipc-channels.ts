@@ -16,6 +16,7 @@ export const IPC_CHANNELS = {
   PUBLISH_SCHEDULE: 'publish:schedule',
   PUBLISH_PROGRESS: 'publish:progress',
   PUBLISH_LIST_RECORDS: 'publish:list-records',
+  PUBLISH_GET_PLATFORM_FIELDS: 'publish:get-platform-fields',
 
   // Analytics
   ANALYTICS_FETCH: 'analytics:fetch',
@@ -24,6 +25,7 @@ export const IPC_CHANNELS = {
   // File
   FILE_SELECT_VIDEO: 'file:select-video',
   FILE_SELECT_IMAGE: 'file:select-image',
+  FILE_READ_DATA_URL: 'file:read-data-url',
 
   // App
   APP_GET_VERSION: 'app:get-version'

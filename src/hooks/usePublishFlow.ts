@@ -65,10 +65,14 @@ export function usePublishFlow() {
     return res.data.filePath
   }, [])
 
-  const selectFrameAsCover = useCallback((index: number) => {
+  const selectFrameAsCover = useCallback((index: number | null) => {
+    if (index === null) {
+      store.updateForm({ coverFrameIndex: null, horizontalCover: null, verticalCover: null })
+      return
+    }
     const frames = usePublishStore.getState().frames
     if (index >= 0 && index < frames.length) {
-      store.updateForm({ coverFrameIndex: index, coverPath: null })
+      store.updateForm({ coverFrameIndex: index, coverPath: null, horizontalCover: null, verticalCover: null })
     }
   }, [store])
 
@@ -153,7 +157,8 @@ export function usePublishFlow() {
             description: form.description,
             hashtags: form.hashtags,
             coverPath: form.coverPath || undefined,
-            declarations: form.declarations
+            declarations: form.declarations,
+            platformFields: form.platformOverrides[platformId as PlatformId] || {}
           }
         })
 

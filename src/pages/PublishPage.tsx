@@ -6,8 +6,10 @@ import VideoPreview from '@/components/publish/VideoPreview'
 import CoverSelector from '@/components/publish/CoverSelector'
 import UnifiedEditor from '@/components/publish/UnifiedEditor'
 import PublishTargetPicker from '@/components/publish/PublishTargetPicker'
+import PlatformCustomizer from '@/components/publish/PlatformCustomizer'
 import { usePublishFlow } from '@/hooks/usePublishFlow'
 import { useAccountStore } from '@/stores/accountStore'
+import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
 
@@ -47,11 +49,24 @@ export default function PublishPage() {
             frames={flow.frames}
             loading={flow.extractingFrames}
             selectedIndex={flow.form.coverFrameIndex}
-            customCoverPath={flow.form.coverPath}
+            horizontalCover={flow.form.horizontalCover}
+            verticalCover={flow.form.verticalCover}
             onSelectFrame={flow.selectFrameAsCover}
-            onSelectCustom={async () => {
-              const path = await flow.selectCover()
-              if (path) flow.updateForm({ coverPath: path, coverFrameIndex: null })
+            onPickImage={async () => {
+              const res = await window.electron.ipcRenderer.invoke(
+                IPC_CHANNELS.FILE_SELECT_IMAGE
+              ) as { success?: boolean; data?: { dataUrl?: string } }
+              if (res?.success && res.data?.dataUrl) {
+                return res.data.dataUrl
+              }
+              return null
+            }}
+            onCropConfirm={(type, croppedDataUrl) => {
+              if (type === 'horizontal') {
+                flow.updateForm({ horizontalCover: croppedDataUrl })
+              } else {
+                flow.updateForm({ verticalCover: croppedDataUrl })
+              }
             }}
           />
         </Card>
@@ -67,16 +82,30 @@ export default function PublishPage() {
         </Card>
       )}
 
-      {/* Step 4: Select Platforms & Publish */}
+      {/* Step 4: Select Platforms */}
       {flow.video && (
-        <Card title="4. 选择平台并发布" style={{ marginBottom: 16 }}>
+        <Card title="4. 选择平台" style={{ marginBottom: 16 }}>
           <PublishTargetPicker
             value={flow.form.platforms}
             onChange={(platforms: PlatformId[]) => flow.updateForm({ platforms })}
           />
+        </Card>
+      )}
 
-          <Divider />
+      {/* Step 5: Platform Customization */}
+      {flow.video && flow.form.platforms.length > 0 && (
+        <Card title="5. 平台定制" style={{ marginBottom: 16 }}>
+          <PlatformCustomizer
+            platforms={flow.form.platforms}
+            overrides={flow.form.platformOverrides}
+            onChange={(platformOverrides) => flow.updateForm({ platformOverrides })}
+          />
+        </Card>
+      )}
 
+      {/* Step 6: Publish */}
+      {flow.video && (
+        <Card title="6. 发布" style={{ marginBottom: 16 }}>
           <Space>
             <Button
               type="primary"

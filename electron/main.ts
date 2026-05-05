@@ -1,5 +1,6 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, protocol, net } from 'electron'
 import { join } from 'path'
+import { pathToFileURL } from 'url'
 import { initDatabase, closeDatabase } from './services/database'
 import { registerAccountIpcHandlers } from './ipc/account.ipc'
 import { registerPublishIpcHandlers } from './ipc/publish.ipc'
@@ -7,6 +8,11 @@ import { registerFileDialogIpcHandlers } from './ipc/file-dialog.ipc'
 import { logger } from './utils/logger'
 
 const isDev = !app.isPackaged
+
+// Register custom protocol for serving local files (avoids CSP/same-origin issues)
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'local-file', privileges: { standard: true, stream: true, supportFetchAPI: true } }
+])
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -37,6 +43,16 @@ function createWindow(): void {
 
 app.whenReady().then(async () => {
   app.setAppUserModelId('com.videosync.publisher')
+
+  // Handle local-file:// protocol to serve local files
+  protocol.handle('local-file', (request) => {
+    const url = new URL(request.url)
+    const filePath = decodeURIComponent(url.pathname)
+    // On Windows, pathname starts with /C:/..., remove leading /
+    const normalizedPath = process.platform === 'win32' && filePath.startsWith('/') ? filePath.slice(1) : filePath
+    const fileUrl = pathToFileURL(normalizedPath).toString()
+    return net.fetch(fileUrl)
+  })
 
   await initDatabase()
   registerAccountIpcHandlers()

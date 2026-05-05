@@ -9,8 +9,12 @@ export interface PublishFormData {
   hashtags: string[]
   coverPath: string | null
   coverFrameIndex: number | null
+  coverRatio: '4:3' | '3:4'
+  horizontalCover: string | null
+  verticalCover: string | null
   declarations: string[]
   platforms: PlatformId[]
+  platformOverrides: Record<PlatformId, Record<string, unknown>>
 }
 
 export interface PublishTask {

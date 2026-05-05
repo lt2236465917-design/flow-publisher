@@ -10,8 +10,12 @@ const DEFAULT_FORM: PublishFormData = {
   hashtags: [],
   coverPath: null,
   coverFrameIndex: null,
+  coverRatio: '4:3',
+  horizontalCover: null,
+  verticalCover: null,
   declarations: [],
-  platforms: []
+  platforms: [],
+  platformOverrides: {} as Record<PlatformId, Record<string, unknown>>
 }
 
 export const usePublishStore = create<PublishState>((set) => ({
@@ -54,7 +58,7 @@ export async function extractFramesAndUpdate(filePath: string): Promise<VideoFra
   const store = usePublishStore.getState()
   store.setExtractingFrames(true)
   try {
-    const res = await window.electron.ipcRenderer.invoke<VideoFrame[]>(IPC_CHANNELS.PUBLISH_EXTRACT_FRAMES, filePath)
+    const res = await window.electron.ipcRenderer.invoke<VideoFrame[]>(IPC_CHANNELS.PUBLISH_EXTRACT_FRAMES, filePath, 3)
     if (res.success && res.data) {
       store.setFrames(res.data)
       return res.data

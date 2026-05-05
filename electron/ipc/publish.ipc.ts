@@ -113,6 +113,7 @@ export function registerPublishIpcHandlers(): void {
       hashtags: string[]
       coverPath?: string
       declarations: string[]
+      platformFields?: Record<string, unknown>
     }
   }): Promise<IpcResponse> => {
     try {
@@ -165,6 +166,18 @@ export function registerPublishIpcHandlers(): void {
       recordRepo.updateStatus(params.recordId, 'error', undefined, String(err))
       saveDatabase()
       await browserManager.close()
+      return { success: false, error: String(err) }
+    }
+  })
+
+  // Get platform-specific field definitions
+  ipcMain.handle(IPC_CHANNELS.PUBLISH_GET_PLATFORM_FIELDS, async (_event, platformId: string): Promise<IpcResponse> => {
+    try {
+      const adapter = getAdapter(platformId)
+      const fields = adapter?.getPlatformFields?.() ?? []
+      return { success: true, data: fields }
+    } catch (err) {
+      logger.error('PUBLISH_GET_PLATFORM_FIELDS error:', err)
       return { success: false, error: String(err) }
     }
   })

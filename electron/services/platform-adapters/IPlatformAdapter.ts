@@ -1,4 +1,5 @@
 import type { BrowserContext, Page } from 'playwright-core'
+import type { PlatformFieldDefinition } from '../../shared/types/platform-fields'
 
 export interface LoginResult {
   success: boolean
@@ -43,4 +44,5 @@ export interface IPlatformAdapter {
   getVideoConstraints?(): VideoConstraints
   uploadVideo?(context: BrowserContext, filePath: string, onProgress?: (p: UploadProgress) => void): Promise<void>
   submitContent?(context: BrowserContext, payload: SubmitContentPayload): Promise<void>
+  getPlatformFields?(): PlatformFieldDefinition[]
 }

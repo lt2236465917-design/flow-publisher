@@ -4,7 +4,9 @@
       "Bash(echo 'console.log\\(\"builtin:\", require\\(\"module\"\\).builtinModules.includes\\(\"electron\"\\)\\); console.log\\(\"elect:\", typeof process.versions.electron\\); console.log\\(\"chrome:\", typeof process.versions.chrome\\)')",
       "Bash(node_modules/electron/dist/electron.exe \"d:/PC APP/test-electron.js\")",
       "Bash(cnpm install *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(npx tsc *)",
+      "Bash(npx electron-vite *)"
     ]
   }
 }

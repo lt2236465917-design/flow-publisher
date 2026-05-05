@@ -1,4 +1,6 @@
 import { ipcMain, dialog, BrowserWindow } from 'electron'
+import { readFileSync, existsSync } from 'fs'
+import { extname } from 'path'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import { logger } from '../utils/logger'
@@ -30,7 +32,7 @@ export function registerFileDialogIpcHandlers(): void {
     }
   })
 
-  // Select image file (for cover)
+  // Select image file and return as data URL (for cover)
   ipcMain.handle(IPC_CHANNELS.FILE_SELECT_IMAGE, async (): Promise<IpcResponse> => {
     try {
       const mainWindow = BrowserWindow.getAllWindows()[0]
@@ -49,9 +51,40 @@ export function registerFileDialogIpcHandlers(): void {
         return { success: false, error: '用户取消选择' }
       }
 
-      return { success: true, data: { filePath: result.filePaths[0] } }
+      const filePath = result.filePaths[0]
+      if (!existsSync(filePath)) return { success: false, error: '文件不存在' }
+
+      const ext = extname(filePath).replace('.', '').toLowerCase()
+      const mimeMap: Record<string, string> = {
+        jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+        webp: 'image/webp', bmp: 'image/bmp', gif: 'image/gif'
+      }
+      const mime = mimeMap[ext] || 'application/octet-stream'
+      const buf = readFileSync(filePath)
+      const dataUrl = `data:${mime};base64,${buf.toString('base64')}`
+
+      return { success: true, data: { dataUrl, filePath } }
     } catch (err) {
       logger.error('FILE_SELECT_IMAGE error:', err)
+      return { success: false, error: String(err) }
+    }
+  })
+
+  // Read file as data URL (for image preview/crop)
+  ipcMain.handle(IPC_CHANNELS.FILE_READ_DATA_URL, async (_event, filePath: string): Promise<IpcResponse> => {
+    try {
+      if (!existsSync(filePath)) return { success: false, error: '文件不存在' }
+      const ext = extname(filePath).replace('.', '').toLowerCase()
+      const mimeMap: Record<string, string> = {
+        jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
+        webp: 'image/webp', bmp: 'image/bmp', gif: 'image/gif'
+      }
+      const mime = mimeMap[ext] || 'application/octet-stream'
+      const buf = readFileSync(filePath)
+      const dataUrl = `data:${mime};base64,${buf.toString('base64')}`
+      return { success: true, data: { dataUrl } }
+    } catch (err) {
+      logger.error('FILE_READ_DATA_URL error:', err)
       return { success: false, error: String(err) }
     }
   })
