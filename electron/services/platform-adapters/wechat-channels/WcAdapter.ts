@@ -14,7 +14,6 @@ export class WcAdapter extends BasePlatformAdapter {
     await delay(5000)
     for (let i = 0; i < 30; i++) {
       try {
-        // 视频号的二维码可能是微信扫码
         const qrEl = await page.$('img[class*="qrcode"], canvas[class*="qr"], img[src*="qrcode"], div[class*="qr"] img, img[class*="scan"]')
         if (qrEl) {
           const box = await qrEl.boundingBox()
@@ -33,13 +32,15 @@ export class WcAdapter extends BasePlatformAdapter {
 
   protected async detectLoginSuccess(page: Page): Promise<boolean> {
     const url = page.url()
-    // 检查 URL 是否跳转到了后台页面
     if (url.includes('channels.weixin.qq.com/platform/post') && !url.includes('create')) {
       return true
     }
-    // 检查页面是否有已登录的元素
-    const hasAvatar = await page.$('img[class*="avatar"], div[class*="avatar"]')
-    if (hasAvatar) return true
+    // 在 create 页面检查侧边栏是否有账号名（说明已登录）
+    const nameEl = await page.$('div.account-info span.name')
+    if (nameEl) {
+      const text = await nameEl.textContent()
+      if (text && text.trim().length >= 2) return true
+    }
     // 检查是否有登录二维码（有二维码说明还没登录）
     const hasQr = await page.$('img[class*="qrcode"], canvas[class*="qr"]')
     if (hasQr) return false
@@ -47,31 +48,42 @@ export class WcAdapter extends BasePlatformAdapter {
   }
 
   protected async extractAccountInfo(page: Page): Promise<{ displayName?: string; avatarUrl?: string }> {
-    await delay(2000)
-
     try {
+      const currentUrl = page.url()
+      logger.info(`[wechat-channels] extractAccountInfo: current URL = ${currentUrl}`)
+
+      // 如果在 post/create 页面，先导航到 post/list（账号信息更完整）
+      if (currentUrl.includes('post/create')) {
+        logger.info('[wechat-channels] On create page, navigating to post/list')
+        await page.goto(WC_URLS.home, { waitUntil: 'domcontentloaded', timeout: 15000 })
+      }
+
+      // 等待侧边栏账号名出现
+      try {
+        await page.waitForSelector('div.account-info span.name', { timeout: 10000 })
+        logger.info('[wechat-channels] Account name element found')
+      } catch {
+        logger.warn('[wechat-channels] Account name not found within 10s')
+      }
+
       const result = await page.evaluate(() => {
+        // 找头像
         let avatarUrl: string | undefined
-        const avatarEls = document.querySelectorAll('img[class*="avatar"], img[src*="avatar"]')
-        for (const el of avatarEls) {
-          const src = (el as HTMLImageElement).src
-          if (src && !src.includes('default')) {
-            avatarUrl = src
-            break
-          }
+        const avatarEl = document.querySelector('img.avatar') as HTMLImageElement | null
+        if (avatarEl?.src) {
+          avatarUrl = avatarEl.src
         }
 
+        // 找用户名
         let displayName: string | undefined
-        const allEls = document.querySelectorAll('span, div, p')
-        for (const el of allEls) {
-          const text = el.textContent?.trim()
-          if (!text || text.length < 2 || text.length > 20) continue
-          const skip = ['视频号', '发布', '首页', '数据', '创作', '登录', '注册', '搜索']
-          if (skip.some(s => text.includes(s))) continue
-          const rect = el.getBoundingClientRect()
-          if (rect.top < 100 && rect.top >= 0) {
-            displayName = text
-            break
+        const accountInfo = document.querySelector('div.account-info')
+        if (accountInfo) {
+          const nameEl = accountInfo.querySelector('span.name')
+          if (nameEl) {
+            const text = nameEl.textContent?.trim()
+            if (text && text.length >= 2 && text.length <= 20) {
+              displayName = text
+            }
           }
         }
 

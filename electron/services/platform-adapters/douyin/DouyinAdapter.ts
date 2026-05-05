@@ -42,43 +42,65 @@ export class DouyinAdapter extends BasePlatformAdapter {
   }
 
   protected async extractAccountInfo(page: Page): Promise<{ displayName?: string; avatarUrl?: string }> {
-    await delay(2000)
-
     try {
-      // 用 page.evaluate 直接在页面里查找
+      const currentUrl = page.url()
+      logger.info(`[douyin] extractAccountInfo: current URL = ${currentUrl}`)
+
+      // 等待名字元素出现（最多 15 秒）
+      // 抖音创作者后台的名字在 div[class*="name-"] 叶子节点里
+      let nameFound = false
+      try {
+        await page.waitForFunction(() => {
+          const els = document.querySelectorAll('[class*="name-"]')
+          for (const el of els) {
+            const t = el.textContent?.trim()
+            if (t && t.length >= 2 && t.length <= 15 && el.children.length === 0) {
+              const skip = ['关注', '粉丝', '获赞', '抖音号', '通知', '网址', '抖音', '官网']
+              if (!skip.some(s => t.includes(s))) return true
+            }
+          }
+          return false
+        }, { timeout: 15000 })
+        nameFound = true
+        logger.info('[douyin] Name element found')
+      } catch {
+        logger.warn('[douyin] Name element not found within 15s')
+      }
+
       const result = await page.evaluate(() => {
-        // 找头像
+        // === 找头像 ===
         let avatarUrl: string | undefined
-        const avatarEls = document.querySelectorAll('img[class*="avatar"], img[src*="avatar"]')
+        const avatarEls = document.querySelectorAll('div[class*="avatar"], img[class*="avatar"], img[src*="avatar"]')
         for (const el of avatarEls) {
-          const src = (el as HTMLImageElement).src
-          if (src && !src.includes('default')) {
-            avatarUrl = src
+          const htmlEl = el as HTMLElement
+          const img = htmlEl.tagName === 'IMG' ? htmlEl : htmlEl.querySelector('img')
+          const src = img ? (img as HTMLImageElement).src : ''
+          const bg = htmlEl.style.backgroundImage || ''
+          const url = src || bg.replace(/url\("?|"?\)/g, '')
+          if (url && !url.includes('default') && url.startsWith('http')) {
+            avatarUrl = url
             break
           }
         }
 
-        // 找用户名 - 遍历所有文本节点
+        // === 找用户名 ===
         let displayName: string | undefined
-        const allEls = document.querySelectorAll('span, div, p, a')
-        for (const el of allEls) {
-          const text = el.textContent?.trim()
-          if (!text || text.length < 2 || text.length > 20) continue
-          // 跳过导航和功能文字
-          const skip = ['首页', '发布', '数据', '互动', '抖音', '创作者', '服务', '登录', '注册', '搜索', '消息', '设置']
-          if (skip.some(s => text.includes(s))) continue
-          // 检查是否在页面顶部区域（通常头像附近）
-          const rect = el.getBoundingClientRect()
-          if (rect.top < 100 && rect.top >= 0) {
-            displayName = text
-            break
+        const nameEls = document.querySelectorAll('[class*="name-"]')
+        for (const el of nameEls) {
+          const t = el.textContent?.trim()
+          if (t && t.length >= 2 && t.length <= 15 && el.children.length === 0) {
+            const skip = ['关注', '粉丝', '获赞', '抖音号', '通知', '网址', '抖音', '官网']
+            if (!skip.some(s => t.includes(s))) {
+              displayName = t
+              break
+            }
           }
         }
 
         return { displayName, avatarUrl }
       })
 
-      logger.info(`[douyin] Extracted: name=${result.displayName}, avatar=${result.avatarUrl ? 'yes' : 'no'}`)
+      logger.info(`[douyin] Extracted: name=${result.displayName}, avatar=${result.avatarUrl ? 'yes' : 'no'}, nameFound=${nameFound}`)
       return { displayName: result.displayName || '抖音用户', avatarUrl: result.avatarUrl }
     } catch (e) {
       logger.error('[douyin] extractAccountInfo error:', e)
