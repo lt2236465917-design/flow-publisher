@@ -26,6 +26,7 @@ export const IPC_CHANNELS = {
   FILE_SELECT_VIDEO: 'file:select-video',
   FILE_SELECT_IMAGE: 'file:select-image',
   FILE_READ_DATA_URL: 'file:read-data-url',
+  FILE_DATA_URL_TO_TEMP: 'file:data-url-to-temp',
 
   // App
   APP_GET_VERSION: 'app:get-version'

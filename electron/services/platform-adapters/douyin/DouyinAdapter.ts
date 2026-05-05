@@ -213,6 +213,21 @@ export class DouyinAdapter extends BasePlatformAdapter {
         }
       }
 
+      // Upload cover image
+      if (payload.coverPath && existsSync(payload.coverPath)) {
+        try {
+          logger.info('[douyin] Uploading cover image...')
+          const coverInput = await page.waitForSelector(DOUYIN_SELECTORS.coverUpload, { timeout: 5000 })
+          if (coverInput) {
+            await coverInput.setInputFiles(payload.coverPath)
+            await delay(2000)
+            logger.info('[douyin] Cover image uploaded')
+          }
+        } catch (e) {
+          logger.warn('[douyin] Failed to upload cover (non-fatal):', e)
+        }
+      }
+
       // Handle declarations (check boxes)
       if (payload.declarations.length > 0) {
         logger.info('[douyin] Setting declarations...')

@@ -53,13 +53,18 @@ export default function PublishPage() {
             verticalCover={flow.form.verticalCover}
             onSelectFrame={flow.selectFrameAsCover}
             onPickImage={async () => {
-              const res = await window.electron.ipcRenderer.invoke(
-                IPC_CHANNELS.FILE_SELECT_IMAGE
-              ) as { success?: boolean; data?: { dataUrl?: string } }
-              if (res?.success && res.data?.dataUrl) {
-                return res.data.dataUrl
+              try {
+                const res = await window.electron.ipcRenderer.invoke(
+                  IPC_CHANNELS.FILE_SELECT_IMAGE
+                ) as { success?: boolean; data?: { dataUrl?: string }; error?: string }
+                if (res?.success && res.data?.dataUrl) {
+                  return res.data.dataUrl
+                }
+                return null
+              } catch (e) {
+                console.error('[PublishPage] onPickImage error:', e)
+                return null
               }
-              return null
             }}
             onCropConfirm={(type, croppedDataUrl) => {
               if (type === 'horizontal') {

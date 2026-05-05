@@ -37,14 +37,18 @@ export default function CoverSelector({
   }
 
   const handleUpload = async (target: 'horizontal' | 'vertical') => {
+    console.log('[CoverSelector] handleUpload, target:', target)
     const dataUrl = await onPickImage()
+    console.log('[CoverSelector] got dataUrl:', dataUrl ? `len=${dataUrl.length}` : 'null')
     if (dataUrl) {
       openCrop(target, dataUrl)
+      console.log('[CoverSelector] openCrop called')
     }
   }
 
   // Click on cover box: crop existing image, or upload new one
   const handleClickCover = (target: 'horizontal' | 'vertical', coverSrc: string | null, frameSrc: string | null) => {
+    console.log('[CoverSelector] handleClickCover, target:', target, 'coverSrc:', !!coverSrc, 'frameSrc:', !!frameSrc)
     const src = coverSrc || frameSrc
     if (src) {
       openCrop(target, src)

@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { Modal, Slider, Button, Space } from 'antd'
 import Cropper from 'react-easy-crop'
+import 'react-easy-crop/react-easy-crop.css'
 import type { Area } from 'react-easy-crop'
 
 interface Props {
@@ -17,7 +18,6 @@ function createImage(url: string): Promise<HTMLImageElement> {
     const image = new Image()
     image.addEventListener('load', () => resolve(image))
     image.addEventListener('error', (error) => reject(error))
-    image.setAttribute('crossOrigin', 'anonymous')
     image.src = url
   })
 }
@@ -56,6 +56,8 @@ export default function CropModal({ visible, imageSrc, aspect, title, onConfirm,
   const [crop, setCrop] = useState({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null)
+
+  console.log('[CropModal] visible:', visible, 'imageSrc:', imageSrc ? `len=${imageSrc.length} start=${imageSrc.substring(0, 40)}` : 'null/empty')
 
   const onCropComplete = useCallback((_croppedArea: Area, croppedAreaPixels: Area) => {
     setCroppedAreaPixels(croppedAreaPixels)

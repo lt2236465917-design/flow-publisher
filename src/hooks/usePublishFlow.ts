@@ -112,6 +112,18 @@ export function usePublishFlow() {
     })
     if (!confirmed) return
 
+    // Convert cover data URL to temp file for platform adapters
+    let coverFilePath: string | undefined
+    if (form.horizontalCover) {
+      const coverRes = await window.electron.ipcRenderer.invoke<{ filePath: string }>(
+        IPC_CHANNELS.FILE_DATA_URL_TO_TEMP,
+        form.horizontalCover
+      )
+      if (coverRes.success && coverRes.data?.filePath) {
+        coverFilePath = coverRes.data.filePath
+      }
+    }
+
     const tasks = form.platforms.map((p) => ({
       id: `task-${p}-${Date.now()}`,
       platform: p as PlatformId,
@@ -156,7 +168,7 @@ export function usePublishFlow() {
             title: form.title,
             description: form.description,
             hashtags: form.hashtags,
-            coverPath: form.coverPath || undefined,
+            coverPath: coverFilePath,
             declarations: form.declarations,
             platformFields: form.platformOverrides[platformId as PlatformId] || {}
           }

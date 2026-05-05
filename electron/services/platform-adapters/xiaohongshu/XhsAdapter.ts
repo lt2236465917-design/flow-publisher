@@ -170,6 +170,21 @@ export class XhsAdapter extends BasePlatformAdapter {
         }
       }
 
+      // Upload cover image
+      if (payload.coverPath && existsSync(payload.coverPath)) {
+        try {
+          logger.info('[xiaohongshu] Uploading cover image...')
+          const coverInput = await page.waitForSelector(XHS_SELECTORS.coverUpload, { timeout: 5000 })
+          if (coverInput) {
+            await coverInput.setInputFiles(payload.coverPath)
+            await delay(2000)
+            logger.info('[xiaohongshu] Cover image uploaded')
+          }
+        } catch (e) {
+          logger.warn('[xiaohongshu] Failed to upload cover (non-fatal):', e)
+        }
+      }
+
       // Handle declarations
       if (payload.declarations.length > 0) {
         logger.info('[xiaohongshu] Setting declarations...')
