@@ -1,5 +1,4 @@
 // IPC channel names for main <-> renderer communication
-// Will be populated in Phase 2+
 
 export const IPC_CHANNELS = {
   // Account
@@ -9,9 +8,14 @@ export const IPC_CHANNELS = {
   ACCOUNT_LIST: 'account:list',
 
   // Publish
+  PUBLISH_PROBE_VIDEO: 'publish:probe-video',
+  PUBLISH_EXTRACT_FRAMES: 'publish:extract-frames',
+  PUBLISH_VALIDATE_VIDEO: 'publish:validate-video',
   PUBLISH_UPLOAD: 'publish:upload',
   PUBLISH_SUBMIT: 'publish:submit',
   PUBLISH_SCHEDULE: 'publish:schedule',
+  PUBLISH_PROGRESS: 'publish:progress',
+  PUBLISH_LIST_RECORDS: 'publish:list-records',
 
   // Analytics
   ANALYTICS_FETCH: 'analytics:fetch',

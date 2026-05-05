@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 const api = {
   // Account methods exposed to renderer
@@ -7,7 +7,23 @@ const api = {
     login: (platformId: string) => ipcRenderer.invoke('account:login', platformId),
     checkSession: (accountId: string) => ipcRenderer.invoke('account:check-session', accountId),
     logout: (accountId: string) => ipcRenderer.invoke('account:logout', accountId)
-  }
+  },
+  // Publish methods
+  publish: {
+    probeVideo: (filePath: string) => ipcRenderer.invoke('publish:probe-video', filePath),
+    extractFrames: (filePath: string, count?: number) => ipcRenderer.invoke('publish:extract-frames', filePath, count),
+    validateVideo: (filePath: string, platformId: string) => ipcRenderer.invoke('publish:validate-video', filePath, platformId),
+    upload: (params: { accountId: string; platformId: string; filePath: string }) => ipcRenderer.invoke('publish:upload', params),
+    submit: (params: { recordId: string; platformId: string; content: Record<string, unknown> }) => ipcRenderer.invoke('publish:submit', params),
+    listRecords: () => ipcRenderer.invoke('publish:list-records')
+  },
+  // File dialog methods
+  file: {
+    selectVideo: () => ipcRenderer.invoke('file:select-video'),
+    selectImage: () => ipcRenderer.invoke('file:select-image')
+  },
+  // Utility: get absolute file path from a File object (for drag-drop)
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file)
 }
 
 if (process.contextIsolated) {

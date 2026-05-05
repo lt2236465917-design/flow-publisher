@@ -2,13 +2,16 @@ import initSqlJs, { Database } from 'sql.js'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { runMigration } from './migrations/001_accounts'
+import { runMigration002 } from './migrations/002_publish_records'
 import { AccountRepository } from './repositories/account.repo'
+import { PublishRecordRepository } from './repositories/publish-record.repo'
 import { logger } from '../../utils/logger'
 
 const DB_FILENAME = 'videosync.db'
 
 let dbInstance: Database | null = null
 let accountRepoInstance: AccountRepository | null = null
+let publishRecordRepoInstance: PublishRecordRepository | null = null
 
 function getDbPath(): string {
   const { app } = require('electron')
@@ -18,8 +21,6 @@ function getDbPath(): string {
 }
 
 function locateWasm(): string {
-  // In production, the WASM file is bundled alongside the main process code
-  // In dev, resolve from node_modules
   const candidates = [
     join(__dirname, '../node_modules/sql.js/dist/sql-wasm.wasm'),
     join(process.cwd(), 'node_modules/sql.js/dist/sql-wasm.wasm')
@@ -49,9 +50,11 @@ export async function initDatabase(): Promise<void> {
   }
 
   runMigration(dbInstance)
+  runMigration002(dbInstance)
   saveDatabase()
 
   accountRepoInstance = new AccountRepository(dbInstance)
+  publishRecordRepoInstance = new PublishRecordRepository(dbInstance)
   logger.info('Database initialized')
 }
 
@@ -63,6 +66,11 @@ export function getDatabase(): Database {
 export function getAccountRepository(): AccountRepository {
   if (!accountRepoInstance) throw new Error('Database not initialized')
   return accountRepoInstance
+}
+
+export function getPublishRecordRepository(): PublishRecordRepository {
+  if (!publishRecordRepoInstance) throw new Error('Database not initialized')
+  return publishRecordRepoInstance
 }
 
 export function saveDatabase(): void {
@@ -77,6 +85,7 @@ export function closeDatabase(): void {
     dbInstance.close()
     dbInstance = null
     accountRepoInstance = null
+    publishRecordRepoInstance = null
     logger.info('Database closed')
   }
 }

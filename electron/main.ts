@@ -2,6 +2,8 @@ import { app, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { initDatabase, closeDatabase } from './services/database'
 import { registerAccountIpcHandlers } from './ipc/account.ipc'
+import { registerPublishIpcHandlers } from './ipc/publish.ipc'
+import { registerFileDialogIpcHandlers } from './ipc/file-dialog.ipc'
 import { logger } from './utils/logger'
 
 const isDev = !app.isPackaged
@@ -38,6 +40,8 @@ app.whenReady().then(async () => {
 
   await initDatabase()
   registerAccountIpcHandlers()
+  registerPublishIpcHandlers()
+  registerFileDialogIpcHandlers()
 
   createWindow()
 

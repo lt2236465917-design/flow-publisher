@@ -28,9 +28,9 @@ export const useAccountStore = create<AccountState>((set, get) => ({
 
   fetchAccounts: async () => {
     set({ loading: true })
-    const response = await window.electron.ipcRenderer.invoke('account:list')
+    const response = await window.electron.ipcRenderer.invoke<AccountInfo[]>('account:list')
     if (response.success) {
-      set({ accounts: response.data, loading: false })
+      set({ accounts: response.data || [], loading: false })
     } else {
       set({ loading: false })
     }
@@ -41,7 +41,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
       loginProgress: { ...s.loginProgress, [platformId]: { platformId, status: 'launching' } }
     }))
 
-    const response = await window.electron.ipcRenderer.invoke('account:login', platformId)
+    const response = await window.electron.ipcRenderer.invoke<{ accountId: string; displayName?: string }>('account:login', platformId)
 
     if (response.success) {
       set((s) => ({
@@ -61,7 +61,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   },
 
   checkSession: async (accountId: string) => {
-    const response = await window.electron.ipcRenderer.invoke('account:check-session', accountId)
+    const response = await window.electron.ipcRenderer.invoke<{ sessionStatus: string }>('account:check-session', accountId)
     if (response.success) {
       await get().fetchAccounts()
     }
