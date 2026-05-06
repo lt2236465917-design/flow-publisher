@@ -34,6 +34,13 @@ interface ApiFile {
   selectImage: () => Promise<unknown>
 }
 
+interface ApiSchedule {
+  create: (params: Record<string, unknown>) => Promise<unknown>
+  list: () => Promise<unknown>
+  cancel: (taskId: string) => Promise<unknown>
+  delete: (taskId: string) => Promise<unknown>
+}
+
 interface Window {
   electron: {
     ipcRenderer: ElectronIpcRenderer
@@ -41,6 +48,7 @@ interface Window {
   api: {
     account: ApiAccount
     publish: ApiPublish
+    schedule: ApiSchedule
     file: ApiFile
     getPathForFile: (file: File) => string
   }

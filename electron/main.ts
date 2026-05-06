@@ -5,9 +5,14 @@ import { initDatabase, closeDatabase } from './services/database'
 import { registerAccountIpcHandlers } from './ipc/account.ipc'
 import { registerPublishIpcHandlers } from './ipc/publish.ipc'
 import { registerFileDialogIpcHandlers } from './ipc/file-dialog.ipc'
+import { registerSchedulerIpcHandlers } from './ipc/scheduler.ipc'
+import { getScheduledTaskRepository } from './services/database'
+import { TaskQueue } from './services/scheduler/TaskQueue'
+import { PublishScheduler } from './services/scheduler/PublishScheduler'
 import { logger } from './utils/logger'
 
 const isDev = !app.isPackaged
+let scheduler: PublishScheduler | null = null
 
 // Register custom protocol for serving local files (avoids CSP/same-origin issues)
 protocol.registerSchemesAsPrivileged([
@@ -58,6 +63,14 @@ app.whenReady().then(async () => {
   registerAccountIpcHandlers()
   registerPublishIpcHandlers()
   registerFileDialogIpcHandlers()
+  registerSchedulerIpcHandlers()
+
+  // Start scheduled publishing
+  const scheduledTaskRepo = getScheduledTaskRepository()
+  const taskQueue = new TaskQueue(scheduledTaskRepo)
+  scheduler = new PublishScheduler(scheduledTaskRepo, taskQueue)
+  scheduler.start()
+  scheduler.runMissedTasks().catch((err) => logger.error('runMissedTasks error:', err))
 
   createWindow()
 
@@ -67,6 +80,7 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
+  scheduler?.stop()
   closeDatabase()
   if (process.platform !== 'darwin') {
     app.quit()

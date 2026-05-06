@@ -1,6 +1,6 @@
-import { useEffect, useCallback } from 'react'
+import { useEffect, useCallback, useState } from 'react'
 import { Typography, Button, Space, Card, Divider, Alert, Progress, List, Tag, message } from 'antd'
-import { SendOutlined, ReloadOutlined } from '@ant-design/icons'
+import { SendOutlined, ReloadOutlined, ClockCircleOutlined } from '@ant-design/icons'
 import VideoDropZone from '@/components/publish/VideoDropZone'
 import VideoPreview from '@/components/publish/VideoPreview'
 import CoverSelector from '@/components/publish/CoverSelector'
@@ -9,15 +9,24 @@ import PublishTargetPicker from '@/components/publish/PublishTargetPicker'
 import PlatformCustomizer from '@/components/publish/PlatformCustomizer'
 import { usePublishFlow } from '@/hooks/usePublishFlow'
 import { useAccountStore } from '@/stores/accountStore'
+import SchedulePicker from '@/components/publish/SchedulePicker'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
 
 const { Title, Paragraph, Text } = Typography
 
+interface AccountInfo {
+  id: string
+  platform: string
+  displayName: string
+  sessionStatus: string
+}
+
 export default function PublishPage() {
   const { fetchAccounts } = useAccountStore()
   const flow = usePublishFlow()
+  const [scheduleModalOpen, setScheduleModalOpen] = useState(false)
 
   useEffect(() => {
     fetchAccounts()
@@ -25,6 +34,70 @@ export default function PublishPage() {
 
   const hasActiveTasks = flow.tasks.some((t) => t.status === 'uploading' || t.status === 'submitting')
   const allDone = flow.tasks.length > 0 && flow.tasks.every((t) => t.status === 'done')
+
+  const handleScheduleConfirm = useCallback(async (scheduledAt: string) => {
+    const { video, form } = flow
+    if (!video) {
+      message.error('请先选择视频')
+      return
+    }
+    if (form.platforms.length === 0) {
+      message.error('请至少选择一个发布平台')
+      return
+    }
+    if (!form.title.trim()) {
+      message.error('请输入标题')
+      return
+    }
+
+    // Convert cover data URL to temp file
+    let coverFilePath: string | undefined
+    if (form.horizontalCover) {
+      const coverRes = await window.electron.ipcRenderer.invoke<{ filePath: string }>(
+        IPC_CHANNELS.FILE_DATA_URL_TO_TEMP,
+        form.horizontalCover
+      )
+      if (coverRes.success && coverRes.data?.filePath) {
+        coverFilePath = coverRes.data.filePath
+      }
+    }
+
+    // Look up account IDs for each platform
+    const accountsRes = await window.electron.ipcRenderer.invoke<AccountInfo[]>(IPC_CHANNELS.ACCOUNT_LIST)
+    const accounts = accountsRes.data || []
+    const accountIds: Record<string, string> = {}
+    for (const platformId of form.platforms) {
+      const account = accounts.find(
+        (a) => a.platform === platformId && a.sessionStatus === 'logged_in'
+      )
+      if (!account) {
+        message.error(`[${platformId}] 该平台未登录`)
+        return
+      }
+      accountIds[platformId] = account.id
+    }
+
+    const params = {
+      platforms: form.platforms,
+      accountIds,
+      videoPath: video.filePath,
+      coverPath: coverFilePath,
+      title: form.title,
+      description: form.description,
+      hashtags: form.hashtags,
+      declarations: form.declarations,
+      platformOverrides: form.platformOverrides,
+      scheduledAt
+    }
+
+    const res = await window.electron.ipcRenderer.invoke(IPC_CHANNELS.SCHEDULE_CREATE, params)
+    if (res.success) {
+      message.success('定时任务已创建')
+      setScheduleModalOpen(false)
+    } else {
+      message.error(res.error || '创建定时任务失败')
+    }
+  }, [flow])
 
   const handlePickImage = useCallback(async (): Promise<string | null> => {
     try {
@@ -126,7 +199,15 @@ export default function PublishPage() {
               disabled={!flow.video || flow.form.platforms.length === 0 || hasActiveTasks}
               onClick={flow.publish}
             >
-              发布
+              立即发布
+            </Button>
+            <Button
+              size="large"
+              icon={<ClockCircleOutlined />}
+              disabled={!flow.video || flow.form.platforms.length === 0 || hasActiveTasks}
+              onClick={() => setScheduleModalOpen(true)}
+            >
+              定时发布
             </Button>
             <Button
               icon={<ReloadOutlined />}
@@ -182,6 +263,13 @@ export default function PublishPage() {
           )}
         </Card>
       )}
+
+      {/* Schedule Modal */}
+      <SchedulePicker
+        open={scheduleModalOpen}
+        onConfirm={handleScheduleConfirm}
+        onCancel={() => setScheduleModalOpen(false)}
+      />
     </div>
   )
 }

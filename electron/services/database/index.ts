@@ -3,8 +3,10 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { runMigration } from './migrations/001_accounts'
 import { runMigration002 } from './migrations/002_publish_records'
+import { runMigration003 } from './migrations/003_scheduled_tasks'
 import { AccountRepository } from './repositories/account.repo'
 import { PublishRecordRepository } from './repositories/publish-record.repo'
+import { ScheduledTaskRepository } from './repositories/scheduled-task.repo'
 import { logger } from '../../utils/logger'
 
 const DB_FILENAME = 'videosync.db'
@@ -12,6 +14,7 @@ const DB_FILENAME = 'videosync.db'
 let dbInstance: Database | null = null
 let accountRepoInstance: AccountRepository | null = null
 let publishRecordRepoInstance: PublishRecordRepository | null = null
+let scheduledTaskRepoInstance: ScheduledTaskRepository | null = null
 
 function getDbPath(): string {
   const { app } = require('electron')
@@ -51,10 +54,12 @@ export async function initDatabase(): Promise<void> {
 
   runMigration(dbInstance)
   runMigration002(dbInstance)
+  runMigration003(dbInstance)
   saveDatabase()
 
   accountRepoInstance = new AccountRepository(dbInstance)
   publishRecordRepoInstance = new PublishRecordRepository(dbInstance)
+  scheduledTaskRepoInstance = new ScheduledTaskRepository(dbInstance)
   logger.info('Database initialized')
 }
 
@@ -73,6 +78,11 @@ export function getPublishRecordRepository(): PublishRecordRepository {
   return publishRecordRepoInstance
 }
 
+export function getScheduledTaskRepository(): ScheduledTaskRepository {
+  if (!scheduledTaskRepoInstance) throw new Error('Database not initialized')
+  return scheduledTaskRepoInstance
+}
+
 export function saveDatabase(): void {
   if (!dbInstance) return
   const data = dbInstance.export()
@@ -86,6 +96,7 @@ export function closeDatabase(): void {
     dbInstance = null
     accountRepoInstance = null
     publishRecordRepoInstance = null
+    scheduledTaskRepoInstance = null
     logger.info('Database closed')
   }
 }

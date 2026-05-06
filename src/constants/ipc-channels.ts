@@ -18,6 +18,13 @@ export const IPC_CHANNELS = {
   PUBLISH_LIST_RECORDS: 'publish:list-records',
   PUBLISH_GET_PLATFORM_FIELDS: 'publish:get-platform-fields',
 
+  // Scheduler
+  SCHEDULE_CREATE: 'schedule:create',
+  SCHEDULE_LIST: 'schedule:list',
+  SCHEDULE_CANCEL: 'schedule:cancel',
+  SCHEDULE_DELETE: 'schedule:delete',
+  SCHEDULE_PROGRESS: 'schedule:progress',
+
   // Analytics
   ANALYTICS_FETCH: 'analytics:fetch',
   ANALYTICS_COMPARE: 'analytics:compare',

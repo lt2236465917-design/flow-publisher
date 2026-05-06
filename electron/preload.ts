@@ -17,6 +17,13 @@ const api = {
     submit: (params: { recordId: string; platformId: string; content: Record<string, unknown> }) => ipcRenderer.invoke('publish:submit', params),
     listRecords: () => ipcRenderer.invoke('publish:list-records')
   },
+  // Schedule methods
+  schedule: {
+    create: (params: Record<string, unknown>) => ipcRenderer.invoke('schedule:create', params),
+    list: () => ipcRenderer.invoke('schedule:list'),
+    cancel: (taskId: string) => ipcRenderer.invoke('schedule:cancel', taskId),
+    delete: (taskId: string) => ipcRenderer.invoke('schedule:delete', taskId)
+  },
   // File dialog methods
   file: {
     selectVideo: () => ipcRenderer.invoke('file:select-video'),
