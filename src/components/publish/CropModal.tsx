@@ -57,8 +57,6 @@ export default function CropModal({ visible, imageSrc, aspect, title, onConfirm,
   const [zoom, setZoom] = useState(1)
   const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null)
 
-  console.log('[CropModal] visible:', visible, 'imageSrc:', imageSrc ? `len=${imageSrc.length} start=${imageSrc.substring(0, 40)}` : 'null/empty')
-
   const onCropComplete = useCallback((_croppedArea: Area, croppedAreaPixels: Area) => {
     setCroppedAreaPixels(croppedAreaPixels)
   }, [])

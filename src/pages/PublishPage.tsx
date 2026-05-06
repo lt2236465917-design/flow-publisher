@@ -1,5 +1,5 @@
-import { useEffect } from 'react'
-import { Typography, Button, Space, Card, Divider, Alert, Progress, List, Tag } from 'antd'
+import { useEffect, useCallback } from 'react'
+import { Typography, Button, Space, Card, Divider, Alert, Progress, List, Tag, message } from 'antd'
 import { SendOutlined, ReloadOutlined } from '@ant-design/icons'
 import VideoDropZone from '@/components/publish/VideoDropZone'
 import VideoPreview from '@/components/publish/VideoPreview'
@@ -25,6 +25,25 @@ export default function PublishPage() {
 
   const hasActiveTasks = flow.tasks.some((t) => t.status === 'uploading' || t.status === 'submitting')
   const allDone = flow.tasks.length > 0 && flow.tasks.every((t) => t.status === 'done')
+
+  const handlePickImage = useCallback(async (): Promise<string | null> => {
+    try {
+      const res = await window.electron.ipcRenderer.invoke(
+        IPC_CHANNELS.FILE_SELECT_IMAGE
+      ) as { success?: boolean; data?: { dataUrl?: string }; error?: string }
+      if (res?.success && res.data?.dataUrl) {
+        return res.data.dataUrl
+      }
+      if (res?.error && res.error !== '用户取消选择') {
+        message.error(`选择图片失败: ${res.error}`)
+      }
+      return null
+    } catch (e) {
+      console.error('[PublishPage] onPickImage error:', e)
+      message.error('选择图片时发生错误')
+      return null
+    }
+  }, [])
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '0 16px' }}>
@@ -52,20 +71,7 @@ export default function PublishPage() {
             horizontalCover={flow.form.horizontalCover}
             verticalCover={flow.form.verticalCover}
             onSelectFrame={flow.selectFrameAsCover}
-            onPickImage={async () => {
-              try {
-                const res = await window.electron.ipcRenderer.invoke(
-                  IPC_CHANNELS.FILE_SELECT_IMAGE
-                ) as { success?: boolean; data?: { dataUrl?: string }; error?: string }
-                if (res?.success && res.data?.dataUrl) {
-                  return res.data.dataUrl
-                }
-                return null
-              } catch (e) {
-                console.error('[PublishPage] onPickImage error:', e)
-                return null
-              }
-            }}
+            onPickImage={handlePickImage}
             onCropConfirm={(type, croppedDataUrl) => {
               if (type === 'horizontal') {
                 flow.updateForm({ horizontalCover: croppedDataUrl })
