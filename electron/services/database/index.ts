@@ -4,9 +4,11 @@ import { join } from 'path'
 import { runMigration } from './migrations/001_accounts'
 import { runMigration002 } from './migrations/002_publish_records'
 import { runMigration003 } from './migrations/003_scheduled_tasks'
+import { runMigration004 } from './migrations/004_analytics_snapshots'
 import { AccountRepository } from './repositories/account.repo'
 import { PublishRecordRepository } from './repositories/publish-record.repo'
 import { ScheduledTaskRepository } from './repositories/scheduled-task.repo'
+import { AnalyticsRepository } from './repositories/analytics.repo'
 import { logger } from '../../utils/logger'
 
 const DB_FILENAME = 'videosync.db'
@@ -15,6 +17,7 @@ let dbInstance: Database | null = null
 let accountRepoInstance: AccountRepository | null = null
 let publishRecordRepoInstance: PublishRecordRepository | null = null
 let scheduledTaskRepoInstance: ScheduledTaskRepository | null = null
+let analyticsRepoInstance: AnalyticsRepository | null = null
 
 function getDbPath(): string {
   const { app } = require('electron')
@@ -55,11 +58,13 @@ export async function initDatabase(): Promise<void> {
   runMigration(dbInstance)
   runMigration002(dbInstance)
   runMigration003(dbInstance)
+  runMigration004(dbInstance)
   saveDatabase()
 
   accountRepoInstance = new AccountRepository(dbInstance)
   publishRecordRepoInstance = new PublishRecordRepository(dbInstance)
   scheduledTaskRepoInstance = new ScheduledTaskRepository(dbInstance)
+  analyticsRepoInstance = new AnalyticsRepository(dbInstance)
   logger.info('Database initialized')
 }
 
@@ -83,6 +88,11 @@ export function getScheduledTaskRepository(): ScheduledTaskRepository {
   return scheduledTaskRepoInstance
 }
 
+export function getAnalyticsRepository(): AnalyticsRepository {
+  if (!analyticsRepoInstance) throw new Error('Database not initialized')
+  return analyticsRepoInstance
+}
+
 export function saveDatabase(): void {
   if (!dbInstance) return
   const data = dbInstance.export()
@@ -97,6 +107,7 @@ export function closeDatabase(): void {
     accountRepoInstance = null
     publishRecordRepoInstance = null
     scheduledTaskRepoInstance = null
+    analyticsRepoInstance = null
     logger.info('Database closed')
   }
 }

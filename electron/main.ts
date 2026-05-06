@@ -6,6 +6,7 @@ import { registerAccountIpcHandlers } from './ipc/account.ipc'
 import { registerPublishIpcHandlers } from './ipc/publish.ipc'
 import { registerFileDialogIpcHandlers } from './ipc/file-dialog.ipc'
 import { registerSchedulerIpcHandlers } from './ipc/scheduler.ipc'
+import { registerAnalyticsIpcHandlers } from './ipc/analytics.ipc'
 import { getScheduledTaskRepository } from './services/database'
 import { TaskQueue } from './services/scheduler/TaskQueue'
 import { PublishScheduler } from './services/scheduler/PublishScheduler'
@@ -64,6 +65,7 @@ app.whenReady().then(async () => {
   registerPublishIpcHandlers()
   registerFileDialogIpcHandlers()
   registerSchedulerIpcHandlers()
+  registerAnalyticsIpcHandlers()
 
   // Start scheduled publishing
   const scheduledTaskRepo = getScheduledTaskRepository()
