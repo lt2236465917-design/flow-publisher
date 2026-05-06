@@ -1,7 +1,7 @@
 import { app, BrowserWindow, protocol, net } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
-import { initDatabase, closeDatabase } from './services/database'
+import { initDatabase, closeDatabase, backupDatabase } from './services/database'
 import { registerAccountIpcHandlers } from './ipc/account.ipc'
 import { registerPublishIpcHandlers } from './ipc/publish.ipc'
 import { registerFileDialogIpcHandlers } from './ipc/file-dialog.ipc'
@@ -47,6 +47,15 @@ function createWindow(): void {
   }
 }
 
+// Global error handlers for main process
+process.on('uncaughtException', (err) => {
+  logger.error('Uncaught exception:', err)
+})
+
+process.on('unhandledRejection', (reason) => {
+  logger.error('Unhandled rejection:', reason)
+})
+
 app.whenReady().then(async () => {
   app.setAppUserModelId('com.videosync.publisher')
 
@@ -61,6 +70,10 @@ app.whenReady().then(async () => {
   })
 
   await initDatabase()
+
+  // Backup database on startup (non-blocking)
+  backupDatabase()
+
   registerAccountIpcHandlers()
   registerPublishIpcHandlers()
   registerFileDialogIpcHandlers()

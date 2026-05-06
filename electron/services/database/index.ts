@@ -1,5 +1,5 @@
 import initSqlJs, { Database } from 'sql.js'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, statSync } from 'fs'
 import { join } from 'path'
 import { runMigration } from './migrations/001_accounts'
 import { runMigration002 } from './migrations/002_publish_records'
@@ -12,6 +12,8 @@ import { AnalyticsRepository } from './repositories/analytics.repo'
 import { logger } from '../../utils/logger'
 
 const DB_FILENAME = 'videosync.db'
+const BACKUP_DIR = 'db-backups'
+const MAX_BACKUPS = 5
 
 let dbInstance: Database | null = null
 let accountRepoInstance: AccountRepository | null = null
@@ -97,6 +99,41 @@ export function saveDatabase(): void {
   if (!dbInstance) return
   const data = dbInstance.export()
   writeFileSync(getDbPath(), Buffer.from(data))
+}
+
+/**
+ * Create a timestamped backup of the database file.
+ * Keeps only the most recent MAX_BACKUPS backups.
+ */
+export function backupDatabase(): void {
+  try {
+    const dbPath = getDbPath()
+    if (!existsSync(dbPath)) return
+
+    const dir = require('electron').app.getPath('userData')
+    const backupDir = join(dir, BACKUP_DIR)
+    if (!existsSync(backupDir)) mkdirSync(backupDir, { recursive: true })
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const backupPath = join(backupDir, `videosync-${timestamp}.db`)
+    writeFileSync(backupPath, readFileSync(dbPath))
+
+    // Prune old backups
+    const files = readdirSync(backupDir)
+      .filter((f) => f.endsWith('.db'))
+      .map((f) => ({ name: f, path: join(backupDir, f), time: statSync(join(backupDir, f)).mtimeMs }))
+      .sort((a, b) => b.time - a.time)
+
+    while (files.length > MAX_BACKUPS) {
+      const old = files.pop()!
+      unlinkSync(old.path)
+      logger.info('Pruned old backup:', old.name)
+    }
+
+    logger.info('Database backed up to', backupPath)
+  } catch (err) {
+    logger.error('Database backup failed:', err)
+  }
 }
 
 export function closeDatabase(): void {

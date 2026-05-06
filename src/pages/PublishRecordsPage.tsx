@@ -1,12 +1,13 @@
 import { useEffect } from 'react'
 import { Typography, Tabs, Table, Button, Space, Popconfirm, message } from 'antd'
-import { DeleteOutlined, StopOutlined } from '@ant-design/icons'
+import { DeleteOutlined, StopOutlined, FileTextOutlined, ClockCircleOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useRecordStore } from '@/stores/recordStore'
 import { usePolling } from '@/hooks/usePolling'
 import { useScheduleProgress } from '@/hooks/useScheduleProgress'
 import PublishRecordTable from '@/components/records/PublishRecordTable'
 import TaskStatusTag from '@/components/records/TaskStatusTag'
+import EmptyState from '@/components/common/EmptyState'
 import { PLATFORMS } from '@/constants/platforms'
 import type { PlatformId } from '@/constants/platforms'
 
@@ -74,6 +75,8 @@ export default function PublishRecordsPage() {
       dataIndex: 'scheduledAt',
       key: 'scheduledAt',
       width: 180,
+      sorter: (a: { scheduledAt: string }, b: { scheduledAt: string }) =>
+        dayjs(a.scheduledAt).unix() - dayjs(b.scheduledAt).unix(),
       render: (t: string) => dayjs(t).format('YYYY年MM月DD日 HH:mm')
     },
     {
@@ -121,21 +124,39 @@ export default function PublishRecordsPage() {
   const tabItems = [
     {
       key: 'published',
-      label: '已发布',
-      children: <PublishRecordTable records={records} loading={loading} />
+      label: `已发布 (${records.length})`,
+      children: records.length === 0 && !loading ? (
+        <EmptyState
+          icon={<FileTextOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />}
+          title="暂无发布记录"
+          description="发布视频后，记录将显示在这里"
+        />
+      ) : (
+        <PublishRecordTable records={records} loading={loading} onRefresh={fetchRecords} />
+      )
     },
     {
       key: 'scheduled',
-      label: '定时任务',
-      children: (
+      label: `定时任务 (${scheduledTasks.length})`,
+      children: scheduledTasks.length === 0 && !loading ? (
+        <EmptyState
+          icon={<ClockCircleOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />}
+          title="暂无定时任务"
+          description="在发布页面设置定时发布后，任务将显示在这里"
+        />
+      ) : (
         <Table
           dataSource={scheduledTasks}
           columns={scheduledColumns}
           rowKey="id"
           loading={loading}
-          pagination={{ pageSize: 10 }}
-          locale={{ emptyText: '暂无定时任务' }}
+          pagination={{
+            pageSize: 20,
+            showSizeChanger: true,
+            showTotal: (total) => `共 ${total} 条记录`
+          }}
           size="middle"
+          scroll={{ x: 800 }}
         />
       )
     }

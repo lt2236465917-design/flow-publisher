@@ -6,10 +6,12 @@ import PublishRecordsPage from './pages/PublishRecordsPage'
 import AnalyticsPage from './pages/AnalyticsPage'
 import SettingsPage from './pages/SettingsPage'
 import ErrorBoundary from './components/common/ErrorBoundary'
+import GlobalLoading from './components/common/GlobalLoading'
 
 export default function App() {
   return (
     <ErrorBoundary>
+      <GlobalLoading />
       <Routes>
         <Route path="/" element={<MainLayout />}>
           <Route index element={<Navigate to="/account" replace />} />

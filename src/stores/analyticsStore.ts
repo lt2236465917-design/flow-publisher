@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
+import { ipcInvoke } from '@/utils/ipc'
 import type {
   TimeRange,
   AnalyticsOverview,
@@ -46,10 +47,7 @@ export const useAnalyticsStore = create<AnalyticsState>((set, get) => ({
     const { timeRange } = get()
     set({ loading: true })
     try {
-      const res = await window.electron.ipcRenderer.invoke<AnalyticsOverview>(
-        IPC_CHANNELS.ANALYTICS_FETCH,
-        { timeRange }
-      )
+      const res = await ipcInvoke<AnalyticsOverview>(IPC_CHANNELS.ANALYTICS_FETCH, { timeRange })
       if (res.success && res.data) {
         set({ overview: res.data })
       } else {
@@ -65,10 +63,7 @@ export const useAnalyticsStore = create<AnalyticsState>((set, get) => ({
   fetchCompare: async () => {
     const { timeRange } = get()
     try {
-      const res = await window.electron.ipcRenderer.invoke<PlatformCompareItem[]>(
-        IPC_CHANNELS.ANALYTICS_COMPARE,
-        { timeRange }
-      )
+      const res = await ipcInvoke<PlatformCompareItem[]>(IPC_CHANNELS.ANALYTICS_COMPARE, { timeRange })
       if (res.success && res.data) {
         set({ compareResult: res.data })
       } else {

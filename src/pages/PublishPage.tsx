@@ -1,6 +1,6 @@
-import { useEffect, useCallback, useState } from 'react'
-import { Typography, Button, Space, Card, Divider, Alert, Progress, List, Tag, message } from 'antd'
-import { SendOutlined, ReloadOutlined, ClockCircleOutlined } from '@ant-design/icons'
+import { useEffect, useCallback, useState, useMemo } from 'react'
+import { Typography, Button, Space, Card, Progress, List, Tag, message, Alert } from 'antd'
+import { SendOutlined, ReloadOutlined, ClockCircleOutlined, VideoCameraOutlined } from '@ant-design/icons'
 import VideoDropZone from '@/components/publish/VideoDropZone'
 import VideoPreview from '@/components/publish/VideoPreview'
 import CoverSelector from '@/components/publish/CoverSelector'
@@ -9,7 +9,9 @@ import PublishTargetPicker from '@/components/publish/PublishTargetPicker'
 import PlatformCustomizer from '@/components/publish/PlatformCustomizer'
 import { usePublishFlow } from '@/hooks/usePublishFlow'
 import { useAccountStore } from '@/stores/accountStore'
+import { useKeyboardShortcuts } from '@/hooks/useKeyboard'
 import SchedulePicker from '@/components/publish/SchedulePicker'
+import EmptyState from '@/components/common/EmptyState'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
@@ -34,6 +36,14 @@ export default function PublishPage() {
 
   const hasActiveTasks = flow.tasks.some((t) => t.status === 'uploading' || t.status === 'submitting')
   const allDone = flow.tasks.length > 0 && flow.tasks.every((t) => t.status === 'done')
+
+  // Keyboard shortcuts
+  const shortcuts = useMemo(() => ({
+    'ctrl+o': () => { if (!hasActiveTasks) flow.selectVideo() },
+    'ctrl+enter': () => { if (!hasActiveTasks && flow.video && flow.form.platforms.length > 0) flow.publish() },
+    'ctrl+r': () => { if (!hasActiveTasks) flow.resetForm() }
+  }), [hasActiveTasks, flow])
+  useKeyboardShortcuts(shortcuts)
 
   const handleScheduleConfirm = useCallback(async (scheduledAt: string) => {
     const { video, form } = flow
@@ -121,7 +131,12 @@ export default function PublishPage() {
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '0 16px' }}>
       <Title level={3}>内容发布</Title>
-      <Paragraph type="secondary">上传视频，编辑内容，一键发布到多个平台</Paragraph>
+      <Paragraph type="secondary">
+        上传视频，编辑内容，一键发布到多个平台
+        <Text type="secondary" style={{ fontSize: 12, marginLeft: 12 }}>
+          Ctrl+O 选择视频 | Ctrl+Enter 发布 | Ctrl+R 重置
+        </Text>
+      </Paragraph>
 
       {/* Step 1: Video Selection */}
       <Card title="1. 选择视频" style={{ marginBottom: 16 }}>
@@ -217,6 +232,19 @@ export default function PublishPage() {
               重置
             </Button>
           </Space>
+        </Card>
+      )}
+
+      {/* No video selected — show guidance */}
+      {!flow.video && (
+        <Card>
+          <EmptyState
+            icon={<VideoCameraOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />}
+            title="选择要发布的视频"
+            description="将视频文件拖放到上方区域，或点击选择文件按钮"
+            actionText="选择视频文件"
+            onAction={flow.selectVideo}
+          />
         </Card>
       )}
 

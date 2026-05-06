@@ -1,5 +1,7 @@
 import { create } from 'zustand'
 import type { AccountInfo } from '@/types/platform.types'
+import { ipcInvoke } from '@/utils/ipc'
+import { toChineseMessage } from '@/utils/errorMessages'
 
 interface LoginProgress {
   platformId: string
@@ -28,10 +30,14 @@ export const useAccountStore = create<AccountState>((set, get) => ({
 
   fetchAccounts: async () => {
     set({ loading: true })
-    const response = await window.electron.ipcRenderer.invoke<AccountInfo[]>('account:list')
-    if (response.success) {
-      set({ accounts: response.data || [], loading: false })
-    } else {
+    try {
+      const response = await ipcInvoke<AccountInfo[]>('account:list')
+      if (response.success) {
+        set({ accounts: response.data || [] })
+      }
+    } catch (err) {
+      console.error('[accountStore] fetchAccounts error:', err)
+    } finally {
       set({ loading: false })
     }
   },
@@ -41,7 +47,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
       loginProgress: { ...s.loginProgress, [platformId]: { platformId, status: 'launching' } }
     }))
 
-    const response = await window.electron.ipcRenderer.invoke<{ accountId: string; displayName?: string }>('account:login', platformId)
+    const response = await ipcInvoke<{ accountId: string; displayName?: string }>('account:login', platformId)
 
     if (response.success) {
       set((s) => ({
@@ -50,10 +56,11 @@ export const useAccountStore = create<AccountState>((set, get) => ({
       await get().fetchAccounts()
       return true
     } else {
+      const errorMsg = toChineseMessage(response.error)
       set((s) => ({
         loginProgress: {
           ...s.loginProgress,
-          [platformId]: { platformId, status: 'error', error: response.error }
+          [platformId]: { platformId, status: 'error', error: errorMsg }
         }
       }))
       return false
@@ -61,14 +68,14 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   },
 
   checkSession: async (accountId: string) => {
-    const response = await window.electron.ipcRenderer.invoke<{ sessionStatus: string }>('account:check-session', accountId)
+    const response = await ipcInvoke<{ sessionStatus: string }>('account:check-session', accountId)
     if (response.success) {
       await get().fetchAccounts()
     }
   },
 
   logout: async (accountId: string) => {
-    const response = await window.electron.ipcRenderer.invoke('account:logout', accountId)
+    const response = await ipcInvoke('account:logout', accountId)
     if (response.success) {
       await get().fetchAccounts()
     }

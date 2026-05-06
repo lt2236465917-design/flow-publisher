@@ -32,6 +32,22 @@ export class PublishRecordRepository {
     return rows
   }
 
+  getPaged(offset: number, limit: number): { rows: PublishRecordRow[]; total: number } {
+    const countStmt = this.db.prepare('SELECT COUNT(*) as cnt FROM publish_records')
+    countStmt.step()
+    const total = (countStmt.getAsObject() as { cnt: number }).cnt
+    countStmt.free()
+
+    const stmt = this.db.prepare('SELECT * FROM publish_records ORDER BY created_at DESC LIMIT ? OFFSET ?')
+    stmt.bind([limit, offset])
+    const rows: PublishRecordRow[] = []
+    while (stmt.step()) {
+      rows.push(stmt.getAsObject() as unknown as PublishRecordRow)
+    }
+    stmt.free()
+    return { rows, total }
+  }
+
   getById(id: string): PublishRecordRow | null {
     const stmt = this.db.prepare('SELECT * FROM publish_records WHERE id = ?')
     stmt.bind([id])

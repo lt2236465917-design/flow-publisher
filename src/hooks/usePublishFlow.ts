@@ -1,7 +1,10 @@
 import { useCallback, useEffect } from 'react'
 import { message, Modal } from 'antd'
 import { usePublishStore, probeAndUpdate, extractFramesAndUpdate, validateForPlatform } from '@/stores/publishStore'
+import { useUIStore } from '@/stores/uiStore'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
+import { ipcInvoke } from '@/utils/ipc'
+import { toChineseMessage } from '@/utils/errorMessages'
 import type { PlatformId } from '@/constants/platforms'
 
 interface PublishProgressData {
@@ -19,6 +22,7 @@ interface AccountInfo {
 
 export function usePublishFlow() {
   const store = usePublishStore()
+  const { confirm } = useUIStore()
 
   useEffect(() => {
     const unsubscribe = window.electron.ipcRenderer.on(IPC_CHANNELS.PUBLISH_PROGRESS, (...args: unknown[]) => {
@@ -37,13 +41,13 @@ export function usePublishFlow() {
   }, [])
 
   const selectVideo = useCallback(async () => {
-    const res = await window.electron.ipcRenderer.invoke<{ filePath: string }>(IPC_CHANNELS.FILE_SELECT_VIDEO)
+    const res = await ipcInvoke<{ filePath: string }>(IPC_CHANNELS.FILE_SELECT_VIDEO)
     if (!res.success || !res.data?.filePath) return null
 
     const filePath = res.data.filePath
     const meta = await probeAndUpdate(filePath)
     if (!meta) {
-      message.error('无法解析视频文件')
+      message.error('无法解析视频文件，请检查文件格式')
       return null
     }
     extractFramesAndUpdate(filePath)
@@ -53,14 +57,14 @@ export function usePublishFlow() {
   const handleDropFile = useCallback(async (filePath: string) => {
     const meta = await probeAndUpdate(filePath)
     if (!meta) {
-      message.error('无法解析视频文件')
+      message.error('无法解析视频文件，请检查文件格式')
       return
     }
     extractFramesAndUpdate(filePath)
   }, [])
 
   const selectCover = useCallback(async () => {
-    const res = await window.electron.ipcRenderer.invoke<{ filePath: string }>(IPC_CHANNELS.FILE_SELECT_IMAGE)
+    const res = await ipcInvoke<{ filePath: string }>(IPC_CHANNELS.FILE_SELECT_IMAGE)
     if (!res.success || !res.data?.filePath) return null
     return res.data.filePath
   }, [])
@@ -100,22 +104,17 @@ export function usePublishFlow() {
     }
 
     // Confirmation dialog
-    const confirmed = await new Promise<boolean>((resolve) => {
-      Modal.confirm({
-        title: '确认发布',
-        content: `即将发布到 ${form.platforms.length} 个平台，标题：「${form.title}」`,
-        okText: '确认发布',
-        cancelText: '取消',
-        onOk: () => resolve(true),
-        onCancel: () => resolve(false)
-      })
+    const confirmed = await confirm({
+      title: '确认发布',
+      content: `即将发布到 ${form.platforms.length} 个平台，标题：「${form.title}」`,
+      okText: '确认发布'
     })
     if (!confirmed) return
 
     // Convert cover data URL to temp file for platform adapters
     let coverFilePath: string | undefined
     if (form.horizontalCover) {
-      const coverRes = await window.electron.ipcRenderer.invoke<{ filePath: string }>(
+      const coverRes = await ipcInvoke<{ filePath: string }>(
         IPC_CHANNELS.FILE_DATA_URL_TO_TEMP,
         form.horizontalCover
       )
@@ -137,7 +136,7 @@ export function usePublishFlow() {
       const task = tasks[i]
 
       try {
-        const accountsRes = await window.electron.ipcRenderer.invoke<AccountInfo[]>(IPC_CHANNELS.ACCOUNT_LIST)
+        const accountsRes = await ipcInvoke<AccountInfo[]>(IPC_CHANNELS.ACCOUNT_LIST)
         const account = (accountsRes.data || []).find(
           (a) => a.platform === platformId && a.sessionStatus === 'logged_in'
         )
@@ -147,21 +146,22 @@ export function usePublishFlow() {
         }
 
         store.updateTask(task.id, { status: 'uploading', progress: 0 })
-        const uploadRes = await window.electron.ipcRenderer.invoke<{ recordId: string }>(IPC_CHANNELS.PUBLISH_UPLOAD, {
+        const uploadRes = await ipcInvoke<{ recordId: string }>(IPC_CHANNELS.PUBLISH_UPLOAD, {
           accountId: account.id,
           platformId,
           filePath: video.filePath
         })
 
         if (!uploadRes.success) {
-          store.updateTask(task.id, { status: 'error', error: uploadRes.error })
+          const errorMsg = toChineseMessage(uploadRes.error)
+          store.updateTask(task.id, { status: 'error', error: errorMsg })
           continue
         }
 
         const recordId = uploadRes.data!.recordId
 
         store.updateTask(task.id, { status: 'submitting', progress: 90 })
-        const submitRes = await window.electron.ipcRenderer.invoke<{ recordId: string }>(IPC_CHANNELS.PUBLISH_SUBMIT, {
+        const submitRes = await ipcInvoke<{ recordId: string }>(IPC_CHANNELS.PUBLISH_SUBMIT, {
           recordId,
           platformId,
           content: {
@@ -177,15 +177,25 @@ export function usePublishFlow() {
         if (submitRes.success) {
           store.updateTask(task.id, { status: 'done', progress: 100 })
         } else {
-          store.updateTask(task.id, { status: 'error', error: submitRes.error })
+          const errorMsg = toChineseMessage(submitRes.error)
+          store.updateTask(task.id, { status: 'error', error: errorMsg })
         }
       } catch (e) {
-        store.updateTask(task.id, { status: 'error', error: String(e) })
+        store.updateTask(task.id, { status: 'error', error: toChineseMessage(e) })
       }
     }
 
-    message.success('发布流程完成')
-  }, [store])
+    const errorCount = tasks.filter((t) => {
+      const current = usePublishStore.getState().tasks.find((ct) => ct.id === t.id)
+      return current?.status === 'error'
+    }).length
+
+    if (errorCount === 0) {
+      message.success('发布流程完成')
+    } else {
+      message.warning(`发布完成，${errorCount} 个平台失败`)
+    }
+  }, [store, confirm])
 
   return {
     ...store,

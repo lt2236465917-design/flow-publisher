@@ -1,5 +1,6 @@
 appId: com.videosync.publisher
 productName: VideoSync Publisher
+copyright: Copyright © 2026 VideoSync
 directories:
   buildResources: build
 files:
@@ -14,11 +15,17 @@ win:
     - target: nsis
       arch:
         - x64
+  icon: build/icon.ico
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  installerLanguages: ChineseSimplified
+  language: 2052
 mac:
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
@@ -37,3 +44,7 @@ dmg:
 asar: true
 asarUnpack:
   - resources/**
+publish:
+  provider: github
+  owner: videosync
+  repo: publisher

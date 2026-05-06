@@ -3,6 +3,7 @@ import type { VideoMetadata, VideoFrame } from '@/types/video.types'
 import type { PublishFormData, PublishTask, PublishState } from '@/types/publish.types'
 import type { PlatformId } from '@/constants/platforms'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
+import { ipcInvoke } from '@/utils/ipc'
 
 const DEFAULT_FORM: PublishFormData = {
   title: '',
@@ -43,11 +44,14 @@ export async function probeAndUpdate(filePath: string): Promise<VideoMetadata | 
   const store = usePublishStore.getState()
   store.setLoading(true)
   try {
-    const res = await window.electron.ipcRenderer.invoke<VideoMetadata>(IPC_CHANNELS.PUBLISH_PROBE_VIDEO, filePath)
+    const res = await ipcInvoke<VideoMetadata>(IPC_CHANNELS.PUBLISH_PROBE_VIDEO, filePath)
     if (res.success && res.data) {
       store.setVideo(res.data)
       return res.data
     }
+    return null
+  } catch (err) {
+    console.error('[publishStore] probeAndUpdate error:', err)
     return null
   } finally {
     store.setLoading(false)
@@ -58,11 +62,14 @@ export async function extractFramesAndUpdate(filePath: string): Promise<VideoFra
   const store = usePublishStore.getState()
   store.setExtractingFrames(true)
   try {
-    const res = await window.electron.ipcRenderer.invoke<VideoFrame[]>(IPC_CHANNELS.PUBLISH_EXTRACT_FRAMES, filePath, 3)
+    const res = await ipcInvoke<VideoFrame[]>(IPC_CHANNELS.PUBLISH_EXTRACT_FRAMES, filePath, 3)
     if (res.success && res.data) {
       store.setFrames(res.data)
       return res.data
     }
+    return []
+  } catch (err) {
+    console.error('[publishStore] extractFramesAndUpdate error:', err)
     return []
   } finally {
     store.setExtractingFrames(false)
@@ -70,7 +77,7 @@ export async function extractFramesAndUpdate(filePath: string): Promise<VideoFra
 }
 
 export async function validateForPlatform(filePath: string, platformId: PlatformId): Promise<{ valid: boolean; errors: string[] }> {
-  const res = await window.electron.ipcRenderer.invoke<{ valid: boolean; errors: string[] }>(
+  const res = await ipcInvoke<{ valid: boolean; errors: string[] }>(
     IPC_CHANNELS.PUBLISH_VALIDATE_VIDEO, filePath, platformId
   )
   if (res.success && res.data) return res.data

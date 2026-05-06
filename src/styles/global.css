@@ -41,3 +41,74 @@ html, body, #root {
 .no-drag {
   -webkit-app-region: no-drag;
 }
+
+/* Page transition */
+.page-enter {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+/* Network status banner */
+.network-offline {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10000;
+  background: #ff4d4f;
+  color: white;
+  text-align: center;
+  padding: 4px 0;
+  font-size: 12px;
+  animation: slideDown 0.3s ease;
+}
+
+@keyframes slideDown {
+  from { transform: translateY(-100%); }
+  to { transform: translateY(0); }
+}
+
+/* Focus visible for keyboard navigation */
+*:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 2px;
+}
+
+/* Smooth transitions for interactive elements */
+.ant-card {
+  transition: box-shadow 0.2s ease;
+}
+
+.ant-card:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.09);
+}
+
+/* Table row hover enhancement */
+.ant-table-tbody > tr:hover > td {
+  background: #fafafa !important;
+}
+
+/* Empty state center alignment */
+.ant-empty {
+  padding: 32px 0;
+}
+
+/* Loading spinner overlay */
+.global-loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  pointer-events: none;
+}
+
+.global-loading-overlay .ant-spin {
+  pointer-events: auto;
+}

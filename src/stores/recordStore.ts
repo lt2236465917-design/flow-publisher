@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { PublishRecord } from '@/types/publish.types'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
+import { ipcInvoke } from '@/utils/ipc'
 
 export interface ScheduledTask {
   id: string
@@ -80,12 +81,12 @@ export const useRecordStore = create<RecordState>((set) => ({
   fetchRecords: async () => {
     set({ loading: true })
     try {
-      const res = await window.electron.ipcRenderer.invoke<Record<string, unknown>[]>(
-        IPC_CHANNELS.PUBLISH_LIST_RECORDS
-      )
+      const res = await ipcInvoke<Record<string, unknown>[]>(IPC_CHANNELS.PUBLISH_LIST_RECORDS)
       if (res.success && res.data) {
         set({ records: res.data.map(parsePublishRecord) })
       }
+    } catch (err) {
+      console.error('[recordStore] fetchRecords error:', err)
     } finally {
       set({ loading: false })
     }
@@ -93,21 +94,17 @@ export const useRecordStore = create<RecordState>((set) => ({
 
   fetchScheduledTasks: async () => {
     try {
-      const res = await window.electron.ipcRenderer.invoke<Record<string, unknown>[]>(
-        IPC_CHANNELS.SCHEDULE_LIST
-      )
+      const res = await ipcInvoke<Record<string, unknown>[]>(IPC_CHANNELS.SCHEDULE_LIST)
       if (res.success && res.data) {
         set({ scheduledTasks: res.data.map(parseScheduledTask) })
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error('[recordStore] fetchScheduledTasks error:', err)
     }
   },
 
   createScheduledTask: async (params) => {
-    const res = await window.electron.ipcRenderer.invoke(
-      IPC_CHANNELS.SCHEDULE_CREATE, params
-    )
+    const res = await ipcInvoke(IPC_CHANNELS.SCHEDULE_CREATE, params)
     if (res.success) {
       const store = useRecordStore.getState()
       await store.fetchScheduledTasks()
@@ -117,9 +114,7 @@ export const useRecordStore = create<RecordState>((set) => ({
   },
 
   cancelScheduledTask: async (taskId) => {
-    const res = await window.electron.ipcRenderer.invoke(
-      IPC_CHANNELS.SCHEDULE_CANCEL, taskId
-    )
+    const res = await ipcInvoke(IPC_CHANNELS.SCHEDULE_CANCEL, taskId)
     if (res.success) {
       const store = useRecordStore.getState()
       await store.fetchScheduledTasks()
@@ -129,9 +124,7 @@ export const useRecordStore = create<RecordState>((set) => ({
   },
 
   deleteScheduledTask: async (taskId) => {
-    const res = await window.electron.ipcRenderer.invoke(
-      IPC_CHANNELS.SCHEDULE_DELETE, taskId
-    )
+    const res = await ipcInvoke(IPC_CHANNELS.SCHEDULE_DELETE, taskId)
     if (res.success) {
       const store = useRecordStore.getState()
       await store.fetchScheduledTasks()
