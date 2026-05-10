@@ -77,14 +77,14 @@ export default function CoverSelector({
     : null
 
   return (
-    <div style={{ display: 'flex', gap: 24 }}>
+    <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
       {/* Left: Custom covers */}
-      <div style={{ display: 'flex', gap: 16, flexShrink: 0 }}>
+      <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
         <CoverBox
           label="横版封面"
           ratio="4:3"
-          width={180}
-          height={135}
+          width={140}
+          height={105}
           coverSrc={horizontalCover}
           fallbackSrc={selectedFrameSrc}
           onClick={() => handleClickCover('horizontal', horizontalCover, selectedFrameSrc)}
@@ -94,8 +94,8 @@ export default function CoverSelector({
         <CoverBox
           label="竖版封面"
           ratio="3:4"
-          width={101}
-          height={135}
+          width={79}
+          height={105}
           coverSrc={verticalCover}
           fallbackSrc={selectedFrameSrc}
           onClick={() => handleClickCover('vertical', verticalCover, selectedFrameSrc)}
@@ -104,18 +104,18 @@ export default function CoverSelector({
       </div>
 
       {/* Divider */}
-      <div style={{ width: 1, background: '#f0f0f0', flexShrink: 0 }} />
+      <div style={{ width: 1, background: '#f0f0f0', flexShrink: 0, alignSelf: 'stretch' }} />
 
       {/* Right: Recommended frames */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <Text strong style={{ display: 'block', marginBottom: 12 }}>智能推荐</Text>
+        <Text strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>智能推荐</Text>
         {frames.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: 24, color: '#999' }}>
-            <PictureOutlined style={{ fontSize: 24, marginBottom: 8 }} />
-            <div><Text type="secondary">上传视频后将自动推荐封面</Text></div>
+          <div style={{ textAlign: 'center', padding: 16, color: '#999' }}>
+            <PictureOutlined style={{ fontSize: 20, marginBottom: 4 }} />
+            <div><Text type="secondary" style={{ fontSize: 12 }}>上传视频后将自动推荐封面</Text></div>
           </div>
         ) : (
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 8 }}>
             {frames.map((frame, i) => (
               <div
                 key={i}
@@ -124,7 +124,7 @@ export default function CoverSelector({
                   position: 'relative',
                   flex: '1 1 0',
                   minWidth: 0,
-                  borderRadius: 8,
+                  borderRadius: 6,
                   overflow: 'hidden',
                   cursor: 'pointer',
                   border: selectedIndex === i ? '2px solid #1677ff' : '2px solid #f0f0f0',
@@ -143,15 +143,15 @@ export default function CoverSelector({
                 <div style={{
                   position: 'absolute', bottom: 0, left: 0, right: 0,
                   background: 'rgba(0,0,0,0.5)', color: '#fff',
-                  fontSize: 10, textAlign: 'center', padding: '2px 0'
+                  fontSize: 10, textAlign: 'center', padding: '1px 0'
                 }}>
                   {Math.floor(frame.timestamp / 60)}:{String(Math.floor(frame.timestamp % 60)).padStart(2, '0')}
                 </div>
                 {selectedIndex === i && (
                   <div style={{
-                    position: 'absolute', top: 4, right: 4,
+                    position: 'absolute', top: 3, right: 3,
                     background: '#1677ff', color: '#fff',
-                    fontSize: 10, padding: '1px 6px', borderRadius: 4
+                    fontSize: 10, padding: '1px 5px', borderRadius: 3
                   }}>
                     已选
                   </div>
@@ -201,7 +201,7 @@ function CoverBox({
 
   return (
     <div style={{ textAlign: 'center' }}>
-      <div style={{ fontSize: 12, color: '#666', marginBottom: 6 }}>
+      <div style={{ fontSize: 11, color: '#666', marginBottom: 4 }}>
         {label} ({ratio})
       </div>
       <div

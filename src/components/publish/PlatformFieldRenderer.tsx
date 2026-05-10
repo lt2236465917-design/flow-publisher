@@ -77,14 +77,14 @@ export default function PlatformFieldRenderer({ field, value, onChange }: Props)
   // Checkbox renders its own label, so skip the Form.Item label
   if (field.type === 'checkbox') {
     return (
-      <Form.Item>
+      <Form.Item style={{ marginBottom: 8 }}>
         {renderField()}
       </Form.Item>
     )
   }
 
   return (
-    <Form.Item label={field.label} required={field.required}>
+    <Form.Item label={field.label} required={field.required} style={{ marginBottom: 8 }}>
       {renderField()}
     </Form.Item>
   )

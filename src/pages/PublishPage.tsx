@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useState, useMemo } from 'react'
-import { Typography, Button, Space, Card, Progress, List, Tag, message, Alert } from 'antd'
+import { Typography, Button, Space, Card, Progress, List, Tag, message, Alert, Divider } from 'antd'
 import { SendOutlined, ReloadOutlined, ClockCircleOutlined, VideoCameraOutlined } from '@ant-design/icons'
 import VideoDropZone from '@/components/publish/VideoDropZone'
 import VideoPreview from '@/components/publish/VideoPreview'
@@ -60,12 +60,13 @@ export default function PublishPage() {
       return
     }
 
-    // Convert cover data URL to temp file
+    // Convert cover data URL to temp file (new cover format + legacy fallback)
+    const coverSource = form.cover.horizontal_4_3 || form.horizontalCover
     let coverFilePath: string | undefined
-    if (form.horizontalCover) {
+    if (coverSource) {
       const coverRes = await window.electron.ipcRenderer.invoke<{ filePath: string }>(
         IPC_CHANNELS.FILE_DATA_URL_TO_TEMP,
-        form.horizontalCover
+        coverSource
       )
       if (coverRes.success && coverRes.data?.filePath) {
         coverFilePath = coverRes.data.filePath
@@ -87,6 +88,21 @@ export default function PublishPage() {
       accountIds[platformId] = account.id
     }
 
+    // Build merged content per platform (shared + platform overrides)
+    const sharedContent = {
+      title: form.title,
+      description: form.description,
+      hashtags: form.hashtags,
+      mentions: form.mentions,
+      location: form.location,
+      collection: form.collection,
+      visibility: form.visibility,
+      publishTime: form.publishTime,
+      originalDeclaration: form.originalDeclaration,
+      cover: form.cover,
+      declarations: form.declarations
+    }
+
     const params = {
       platforms: form.platforms,
       accountIds,
@@ -97,6 +113,7 @@ export default function PublishPage() {
       hashtags: form.hashtags,
       declarations: form.declarations,
       platformOverrides: form.platformOverrides,
+      sharedContent,
       scheduledAt
     }
 
@@ -130,16 +147,15 @@ export default function PublishPage() {
 
   return (
     <div style={{ maxWidth: 900, margin: '0 auto', padding: '0 16px' }}>
-      <Title level={3}>内容发布</Title>
-      <Paragraph type="secondary">
-        上传视频，编辑内容，一键发布到多个平台
-        <Text type="secondary" style={{ fontSize: 12, marginLeft: 12 }}>
-          Ctrl+O 选择视频 | Ctrl+Enter 发布 | Ctrl+R 重置
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <Title level={4} style={{ margin: 0 }}>内容发布</Title>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          Ctrl+O 选择 | Ctrl+Enter 发布 | Ctrl+R 重置
         </Text>
-      </Paragraph>
+      </div>
 
-      {/* Step 1: Video Selection */}
-      <Card title="1. 选择视频" style={{ marginBottom: 16 }}>
+      {/* Section 1: Video Selection */}
+      <Card size="small" title="选择视频" style={{ marginBottom: 8 }}>
         <VideoDropZone video={flow.video} onSelect={flow.selectVideo} onDropFile={flow.handleDropFile} />
         {flow.video && (
           <VideoPreview
@@ -149,9 +165,11 @@ export default function PublishPage() {
         )}
       </Card>
 
-      {/* Step 2: Cover Selection */}
+      {/* Section 2: Edit (Cover + Content + Platforms + Customization) */}
       {flow.video && (
-        <Card title="2. 选择封面" style={{ marginBottom: 16 }}>
+        <Card size="small" title="编辑内容" style={{ marginBottom: 8 }}>
+          {/* Cover */}
+          <Text strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>封面设置</Text>
           <CoverSelector
             frames={flow.frames}
             loading={flow.extractingFrames}
@@ -162,82 +180,55 @@ export default function PublishPage() {
             onPickImage={handlePickImage}
             onCropConfirm={(type, croppedDataUrl) => {
               if (type === 'horizontal') {
-                flow.updateForm({ horizontalCover: croppedDataUrl })
+                flow.updateForm({
+                  horizontalCover: croppedDataUrl,
+                  cover: { ...flow.form.cover, horizontal_4_3: croppedDataUrl }
+                })
               } else {
-                flow.updateForm({ verticalCover: croppedDataUrl })
+                flow.updateForm({
+                  verticalCover: croppedDataUrl,
+                  cover: { ...flow.form.cover, vertical_3_4: croppedDataUrl }
+                })
               }
             }}
           />
-        </Card>
-      )}
 
-      {/* Step 3: Edit Content */}
-      {flow.video && (
-        <Card title="3. 编辑内容" style={{ marginBottom: 16 }}>
+          <Divider style={{ margin: '12px 0' }} />
+
+          {/* Content */}
+          <Text strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>基本信息</Text>
           <UnifiedEditor
             form={flow.form}
             onChange={flow.updateForm}
           />
-        </Card>
-      )}
 
-      {/* Step 4: Select Platforms */}
-      {flow.video && (
-        <Card title="4. 选择平台" style={{ marginBottom: 16 }}>
+          <Divider style={{ margin: '12px 0' }} />
+
+          {/* Platform selection */}
+          <Text strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>发布平台</Text>
           <PublishTargetPicker
             value={flow.form.platforms}
             onChange={(platforms: PlatformId[]) => flow.updateForm({ platforms })}
           />
-        </Card>
-      )}
 
-      {/* Step 5: Platform Customization */}
-      {flow.video && flow.form.platforms.length > 0 && (
-        <Card title="5. 平台定制" style={{ marginBottom: 16 }}>
-          <PlatformCustomizer
-            platforms={flow.form.platforms}
-            overrides={flow.form.platformOverrides}
-            onChange={(platformOverrides) => flow.updateForm({ platformOverrides })}
-          />
-        </Card>
-      )}
-
-      {/* Step 6: Publish */}
-      {flow.video && (
-        <Card title="6. 发布" style={{ marginBottom: 16 }}>
-          <Space>
-            <Button
-              type="primary"
-              size="large"
-              icon={<SendOutlined />}
-              loading={hasActiveTasks}
-              disabled={!flow.video || flow.form.platforms.length === 0 || hasActiveTasks}
-              onClick={flow.publish}
-            >
-              立即发布
-            </Button>
-            <Button
-              size="large"
-              icon={<ClockCircleOutlined />}
-              disabled={!flow.video || flow.form.platforms.length === 0 || hasActiveTasks}
-              onClick={() => setScheduleModalOpen(true)}
-            >
-              定时发布
-            </Button>
-            <Button
-              icon={<ReloadOutlined />}
-              onClick={flow.resetForm}
-              disabled={hasActiveTasks}
-            >
-              重置
-            </Button>
-          </Space>
+          {/* Platform customization */}
+          {flow.form.platforms.length > 0 && (
+            <>
+              <Divider style={{ margin: '12px 0' }} />
+              <Text strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>平台定制</Text>
+              <PlatformCustomizer
+                platforms={flow.form.platforms}
+                overrides={flow.form.platformOverrides}
+                onChange={(platformOverrides) => flow.updateForm({ platformOverrides })}
+              />
+            </>
+          )}
         </Card>
       )}
 
       {/* No video selected — show guidance */}
       {!flow.video && (
-        <Card>
+        <Card size="small">
           <EmptyState
             icon={<VideoCameraOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />}
             title="选择要发布的视频"
@@ -248,46 +239,81 @@ export default function PublishPage() {
         </Card>
       )}
 
-      {/* Task Progress */}
-      {flow.tasks.length > 0 && (
-        <Card title="发布进度" style={{ marginBottom: 16 }}>
-          <List
-            dataSource={flow.tasks}
-            renderItem={(task) => {
-              const info = PLATFORMS[task.platform]
-              return (
-                <List.Item>
-                  <div style={{ width: '100%' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                      <Space>
-                        <Text strong>{info?.icon} {info?.displayName}</Text>
-                        <Tag color={
-                          task.status === 'done' ? 'success' :
-                          task.status === 'error' ? 'error' : 'processing'
-                        }>
-                          {task.status === 'uploading' ? '上传中' :
-                           task.status === 'submitting' ? '提交中' :
-                           task.status === 'done' ? '已完成' :
-                           task.status === 'error' ? '失败' : task.status}
-                        </Tag>
-                      </Space>
-                      <Text type="secondary">{task.progress}%</Text>
-                    </div>
-                    <Progress
-                      percent={task.progress}
-                      status={task.status === 'error' ? 'exception' : task.status === 'done' ? 'success' : 'active'}
-                      showInfo={false}
-                    />
-                    {task.error && (
-                      <Alert type="error" message={task.error} style={{ marginTop: 8 }} banner />
-                    )}
-                  </div>
-                </List.Item>
-              )
-            }}
-          />
-          {allDone && (
-            <Alert type="success" message="所有平台发布完成！" showIcon style={{ marginTop: 16 }} />
+      {/* Section 3: Publish + Progress */}
+      {flow.video && (
+        <Card size="small" style={{ marginBottom: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <Space>
+              <Button
+                type="primary"
+                icon={<SendOutlined />}
+                loading={hasActiveTasks}
+                disabled={!flow.video || flow.form.platforms.length === 0 || hasActiveTasks}
+                onClick={flow.publish}
+              >
+                立即发布
+              </Button>
+              <Button
+                icon={<ClockCircleOutlined />}
+                disabled={!flow.video || flow.form.platforms.length === 0 || hasActiveTasks}
+                onClick={() => setScheduleModalOpen(true)}
+              >
+                定时发布
+              </Button>
+              <Button
+                icon={<ReloadOutlined />}
+                onClick={flow.resetForm}
+                disabled={hasActiveTasks}
+              >
+                重置
+              </Button>
+            </Space>
+          </div>
+
+          {/* Task Progress (inline, only when active) */}
+          {flow.tasks.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <List
+                size="small"
+                dataSource={flow.tasks}
+                renderItem={(task) => {
+                  const info = PLATFORMS[task.platform]
+                  return (
+                    <List.Item style={{ padding: '4px 0' }}>
+                      <div style={{ width: '100%' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
+                          <Space size={4}>
+                            <Text strong style={{ fontSize: 13 }}>{info?.icon} {info?.displayName}</Text>
+                            <Tag color={
+                              task.status === 'done' ? 'success' :
+                              task.status === 'error' ? 'error' : 'processing'
+                            } style={{ fontSize: 11 }}>
+                              {task.status === 'uploading' ? '上传中' :
+                               task.status === 'submitting' ? '提交中' :
+                               task.status === 'done' ? '已完成' :
+                               task.status === 'error' ? '失败' : task.status}
+                            </Tag>
+                          </Space>
+                          <Text type="secondary" style={{ fontSize: 12 }}>{task.progress}%</Text>
+                        </div>
+                        <Progress
+                          percent={task.progress}
+                          status={task.status === 'error' ? 'exception' : task.status === 'done' ? 'success' : 'active'}
+                          showInfo={false}
+                          size="small"
+                        />
+                        {task.error && (
+                          <Alert type="error" message={task.error} style={{ marginTop: 4 }} banner />
+                        )}
+                      </div>
+                    </List.Item>
+                  )
+                }}
+              />
+              {allDone && (
+                <Alert type="success" message="所有平台发布完成！" showIcon style={{ marginTop: 8 }} />
+              )}
+            </div>
           )}
         </Card>
       )}

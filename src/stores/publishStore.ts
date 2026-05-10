@@ -6,17 +6,31 @@ import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import { ipcInvoke } from '@/utils/ipc'
 
 const DEFAULT_FORM: PublishFormData = {
+  // Shared fields (方案A 通用区)
   title: '',
   description: '',
   hashtags: [],
+  mentions: [],
+  location: null,
+  collection: null,
+  visibility: 'public',
+  publishTime: { mode: 'now', scheduled_at: null },
+  originalDeclaration: false,
+  cover: {
+    horizontal_4_3: null,
+    vertical_3_4: null,
+    recommended: []
+  },
+  declarations: [],
+  // Platform selection
+  platforms: [],
+  platformOverrides: {} as Record<PlatformId, Record<string, unknown>>,
+  // Legacy fields (UI compatibility)
   coverPath: null,
   coverFrameIndex: null,
   coverRatio: '4:3',
   horizontalCover: null,
-  verticalCover: null,
-  declarations: [],
-  platforms: [],
-  platformOverrides: {} as Record<PlatformId, Record<string, unknown>>
+  verticalCover: null
 }
 
 export const usePublishStore = create<PublishState>((set) => ({

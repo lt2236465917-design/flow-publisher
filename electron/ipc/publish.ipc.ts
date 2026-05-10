@@ -103,7 +103,7 @@ export function registerPublishIpcHandlers(): void {
     }
   })
 
-  // Submit content (title, description, etc.)
+  // Submit content (title, description, etc.) — merged shared + platform overrides
   ipcMain.handle(IPC_CHANNELS.PUBLISH_SUBMIT, async (_event, params: {
     recordId: string
     platformId: string
@@ -111,6 +111,13 @@ export function registerPublishIpcHandlers(): void {
       title: string
       description: string
       hashtags: string[]
+      mentions?: string[]
+      location?: { name: string; lat: number; lng: number; poi_id: string } | null
+      collection?: string | null
+      visibility?: 'public' | 'friends' | 'private'
+      publishTime?: { mode: 'now' | 'scheduled'; scheduled_at: string | null }
+      originalDeclaration?: boolean
+      cover?: { horizontal_4_3: string | null; vertical_3_4: string | null; recommended: string[] }
       coverPath?: string
       declarations: string[]
       platformFields?: Record<string, unknown>

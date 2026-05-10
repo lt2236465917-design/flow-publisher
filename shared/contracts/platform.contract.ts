@@ -11,12 +11,50 @@ export interface VideoConstraints {
   supportedFormats: string[]
 }
 
+/** Location data for POI mapping */
+export interface LocationData {
+  name: string
+  lat: number
+  lng: number
+  poi_id: string
+}
+
+/** Cover data with multi-ratio support (方案A 1.3) */
+export interface CoverData {
+  horizontal_4_3: string | null
+  vertical_3_4: string | null
+  recommended: string[]
+}
+
+/** Publish time config (方案A 1.9) */
+export interface PublishTimeConfig {
+  mode: 'now' | 'scheduled'
+  scheduled_at: string | null
+}
+
+/**
+ * PlatformPublishContent — merged content passed to platform adapters.
+ * Contains shared fields + platform-specific overrides already merged.
+ * Per 方案A+方案C: shared fields are the base, overrides take precedence.
+ */
 export interface PlatformPublishContent {
+  // Shared fields (方案A 通用区)
   title: string
   description: string
   hashtags: string[]
-  coverPath?: string
+  mentions?: string[]
+  location?: LocationData | null
+  collection?: string | null
+  visibility?: 'public' | 'friends' | 'private'
+  publishTime?: PublishTimeConfig
+  originalDeclaration?: boolean
+  cover?: CoverData
   declarations: string[]
+
+  // Cover file path (resolved from cover.horizontal_4_3 or legacy)
+  coverPath?: string
+
+  // Platform-specific fields (方案A 平台独有)
   platformFields?: Record<string, unknown>
 }
 

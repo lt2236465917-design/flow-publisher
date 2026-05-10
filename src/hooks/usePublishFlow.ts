@@ -6,6 +6,7 @@ import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import { ipcInvoke } from '@/utils/ipc'
 import { toChineseMessage } from '@/utils/errorMessages'
 import type { PlatformId } from '@/constants/platforms'
+import type { PublishFormData } from '@/types/publish.types'
 
 interface PublishProgressData {
   recordId: string
@@ -18,6 +19,33 @@ interface AccountInfo {
   platform: string
   displayName: string
   sessionStatus: string
+}
+
+/**
+ * Merge shared form fields with platform-specific overrides.
+ * Per 方案C: shared fields are the base, platform overrides take precedence.
+ * Only fields explicitly set in overrides are replaced; others inherit from shared.
+ */
+function mergeSharedWithOverrides(
+  form: PublishFormData,
+  platformId: PlatformId
+): Record<string, unknown> {
+  const shared: Record<string, unknown> = {
+    title: form.title,
+    description: form.description,
+    hashtags: form.hashtags,
+    mentions: form.mentions,
+    location: form.location,
+    collection: form.collection,
+    visibility: form.visibility,
+    publishTime: form.publishTime,
+    originalDeclaration: form.originalDeclaration,
+    cover: form.cover,
+    declarations: form.declarations
+  }
+
+  const overrides = form.platformOverrides[platformId] || {}
+  return { ...shared, ...overrides }
 }
 
 export function usePublishFlow() {
@@ -71,12 +99,23 @@ export function usePublishFlow() {
 
   const selectFrameAsCover = useCallback((index: number | null) => {
     if (index === null) {
-      store.updateForm({ coverFrameIndex: null, horizontalCover: null, verticalCover: null })
+      store.updateForm({
+        coverFrameIndex: null,
+        horizontalCover: null,
+        verticalCover: null,
+        cover: { horizontal_4_3: null, vertical_3_4: null, recommended: [] }
+      })
       return
     }
     const frames = usePublishStore.getState().frames
     if (index >= 0 && index < frames.length) {
-      store.updateForm({ coverFrameIndex: index, coverPath: null, horizontalCover: null, verticalCover: null })
+      store.updateForm({
+        coverFrameIndex: index,
+        coverPath: null,
+        horizontalCover: null,
+        verticalCover: null,
+        cover: { horizontal_4_3: null, vertical_3_4: null, recommended: [] }
+      })
     }
   }, [store])
 
@@ -111,12 +150,13 @@ export function usePublishFlow() {
     })
     if (!confirmed) return
 
-    // Convert cover data URL to temp file for platform adapters
+    // Convert cover data URL to temp file (new cover format + legacy fallback)
+    const coverSource = form.cover.horizontal_4_3 || form.horizontalCover
     let coverFilePath: string | undefined
-    if (form.horizontalCover) {
+    if (coverSource) {
       const coverRes = await ipcInvoke<{ filePath: string }>(
         IPC_CHANNELS.FILE_DATA_URL_TO_TEMP,
-        form.horizontalCover
+        coverSource
       )
       if (coverRes.success && coverRes.data?.filePath) {
         coverFilePath = coverRes.data.filePath
@@ -160,16 +200,16 @@ export function usePublishFlow() {
 
         const recordId = uploadRes.data!.recordId
 
+        // Merge shared fields with platform overrides (方案A+方案C pattern)
+        const mergedContent = mergeSharedWithOverrides(form, platformId)
+
         store.updateTask(task.id, { status: 'submitting', progress: 90 })
         const submitRes = await ipcInvoke<{ recordId: string }>(IPC_CHANNELS.PUBLISH_SUBMIT, {
           recordId,
           platformId,
           content: {
-            title: form.title,
-            description: form.description,
-            hashtags: form.hashtags,
+            ...mergedContent,
             coverPath: coverFilePath,
-            declarations: form.declarations,
             platformFields: form.platformOverrides[platformId as PlatformId] || {}
           }
         })

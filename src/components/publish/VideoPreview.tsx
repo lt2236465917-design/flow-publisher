@@ -34,8 +34,8 @@ export default function VideoPreview({ video, onRemove }: Props) {
   const videoSrc = `local-file://${video.filePath.replace(/\\/g, '/')}`
 
   return (
-    <div style={{ display: 'flex', gap: 16, padding: 16, background: '#fafafa', borderRadius: 8, border: '1px solid #f0f0f0' }}>
-      <div style={{ position: 'relative', width: 240, minHeight: 135, borderRadius: 6, overflow: 'hidden', background: '#000', flexShrink: 0 }}>
+    <div style={{ display: 'flex', gap: 12, padding: 10, background: '#fafafa', borderRadius: 8, border: '1px solid #f0f0f0', marginTop: 8 }}>
+      <div style={{ position: 'relative', width: 160, minHeight: 90, borderRadius: 6, overflow: 'hidden', background: '#000', flexShrink: 0 }}>
         <video
           ref={videoRef}
           src={videoSrc}
@@ -44,25 +44,26 @@ export default function VideoPreview({ video, onRemove }: Props) {
           preload="metadata"
         />
       </div>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minWidth: 0 }}>
         <div>
-          <Text strong style={{ fontSize: 14, wordBreak: 'break-all', display: 'block' }}>{video.fileName}</Text>
-          <Tag style={{ marginTop: 4 }}>{video.format.toUpperCase()}</Tag>
-          <Space size={8} style={{ marginTop: 8 }} wrap>
-            <Tag>{video.width}x{video.height}</Tag>
-            <Tag>{formatDuration(video.duration)}</Tag>
-            <Tag>{formatFileSize(video.fileSize)}</Tag>
-            {video.fps > 0 && <Tag>{video.fps} fps</Tag>}
+          <Text strong style={{ fontSize: 13, wordBreak: 'break-all', display: 'block' }}>{video.fileName}</Text>
+          <Space size={4} style={{ marginTop: 4 }} wrap>
+            <Tag style={{ fontSize: 11 }}>{video.format.toUpperCase()}</Tag>
+            <Tag style={{ fontSize: 11 }}>{video.width}x{video.height}</Tag>
+            <Tag style={{ fontSize: 11 }}>{formatDuration(video.duration)}</Tag>
+            <Tag style={{ fontSize: 11 }}>{formatFileSize(video.fileSize)}</Tag>
+            {video.fps > 0 && <Tag style={{ fontSize: 11 }}>{video.fps}fps</Tag>}
           </Space>
         </div>
         <Button
           type="text"
           danger
+          size="small"
           icon={<DeleteOutlined />}
           onClick={onRemove}
-          style={{ alignSelf: 'flex-start' }}
+          style={{ alignSelf: 'flex-start', padding: '0 4px' }}
         >
-          移除视频
+          移除
         </Button>
       </div>
     </div>

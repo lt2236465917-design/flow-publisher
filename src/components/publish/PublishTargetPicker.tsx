@@ -30,21 +30,20 @@ export default function PublishTargetPicker({ value, onChange }: Props) {
 
   return (
     <div>
-      <Text strong style={{ display: 'block', marginBottom: 8 }}>发布平台</Text>
       <Checkbox.Group value={value} onChange={handleChange as (v: string[]) => void}>
-        <Space direction="vertical" size={8}>
+        <Space size={16} wrap>
           {availablePlatforms.map((platformId) => {
             const info = PLATFORMS[platformId]
             const account = loggedInPlatforms.find((a) => a.platform === platformId)
             return (
               <Checkbox key={platformId} value={platformId}>
-                <Space size={8}>
-                  <Avatar size={20} style={{ background: info.color, fontSize: 12 }}>
+                <Space size={4}>
+                  <Avatar size={18} style={{ background: info.color, fontSize: 11 }}>
                     {info.icon}
                   </Avatar>
-                  <Text>{info.displayName}</Text>
+                  <Text style={{ fontSize: 13 }}>{info.displayName}</Text>
                   {account && (
-                    <Tag color="green" style={{ marginLeft: 4 }}>
+                    <Tag color="green" style={{ marginLeft: 2, fontSize: 11 }}>
                       {account.displayName}
                     </Tag>
                   )}

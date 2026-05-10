@@ -76,7 +76,7 @@ export default function PlatformCustomizer({ platforms, overrides, onChange }: P
               style={{ margin: '16px 0' }}
             />
           ) : (
-            <Form layout="vertical" style={{ maxWidth: '100%' }}>
+            <Form layout="vertical" style={{ maxWidth: '100%' }} size="small">
               {fields.map((field) => (
                 <PlatformFieldRenderer
                   key={field.name}
@@ -92,5 +92,5 @@ export default function PlatformCustomizer({ platforms, overrides, onChange }: P
     }
   })
 
-  return <Tabs items={tabItems} />
+  return <Tabs items={tabItems} size="small" />
 }

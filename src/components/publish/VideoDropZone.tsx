@@ -58,20 +58,20 @@ export default function VideoDropZone({ video, onSelect, onDropFile }: Props) {
       onClick={onSelect}
       style={{
         border: `2px dashed ${dragging ? '#1677ff' : '#d9d9d9'}`,
-        borderRadius: 12,
-        padding: '60px 40px',
+        borderRadius: 8,
+        padding: '32px 40px',
         textAlign: 'center',
         cursor: 'pointer',
         background: dragging ? '#f0f5ff' : '#fafafa',
         transition: 'border-color 0.2s, background 0.2s'
       }}
     >
-      <InboxOutlined style={{ fontSize: 48, color: dragging ? '#1677ff' : '#999', marginBottom: 16 }} />
+      <InboxOutlined style={{ fontSize: 36, color: dragging ? '#1677ff' : '#999', marginBottom: 8 }} />
       <div>
-        <Text strong style={{ fontSize: 16 }}>点击或拖拽视频文件到此处</Text>
+        <Text strong style={{ fontSize: 14 }}>点击或拖拽视频文件到此处</Text>
       </div>
-      <div style={{ marginTop: 8 }}>
-        <Text type="secondary">支持 MP4、MOV、AVI、FLV、MKV、WMV 格式</Text>
+      <div style={{ marginTop: 4 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>支持 MP4、MOV、AVI、FLV、MKV、WMV 格式</Text>
       </div>
     </div>
   )
