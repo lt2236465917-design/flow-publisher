@@ -7,10 +7,10 @@ import { getAdapter } from '../services/platform-adapters/PlatformAdapterRegistr
 import { registerAdapter } from '../services/platform-adapters/PlatformAdapterRegistry'
 import { existsSync, rmSync } from 'fs'
 import { join } from 'path'
-import { DouyinAdapter } from '../services/platform-adapters/douyin/DouyinAdapter'
-import { XhsAdapter } from '../services/platform-adapters/xiaohongshu/XhsAdapter'
-import { WcAdapter } from '../services/platform-adapters/wechat-channels/WcAdapter'
-import { KsAdapter } from '../services/platform-adapters/kuaishou/KsAdapter'
+import { DouyinApiAdapter } from '../services/platform-adapters/douyin/DouyinApiAdapter'
+import { XhsApiAdapter } from '../services/platform-adapters/xiaohongshu/XhsApiAdapter'
+import { WcApiAdapter } from '../services/platform-adapters/wechat-channels/WcApiAdapter'
+import { KsApiAdapter } from '../services/platform-adapters/kuaishou/KsApiAdapter'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import type { LoginResult } from '../services/platform-adapters/IPlatformAdapter'
 import { logger } from '../utils/logger'
@@ -28,10 +28,10 @@ function clearBrowserProfile(platformId: string): void {
 }
 
 // Register all adapters
-registerAdapter(new DouyinAdapter())
-registerAdapter(new XhsAdapter())
-registerAdapter(new WcAdapter())
-registerAdapter(new KsAdapter())
+registerAdapter(new DouyinApiAdapter())
+registerAdapter(new XhsApiAdapter())
+registerAdapter(new WcApiAdapter())
+registerAdapter(new KsApiAdapter())
 
 export function registerAccountIpcHandlers(): void {
   // List all accounts

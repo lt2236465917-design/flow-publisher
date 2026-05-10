@@ -17,6 +17,8 @@ export const IPC_CHANNELS = {
   PUBLISH_PROGRESS: 'publish:progress',
   PUBLISH_LIST_RECORDS: 'publish:list-records',
   PUBLISH_GET_PLATFORM_FIELDS: 'publish:get-platform-fields',
+  PUBLISH_GET_MODE: 'publish:get-mode',
+  PUBLISH_SET_MODE: 'publish:set-mode',
 
   // Scheduler
   SCHEDULE_CREATE: 'schedule:create',

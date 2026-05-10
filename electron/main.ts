@@ -10,6 +10,7 @@ import { registerAnalyticsIpcHandlers } from './ipc/analytics.ipc'
 import { getScheduledTaskRepository } from './services/database'
 import { TaskQueue } from './services/scheduler/TaskQueue'
 import { PublishScheduler } from './services/scheduler/PublishScheduler'
+import { getSignService } from './services/sign/SignService'
 import { logger } from './utils/logger'
 
 const isDev = !app.isPackaged
@@ -98,6 +99,7 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   scheduler?.stop()
+  getSignService().dispose().catch((err) => logger.error('SignService dispose error:', err))
   closeDatabase()
   if (process.platform !== 'darwin') {
     app.quit()

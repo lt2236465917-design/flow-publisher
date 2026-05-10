@@ -35,4 +35,26 @@ export class CookieStore {
     saveDatabase()
     logger.info(`Cookies cleared for account ${accountId}`)
   }
+
+  /**
+   * Export cookies as a string for HTTP API calls.
+   * Returns the cookie string in "name=value; name2=value2" format.
+   */
+  getCookieString(accountId: string): string | null {
+    const repo = getAccountRepository()
+    const account = repo.getById(accountId)
+    if (!account || !account.cookies || account.cookies === '[]') {
+      return null
+    }
+    try {
+      const cookies: Cookie[] = JSON.parse(account.cookies)
+      if (cookies.length === 0) return null
+      const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ')
+      logger.info(`Cookie string exported for account ${accountId}, length: ${cookieStr.length}`)
+      return cookieStr
+    } catch (err) {
+      logger.error(`Failed to export cookie string for account ${accountId}:`, err)
+      return null
+    }
+  }
 }

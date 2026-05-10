@@ -1,26 +1,30 @@
 import { useState, useEffect } from 'react'
-import { Form, Input, Switch, Button, message, Tag } from 'antd'
-import { SaveOutlined, FolderOpenOutlined } from '@ant-design/icons'
+import { Form, Input, Switch, Button, message, Tag, Radio, Alert } from 'antd'
+import { SaveOutlined, FolderOpenOutlined, ThunderboltOutlined, DesktopOutlined } from '@ant-design/icons'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
+import { ipcInvoke } from '@/utils/ipc'
 
 interface AppSettings {
   ffmpegPath: string
   proxy: string
   autoBackup: boolean
   logLevel: string
+  publishMode: 'api' | 'browser'
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
   ffmpegPath: '',
   proxy: '',
   autoBackup: true,
-  logLevel: 'info'
+  logLevel: 'info',
+  publishMode: 'api'
 }
 
 export default function SettingsPage() {
   const [form] = Form.useForm()
   const [appVersion, setAppVersion] = useState('')
   const [saving, setSaving] = useState(false)
+  const [publishMode, setPublishMode] = useState<'api' | 'browser'>('api')
 
   useEffect(() => {
     const saved = localStorage.getItem('app-settings')
@@ -28,12 +32,21 @@ export default function SettingsPage() {
       try {
         const settings = JSON.parse(saved) as AppSettings
         form.setFieldsValue(settings)
+        setPublishMode(settings.publishMode || 'api')
       } catch {
         form.setFieldsValue(DEFAULT_SETTINGS)
       }
     } else {
       form.setFieldsValue(DEFAULT_SETTINGS)
     }
+
+    // Load current publish mode from main process
+    ipcInvoke<{ mode: string }>(IPC_CHANNELS.PUBLISH_GET_MODE).then((res) => {
+      if (res.success && res.data) {
+        setPublishMode(res.data.mode as 'api' | 'browser')
+        form.setFieldValue('publishMode', res.data.mode)
+      }
+    }).catch(() => {})
 
     window.electron.ipcRenderer.invoke<{ version: string }>(IPC_CHANNELS.APP_GET_VERSION).then((res) => {
       if (res.success && res.data) {
@@ -47,6 +60,13 @@ export default function SettingsPage() {
     try {
       const values = form.getFieldsValue()
       localStorage.setItem('app-settings', JSON.stringify(values))
+
+      // Update publish mode in main process
+      if (values.publishMode) {
+        await ipcInvoke(IPC_CHANNELS.PUBLISH_SET_MODE, values.publishMode)
+        setPublishMode(values.publishMode)
+      }
+
       message.success('设置已保存')
     } finally {
       setSaving(false)
@@ -115,6 +135,39 @@ export default function SettingsPage() {
           <Form.Item label="日志级别" name="logLevel">
             <Input style={{ width: 200 }} placeholder="debug / info / warn / error" />
           </Form.Item>
+
+          <Form.Item label="发布模式" name="publishMode" tooltip="API 模式更快更稳定，浏览器模式兼容性更好">
+            <Radio.Group
+              onChange={(e) => setPublishMode(e.target.value)}
+              style={{ display: 'flex', flexDirection: 'column', gap: 8 }}
+            >
+              <Radio.Button value="api" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <ThunderboltOutlined /> API 模式（推荐）
+              </Radio.Button>
+              <Radio.Button value="browser" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <DesktopOutlined /> 浏览器模式
+              </Radio.Button>
+            </Radio.Group>
+          </Form.Item>
+
+          {publishMode === 'api' && (
+            <Alert
+              type="success"
+              showIcon
+              message="API 模式"
+              description="直接调用平台接口发布，速度快 10 倍+，稳定性更高，封号风险低。"
+              style={{ marginBottom: 16, borderRadius: 8 }}
+            />
+          )}
+          {publishMode === 'browser' && (
+            <Alert
+              type="warning"
+              showIcon
+              message="浏览器模式"
+              description="通过浏览器自动化发布，兼容性好但速度较慢，可能被平台检测。"
+              style={{ marginBottom: 16, borderRadius: 8 }}
+            />
+          )}
 
           <Form.Item style={{ marginBottom: 0 }}>
             <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} loading={saving}>
