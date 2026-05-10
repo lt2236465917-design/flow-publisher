@@ -19,6 +19,7 @@ export interface HttpRequestOptions {
   timeout?: number
   responseType?: 'json' | 'arraybuffer' | 'blob' | 'text'
   onUploadProgress?: (progress: { loaded: number; total: number; percent: number }) => void
+  noCookie?: boolean
 }
 
 export interface ApiResponse<T = unknown> {
@@ -49,7 +50,7 @@ export class HttpClient {
       params: options.params,
       headers: {
         'User-Agent': REALISTIC_UA,
-        Cookie: this.context.cookies,
+        ...(options.noCookie ? {} : { Cookie: this.context.cookies }),
         ...options.headers
       },
       timeout: options.timeout || DEFAULT_TIMEOUT,
@@ -86,9 +87,10 @@ export class HttpClient {
   async get<T = unknown>(
     url: string,
     params?: Record<string, unknown>,
-    headers?: Record<string, string>
+    headers?: Record<string, string>,
+    noCookie?: boolean
   ): Promise<ApiResponse<T>> {
-    return this.request<T>({ method: 'GET', url, params, headers })
+    return this.request<T>({ method: 'GET', url, params, headers, noCookie })
   }
 
   async post<T = unknown>(

@@ -6,7 +6,9 @@
       "Bash(cnpm install *)",
       "Bash(npm run *)",
       "Bash(npx tsc *)",
-      "Bash(npx electron-vite *)"
+      "Bash(npx electron-vite *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)"
     ]
   }
 }

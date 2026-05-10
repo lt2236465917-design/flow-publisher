@@ -9,7 +9,7 @@ import { DOUYIN_SELECTORS } from './douyin-selectors'
 import { logger } from '../../../utils/logger'
 import { delay } from '../../../utils/delays'
 import { existsSync, statSync, createReadStream, readFileSync } from 'fs'
-import { createHash } from 'crypto'
+import { createHash, createPrivateKey, createSign, randomBytes } from 'crypto'
 
 // Douyin Creator API endpoints (reverse-engineered from yixiaoer)
 const API = {
@@ -320,21 +320,9 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     const stsAuth = await this.getUploadAuth(client)
     logger.info(`[douyin] STS credentials obtained, AccessKeyID: ${stsAuth.AccessKeyID.substring(0, 10)}...`)
 
-    // Step 2: Call ApplyUploadInner with AWS4 signing to get upload address
-    const userId = this.extractUserId(client.getCookieString())
-    const sessionToken = require('crypto').randomBytes(16).toString('hex')
-
-    const applyParams = {
-      Action: 'ApplyUploadInner',
-      Version: '2020-11-19',
-      SpaceName: 'pgc',
-      FileType: 'video',
-      IsInner: 1,
-      FileSize: stats.size.toString(),
-      app_id: '3062',
-      user_id: userId,
-      s: sessionToken
-    }
+    // Step 2: Call ApplyUploadInner to get upload address (plain HTTP, no AWS4 signing)
+    const userId = await this.getCreatorUserId(client)
+    const sessionToken = randomBytes(16).toString('hex')
 
     let uploadNodes: Array<{
       UploadHost?: string
@@ -343,30 +331,6 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     }> = []
 
     try {
-      // Use AWS4 signing for VOD API
-      const aws4 = require('aws4')
-      const opts = {
-        host: 'vod.bytedanceapi.com',
-        path: `/?${new URLSearchParams(applyParams).toString()}`,
-        method: 'GET',
-        region: 'cn-north-1',
-        service: 'vod',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          Referer: 'https://studio.ixigua.com/'
-        }
-      }
-
-      const signedOpts = aws4.sign(opts, {
-        accessKeyId: stsAuth.AccessKeyID,
-        secretAccessKey: stsAuth.SecretAccessKey,
-        sessionToken: stsAuth.SessionToken
-      })
-
-      // Remove host from headers (it's added automatically)
-      const signHeaders = { ...signedOpts.headers }
-      delete signHeaders.host
-
       const vodResponse = await client.get<{
         Result?: {
           InnerUploadAddress?: {
@@ -380,9 +344,22 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         status_code?: number
         status_msg?: string
       }>(
-        `https://vod.bytedanceapi.com/?${new URLSearchParams(applyParams).toString()}`,
-        undefined,
-        signHeaders as Record<string, string>
+        'https://vod.bytedanceapi.com',
+        {
+          Action: 'ApplyUploadInner',
+          Version: '2020-11-19',
+          SpaceName: 'pgc',
+          FileType: 'video',
+          IsInner: 1,
+          FileSize: stats.size.toString(),
+          app_id: '3062',
+          user_id: userId,
+          s: sessionToken
+        },
+        {
+          Referer: 'https://studio.ixigua.com/'
+        },
+        true // noCookie: VOD API rejects requests with douyin.com cookies
       )
 
       const innerAddress = vodResponse.data?.Result?.InnerUploadAddress
@@ -426,6 +403,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           Referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page'
         },
         timeout: 300_000,
+        noCookie: true,
         onUploadProgress: (progress) => {
           const percent = 10 + Math.round(progress.percent * 0.7)
           onProgress?.({ percent, stage: `上传中 ${progress.percent}%` })
@@ -439,41 +417,34 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       throw new Error(`视频上传失败: ${err}`)
     }
 
-    // Step 4: Commit the upload
+    // Step 4: Commit the upload (plain HTTP with X-Amz-Content-Sha256)
     try {
       const commitParams = {
         SessionKey: node.SessionKey || '',
         Functions: []
       }
 
-      const commitSignedOpts = aws4.sign({
-        host: 'vod.bytedanceapi.com',
-        path: '/?',
-        method: 'POST',
-        region: 'cn-north-1',
-        service: 'vod',
-        body: JSON.stringify(commitParams),
-        headers: {
-          'Content-Type': 'application/json',
-          Referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page'
-        }
-      }, {
-        accessKeyId: stsAuth.AccessKeyID,
-        secretAccessKey: stsAuth.SecretAccessKey,
-        sessionToken: stsAuth.SessionToken
-      })
-
-      const commitHeaders = { ...commitSignedOpts.headers }
-      delete commitHeaders.host
-
       const commitResponse = await client.request<{
         Result?: { Results?: Array<{ Vid: string }> }
         status_code?: number
       }>({
         method: 'POST',
-        url: `https://vod.bytedanceapi.com/?Action=CommitUploadInner&Version=2020-11-19&SpaceName=pgc&app_id=3062&user_id=${userId}`,
+        url: 'https://vod.bytedanceapi.com',
         data: commitParams,
-        headers: commitHeaders as Record<string, string>
+        params: {
+          Action: 'CommitUploadInner',
+          Version: '2020-11-19',
+          SpaceName: 'pgc',
+          app_id: '3062',
+          user_id: userId
+        },
+        headers: {
+          'Content-Type': 'application/json',
+          Referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page',
+          Origin: 'https://creator.douyin.com',
+          'X-Amz-Content-Sha256': createHash('sha256').update(JSON.stringify(commitParams)).digest('hex')
+        },
+        noCookie: true
       })
 
       const vid = commitResponse.data?.Result?.Results?.[0]?.Vid
@@ -653,13 +624,37 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
   }
 
   /**
-   * Extract user_id from cookie string.
+   * Get creator user ID from Douyin creator API.
+   * This is the numeric uid needed for VOD API calls.
    */
-  private extractUserId(cookie: string): string {
-    const match = cookie.match(/passport_csrf_token=([^;]+)/)
-    const uidMatch = cookie.match(/passport_auth_ssocnct=([^;]+)/)
+  private async getCreatorUserId(client: HttpClient): Promise<string> {
+    try {
+      const response = await client.get<{
+        status_code?: number
+        user?: { uid?: string; id_str?: string; sec_uid?: string }
+      }>(
+        API.userInfo,
+        undefined,
+        {
+          referer: 'https://creator.douyin.com/creator-micro/home',
+          Origin: 'https://creator.douyin.com'
+        }
+      )
+      const uid = response.data?.user?.uid || response.data?.user?.id_str || ''
+      logger.info(`[douyin] Creator user ID: ${uid}`)
+      return uid || '0'
+    } catch (err) {
+      logger.warn('[douyin] Failed to get creator user ID, falling back to cookie extraction:', err)
+      return this.extractUserIdFallback(client.getCookieString())
+    }
+  }
+
+  /**
+   * Fallback: extract user_id from cookie string.
+   */
+  private extractUserIdFallback(cookie: string): string {
     const sidMatch = cookie.match(/sessionid=([^;]+)/)
-    return uidMatch?.[1] || sidMatch?.[1] || '0'
+    return sidMatch?.[1] || '0'
   }
 
   /**
@@ -716,7 +711,6 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       const timestamp = Math.floor(Date.now() / 1000)
       const payload = `ticket=${ticket}&path=/web/api/media/aweme/create_v2/&timestamp=${timestamp}`
 
-      const { createPrivateKey, createSign } = require('crypto')
       const key = createPrivateKey(privateKeyPem)
       const signer = createSign('SHA256')
       signer.update(payload)
