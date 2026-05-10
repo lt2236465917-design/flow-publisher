@@ -7,17 +7,15 @@ import { XHS_URLS } from './xhs-urls'
 import { XHS_SELECTORS } from './xhs-selectors'
 import { logger } from '../../../utils/logger'
 import { delay } from '../../../utils/delays'
-import { existsSync, statSync, createReadStream } from 'fs'
-import { basename } from 'path'
+import { existsSync, statSync, createReadStream, readFileSync } from 'fs'
 import { createHash } from 'crypto'
-import FormData from 'form-data'
 
-// Xiaohongshu Creator API endpoints
+// Xiaohongshu Creator API endpoints (reverse-engineered from yixiaoer)
 const API = {
-  userInfo: 'https://edith.xiaohongshu.com/api/sns/web/v1/user/selfinfo',
-  videoUpload: 'https://edith.xiaohongshu.com/api/sns/web/v1/upload/video',
-  noteCreate: 'https://edith.xiaohongshu.com/api/sns/web/v1/feed/publish',
-  draftSave: 'https://edith.xiaohongshu.com/api/sns/web/v1/feed/draft/save'
+  userInfo: 'https://creator.xiaohongshu.com/api/galaxy/user/info',
+  uploadPermit: 'https://creator.xiaohongshu.com/api/media/v1/upload/web/permit',
+  noteCreate: 'https://edith.xiaohongshu.com/web_api/sns/v2/note',
+  personalInfo: 'https://creator.xiaohongshu.com/api/galaxy/creator/home/personal_info'
 }
 
 export class XhsApiAdapter extends BasePlatformAdapter {
@@ -120,7 +118,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         API.userInfo,
         undefined,
         {
-          referer: XHS_URLS.creatorHome,
+          referer: 'https://creator.xiaohongshu.com/publish/publish',
           Origin: 'https://creator.xiaohongshu.com'
         }
       )
@@ -135,7 +133,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     client: HttpClient,
     filePath: string,
     onProgress?: (p: UploadProgress) => void
-  ): Promise<void> {
+  ): Promise<string> {
     if (!existsSync(filePath)) {
       throw new Error(`视频文件不存在: ${filePath}`)
     }
@@ -147,55 +145,65 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       throw new Error(`视频文件过大: ${fileSizeMB.toFixed(1)}MB，最大 ${constraints.maxFileSizeMB}MB`)
     }
 
-    onProgress?.({ percent: 5, stage: '正在准备上传...' })
+    onProgress?.({ percent: 5, stage: '正在获取上传凭证...' })
 
-    const fileMd5 = await this.computeFileMd5(filePath)
-    logger.info(`[xiaohongshu] File MD5: ${fileMd5}, size: ${stats.size}`)
+    // Step 1: Get upload permit
+    const permitResponse = await client.get<{
+      data?: {
+        uploadAddr?: string
+        fileIds?: string[]
+        token?: string
+      }
+    }>(
+      `${API.uploadPermit}?biz_name=spectrum&scene=video&file_count=1&version=1&source=web`,
+      undefined,
+      {
+        referer: 'https://creator.xiaohongshu.com/publish/publish',
+        Authorization: ''
+      }
+    )
+
+    const permit = permitResponse.data?.data
+    if (!permit?.uploadAddr || !permit?.fileIds?.length) {
+      throw new Error('获取上传凭证失败')
+    }
+
+    logger.info(`[xiaohongshu] Upload permit: host=${permit.uploadAddr}, fileId=${permit.fileIds[0]}`)
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
-    const fileName = basename(filePath)
-    const formData = new FormData()
-    formData.append('file', createReadStream(filePath), {
-      filename: fileName,
-      contentType: 'video/mp4',
-      knownLength: stats.size
-    })
-    formData.append('file_name', fileName)
-    formData.append('file_size', stats.size.toString())
-    formData.append('file_md5', fileMd5)
+    // Step 2: Upload video to XHS storage
+    const uploadUrl = `https://${permit.uploadAddr}/${permit.fileIds[0]}`
+    const fileBuffer = readFileSync(filePath)
 
     try {
-      const response = await client.uploadFile<{
-        success: boolean
-        data?: { video_id: string }
-        msg?: string
-      }>(
-        API.videoUpload,
-        formData,
-        {
-          referer: XHS_URLS.publish,
-          Origin: 'https://creator.xiaohongshu.com'
+      await client.request({
+        method: 'POST',
+        url: uploadUrl,
+        data: fileBuffer,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'x-cos-security-token': permit.token || '',
+          referer: 'https://creator.xiaohongshu.com/'
         },
-        (progress) => {
+        timeout: 300_000,
+        onUploadProgress: (progress) => {
           const percent = 10 + Math.round(progress.percent * 0.7)
           onProgress?.({ percent, stage: `上传中 ${progress.percent}%` })
         }
-      )
+      })
 
-      if (!response.data.success) {
-        throw new Error(`视频上传失败: ${response.data.msg || '未知错误'}`)
-      }
-
-      logger.info(`[xiaohongshu] Video uploaded, video_id: ${response.data.data?.video_id}`)
+      logger.info(`[xiaohongshu] Video uploaded to storage`)
       onProgress?.({ percent: 80, stage: '视频上传完成' })
     } catch (err) {
-      logger.error('[xiaohongshu] uploadVideoAPI error:', err)
-      throw err
+      logger.error('[xiaohongshu] Upload error:', err)
+      throw new Error(`视频上传失败: ${err}`)
     }
+
+    return permit.fileIds[0]
   }
 
-  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload): Promise<void> {
+  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {
     const params: Record<string, unknown> = {
       title: payload.title,
       desc: payload.description || '',
@@ -203,7 +211,8 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       at_user_list: [],
       topic_tag_list: payload.hashtags.map((tag) => ({ name: tag })),
       post_time: '',
-      private_type: 0
+      private_type: 0,
+      video_id: videoId || ''
     }
 
     // Add cover if provided
@@ -230,7 +239,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         API.noteCreate,
         params,
         {
-          referer: XHS_URLS.publish,
+          referer: 'https://creator.xiaohongshu.com/publish/publish',
           Origin: 'https://creator.xiaohongshu.com',
           'Content-Type': 'application/json'
         }

@@ -186,7 +186,7 @@ export function usePublishFlow() {
         }
 
         store.updateTask(task.id, { status: 'uploading', progress: 0 })
-        const uploadRes = await ipcInvoke<{ recordId: string }>(IPC_CHANNELS.PUBLISH_UPLOAD, {
+        const uploadRes = await ipcInvoke<{ recordId: string; videoId?: string }>(IPC_CHANNELS.PUBLISH_UPLOAD, {
           accountId: account.id,
           platformId,
           filePath: video.filePath
@@ -199,6 +199,7 @@ export function usePublishFlow() {
         }
 
         const recordId = uploadRes.data!.recordId
+        const videoId = uploadRes.data!.videoId
 
         // Merge shared fields with platform overrides (方案A+方案C pattern)
         const mergedContent = mergeSharedWithOverrides(form, platformId)
@@ -207,6 +208,7 @@ export function usePublishFlow() {
         const submitRes = await ipcInvoke<{ recordId: string }>(IPC_CHANNELS.PUBLISH_SUBMIT, {
           recordId,
           platformId,
+          videoId,
           content: {
             ...mergedContent,
             coverPath: coverFilePath,

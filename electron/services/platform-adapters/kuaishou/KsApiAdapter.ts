@@ -7,16 +7,15 @@ import { KS_URLS } from './ks-urls'
 import { KS_SELECTORS } from './ks-selectors'
 import { logger } from '../../../utils/logger'
 import { delay } from '../../../utils/delays'
-import { existsSync, statSync, createReadStream } from 'fs'
-import { basename } from 'path'
+import { existsSync, statSync, createReadStream, readFileSync } from 'fs'
 import { createHash } from 'crypto'
-import FormData from 'form-data'
 
-// Kuaishou Creator API endpoints
+// Kuaishou Creator API endpoints (reverse-engineered from yixiaoer)
 const API = {
-  userInfo: 'https://cp.kuaishou.com/rest/kd/upload/user/info',
-  videoUpload: 'https://cp.kuaishou.com/rest/kd/upload/video',
-  publish: 'https://cp.kuaishou.com/rest/kd/feed/publish'
+  userInfo: 'https://cp.kuaishou.com/rest/cp/creator/pc/home/infoV2',
+  uploadPre: 'https://cp.kuaishou.com/rest/cp/works/v2/video/pc/upload/pre',
+  uploadFinish: 'https://cp.kuaishou.com/rest/cp/works/v2/video/pc/upload/finish',
+  submit: 'https://cp.kuaishou.com/rest/cp/works/v2/video/pc/submit'
 }
 
 export class KsApiAdapter extends BasePlatformAdapter {
@@ -109,14 +108,27 @@ export class KsApiAdapter extends BasePlatformAdapter {
 
   // --- API mode (new) ---
 
+  /**
+   * Extract kuaishou.web.cp.api_ph from cookie.
+   */
+  private extractApiPh(cookie: string): string {
+    const match = cookie.match(/kuaishou\.web\.cp\.api_ph=([^;]+)/)
+    return match ? match[1] : require('crypto').randomUUID().replace(/-/g, '')
+  }
+
   async checkSessionAPI(client: HttpClient): Promise<boolean> {
     try {
-      const response = await client.get<{ result: number; data?: { user_name: string } }>(
+      const cookie = client.getCookieString()
+      const apiPh = this.extractApiPh(cookie)
+      const body = JSON.stringify({ 'kuaishou.web.cp.api_ph': apiPh })
+
+      const response = await client.post<{ result: number; data?: { user_name: string } }>(
         API.userInfo,
-        undefined,
+        body,
         {
-          referer: KS_URLS.creatorHome,
-          Origin: 'https://cp.kuaishou.com'
+          referer: 'https://cp.kuaishou.com/article/publish/video',
+          Origin: 'https://cp.kuaishou.com',
+          'Content-Type': 'application/json'
         }
       )
       return response.data?.result === 1 && !!response.data?.data
@@ -130,7 +142,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
     client: HttpClient,
     filePath: string,
     onProgress?: (p: UploadProgress) => void
-  ): Promise<void> {
+  ): Promise<string> {
     if (!existsSync(filePath)) {
       throw new Error(`视频文件不存在: ${filePath}`)
     }
@@ -142,97 +154,118 @@ export class KsApiAdapter extends BasePlatformAdapter {
       throw new Error(`视频文件过大: ${fileSizeMB.toFixed(1)}MB，最大 ${constraints.maxFileSizeMB}MB`)
     }
 
-    onProgress?.({ percent: 5, stage: '正在准备上传...' })
+    const cookie = client.getCookieString()
+    const apiPh = this.extractApiPh(cookie)
 
-    const fileMd5 = await this.computeFileMd5(filePath)
-    logger.info(`[kuaishou] File MD5: ${fileMd5}, size: ${stats.size}`)
+    onProgress?.({ percent: 5, stage: '正在获取上传凭证...' })
+
+    // Step 1: Get upload pre-info (upload token + domain)
+    const preBody = JSON.stringify({ uploadType: 'video', 'kuaishou.web.cp.api_ph': apiPh })
+    const preResponse = await client.post<{
+      result: number
+      data?: {
+        uploadToken?: string
+        uploadDomain?: string
+        photoId?: string
+      }
+    }>(
+      API.uploadPre,
+      preBody,
+      {
+        referer: 'https://cp.kuaishou.com/article/publish/video',
+        'Content-Type': 'application/json'
+      }
+    )
+
+    if (preResponse.data?.result !== 1 || !preResponse.data?.data?.uploadToken) {
+      throw new Error('获取上传凭证失败')
+    }
+
+    const { uploadToken, uploadDomain, photoId } = preResponse.data.data
+    logger.info(`[kuaishou] Upload pre: token=${uploadToken?.substring(0, 10)}..., domain=${uploadDomain}`)
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
-    const fileName = basename(filePath)
-    const formData = new FormData()
-    formData.append('file', createReadStream(filePath), {
-      filename: fileName,
-      contentType: 'video/mp4',
-      knownLength: stats.size
-    })
-    formData.append('file_name', fileName)
-    formData.append('file_size', stats.size.toString())
-    formData.append('file_md5', fileMd5)
+    // Step 2: Upload video fragment
+    const fileBuffer = readFileSync(filePath)
+    const uploadHost = uploadDomain || 'upload.kuaishouzt.com'
+    const fragmentUrl = `https://${uploadHost}/api/upload/fragment?upload_token=${uploadToken}&fragment_id=0`
 
     try {
-      const response = await client.uploadFile<{
-        result: number
-        data?: { video_id: string }
-        error_msg?: string
-      }>(
-        API.videoUpload,
-        formData,
-        {
-          referer: KS_URLS.publish,
-          Origin: 'https://cp.kuaishou.com'
+      await client.request({
+        method: 'POST',
+        url: fragmentUrl,
+        data: fileBuffer,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          referer: 'https://cp.kuaishou.com/article/publish/video'
         },
-        (progress) => {
+        timeout: 300_000,
+        onUploadProgress: (progress) => {
           const percent = 10 + Math.round(progress.percent * 0.7)
           onProgress?.({ percent, stage: `上传中 ${progress.percent}%` })
         }
-      )
-
-      if (response.data.result !== 1) {
-        throw new Error(`视频上传失败: ${response.data.error_msg || '未知错误'}`)
-      }
-
-      logger.info(`[kuaishou] Video uploaded, video_id: ${response.data.data?.video_id}`)
-      onProgress?.({ percent: 80, stage: '视频上传完成' })
+      })
     } catch (err) {
-      logger.error('[kuaishou] uploadVideoAPI error:', err)
-      throw err
+      logger.error('[kuaishou] Fragment upload error:', err)
+      throw new Error(`视频上传失败: ${err}`)
     }
+
+    // Step 3: Finish upload
+    const finishUrl = `https://${uploadHost}/api/upload/complete?upload_token=${uploadToken}&fragment_count=1`
+    await client.get(finishUrl, undefined, {
+      referer: 'https://cp.kuaishou.com/article/publish/video'
+    })
+
+    logger.info(`[kuaishou] Video uploaded, photoId: ${photoId}`)
+    onProgress?.({ percent: 80, stage: '视频上传完成' })
+
+    return photoId || uploadToken
   }
 
-  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload): Promise<void> {
-    const params: Record<string, unknown> = {
-      caption: payload.title + (payload.description ? '\n' + payload.description : ''),
-      topic_ids: payload.hashtags,
-      privacy_type: 0,
-      disable_comment: false
-    }
+  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {
+    const cookie = client.getCookieString()
+    const apiPh = this.extractApiPh(cookie)
 
-    // Add cover if provided
-    if (payload.coverPath && existsSync(payload.coverPath)) {
-      params.cover_path = payload.coverPath
+    const params: Record<string, unknown> = {
+      photoId: videoId || '',
+      caption: payload.title + (payload.description ? '\n' + payload.description : ''),
+      topicIds: payload.hashtags,
+      privacyType: 0,
+      disableComment: false,
+      'kuaishou.web.cp.api_ph': apiPh
     }
 
     // Add platform-specific fields
     if (payload.platformFields) {
       if (payload.platformFields.challenges) {
-        params.challenge_ids = payload.platformFields.challenges
+        params.topicIds = [...(params.topicIds as string[]), ...(payload.platformFields.challenges as string[])]
       }
       if (payload.platformFields.localVisible) {
-        params.privacy_type = 1 //同城可见
+        params.privacyType = 1
       }
     }
 
     try {
       const response = await client.post<{
         result: number
-        data?: { photo_id: string }
+        data?: { photoId: string }
         error_msg?: string
       }>(
-        API.publish,
-        params,
+        API.submit,
+        JSON.stringify(params),
         {
-          referer: KS_URLS.publish,
+          referer: 'https://cp.kuaishou.com/article/publish/video',
           Origin: 'https://cp.kuaishou.com',
           'Content-Type': 'application/json'
         }
       )
 
-      if (response.data.result !== 1) {
-        throw new Error(`内容提交失败: ${response.data.error_msg || '未知错误'}`)
+      if (response.data?.result !== 1) {
+        throw new Error(`内容提交失败: ${response.data?.error_msg || '未知错误'}`)
       }
 
-      logger.info(`[kuaishou] Content submitted, photo_id: ${response.data.data?.photo_id}`)
+      logger.info(`[kuaishou] Content submitted, photoId: ${response.data?.data?.photoId}`)
     } catch (err) {
       logger.error('[kuaishou] submitContentAPI error:', err)
       throw err

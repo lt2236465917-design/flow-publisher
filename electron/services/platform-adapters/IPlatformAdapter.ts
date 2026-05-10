@@ -48,7 +48,7 @@ export interface IPlatformAdapter {
   getPlatformFields?(): PlatformFieldDefinition[]
 
   // Publish — API mode (new, HTTP-based)
-  uploadVideoAPI?(client: HttpClient, filePath: string, onProgress?: (p: UploadProgress) => void): Promise<void>
-  submitContentAPI?(client: HttpClient, payload: SubmitContentPayload): Promise<void>
+  uploadVideoAPI?(client: HttpClient, filePath: string, onProgress?: (p: UploadProgress) => void): Promise<string | void>
+  submitContentAPI?(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void>
   checkSessionAPI?(client: HttpClient): Promise<boolean>
 }

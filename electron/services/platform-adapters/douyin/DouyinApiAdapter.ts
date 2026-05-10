@@ -8,20 +8,19 @@ import { DOUYIN_URLS } from './douyin-urls'
 import { DOUYIN_SELECTORS } from './douyin-selectors'
 import { logger } from '../../../utils/logger'
 import { delay } from '../../../utils/delays'
-import { existsSync, statSync, createReadStream } from 'fs'
-import { basename } from 'path'
+import { existsSync, statSync, createReadStream, readFileSync } from 'fs'
 import { createHash } from 'crypto'
-import FormData from 'form-data'
 
-// Douyin Creator API endpoints
+// Douyin Creator API endpoints (reverse-engineered from yixiaoer)
 const API = {
   userInfo: 'https://creator.douyin.com/aweme/v1/creator/user/info/',
-  videoUpload: 'https://creator.douyin.com/aweme/v1/video/upload/',
-  videoCreate: 'https://creator.douyin.com/aweme/v1/video/create/',
-  pollUpload: 'https://creator.douyin.com/aweme/v1/video/upload/poll/',
-  draftSave: 'https://creator.douyin.com/aweme/v1/video/draft/save/',
+  pcUserInfo: 'https://creator.douyin.com/aweme/v1/creator/pc/user/info/',
+  csrfToken: 'https://creator.douyin.com/web/api/media/aweme/create/',
+  uploadAuth: 'https://studio.ixigua.com/api/upload/getAuthKey/',
+  awemeCreate: 'https://creator.douyin.com/web/api/media/aweme/create_v2/',
   collections: 'https://creator.douyin.com/aweme/v1/collection/list/',
-  poiSearch: 'https://creator.douyin.com/aweme/v1/poi/recommend/'
+  poiSearch: 'https://creator.douyin.com/aweme/v1/poi/recommend/',
+  vodCommit: 'https://vod.bytedanceapi.com'
 }
 
 const COMMON_PARAMS = {
@@ -224,11 +223,86 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     }
   }
 
+  /**
+   * Get CSRF token required for upload operations.
+   * Sends a HEAD request to the aweme/create endpoint with CSRF headers.
+   */
+  private async getCsrfToken(client: HttpClient): Promise<string> {
+    try {
+      // Use GET with special headers to trigger CSRF token response
+      const response = await client.get<unknown>(
+        API.csrfToken,
+        undefined,
+        {
+          referer: 'https://creator.douyin.com/content/upload',
+          'x-secsdk-csrf-request': '1',
+          'x-secsdk-csrf-version': '1.2.7'
+        }
+      )
+      // Extract token from x-ware-csrf-token header
+      const tokenHeader = response.headers?.['x-ware-csrf-token'] || ''
+      const token = tokenHeader.split(',')[1] || tokenHeader || ''
+      logger.info(`[douyin] CSRF token obtained: ${token ? 'yes' : 'no'}`)
+      return token
+    } catch (err) {
+      logger.warn('[douyin] getCsrfToken error:', err)
+      return ''
+    }
+  }
+
+  /**
+   * Get upload auth credentials from Xigua Studio API.
+   * Returns STS credentials for ByteDance VOD service.
+   *
+   * Response: { data: { uploadToken: { AccessKeyID, SecretAccessKey, SessionToken } } }
+   */
+  private async getUploadAuth(client: HttpClient): Promise<{
+    AccessKeyID: string
+    SecretAccessKey: string
+    SessionToken: string
+  }> {
+    const params = encodeURIComponent(JSON.stringify({ type: 'video', isLandscape: true }))
+    const url = `${API.uploadAuth}?params=${params}`
+
+    const response = await client.get<{
+      data?: {
+        uploadToken?: {
+          AccessKeyID?: string
+          AccessKeyId?: string
+          SecretAccessKey?: string
+          SessionToken?: string
+        }
+      }
+    }>(
+      url,
+      undefined,
+      {
+        Accept: 'application/json, text/plain, */*',
+        referer: 'https://studio.ixigua.com/upload?from=post_article',
+        'x-secsdk-csrf-token': 'DOWNGRADE'
+      }
+    )
+
+    const token = response.data?.data?.uploadToken
+    logger.info(`[douyin] uploadAuth response keys: ${Object.keys(response.data?.data || {}).join(', ')}`)
+
+    if (!token?.AccessKeyID && !token?.AccessKeyId) {
+      logger.error('[douyin] uploadAuth missing credentials:', JSON.stringify(response.data).substring(0, 300))
+      throw new Error('获取上传凭证失败：服务器未返回认证信息')
+    }
+
+    return {
+      AccessKeyID: token.AccessKeyID || token.AccessKeyId || '',
+      SecretAccessKey: token.SecretAccessKey || '',
+      SessionToken: token.SessionToken || ''
+    }
+  }
+
   async uploadVideoAPI(
     client: HttpClient,
     filePath: string,
     onProgress?: (p: UploadProgress) => void
-  ): Promise<void> {
+  ): Promise<string> {
     if (!existsSync(filePath)) {
       throw new Error(`视频文件不存在: ${filePath}`)
     }
@@ -240,118 +314,320 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       throw new Error(`视频文件过大: ${fileSizeMB.toFixed(1)}MB，最大 ${constraints.maxFileSizeMB}MB`)
     }
 
-    onProgress?.({ percent: 5, stage: '正在准备上传...' })
+    onProgress?.({ percent: 5, stage: '正在获取上传凭证...' })
 
-    // Step 1: Compute file MD5 for deduplication
-    const fileMd5 = await this.computeFileMd5(filePath)
-    logger.info(`[douyin] File MD5: ${fileMd5}, size: ${stats.size}`)
+    // Step 1: Get STS credentials from Douyin
+    const stsAuth = await this.getUploadAuth(client)
+    logger.info(`[douyin] STS credentials obtained, AccessKeyID: ${stsAuth.AccessKeyID.substring(0, 10)}...`)
+
+    // Step 2: Call ApplyUploadInner with AWS4 signing to get upload address
+    const userId = this.extractUserId(client.getCookieString())
+    const sessionToken = require('crypto').randomBytes(16).toString('hex')
+
+    const applyParams = {
+      Action: 'ApplyUploadInner',
+      Version: '2020-11-19',
+      SpaceName: 'pgc',
+      FileType: 'video',
+      IsInner: 1,
+      FileSize: stats.size.toString(),
+      app_id: '3062',
+      user_id: userId,
+      s: sessionToken
+    }
+
+    let uploadNodes: Array<{
+      UploadHost?: string
+      StoreInfos?: Array<{ StoreUri: string; Auth?: string }>
+      SessionKey?: string
+    }> = []
+
+    try {
+      // Use AWS4 signing for VOD API
+      const aws4 = require('aws4')
+      const opts = {
+        host: 'vod.bytedanceapi.com',
+        path: `/?${new URLSearchParams(applyParams).toString()}`,
+        method: 'GET',
+        region: 'cn-north-1',
+        service: 'vod',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          Referer: 'https://studio.ixigua.com/'
+        }
+      }
+
+      const signedOpts = aws4.sign(opts, {
+        accessKeyId: stsAuth.AccessKeyID,
+        secretAccessKey: stsAuth.SecretAccessKey,
+        sessionToken: stsAuth.SessionToken
+      })
+
+      // Remove host from headers (it's added automatically)
+      const signHeaders = { ...signedOpts.headers }
+      delete signHeaders.host
+
+      const vodResponse = await client.get<{
+        Result?: {
+          InnerUploadAddress?: {
+            UploadNodes?: Array<{
+              UploadHost?: string
+              StoreInfos?: Array<{ StoreUri: string; Auth?: string }>
+              SessionKey?: string
+            }>
+          }
+        }
+        status_code?: number
+        status_msg?: string
+      }>(
+        `https://vod.bytedanceapi.com/?${new URLSearchParams(applyParams).toString()}`,
+        undefined,
+        signHeaders as Record<string, string>
+      )
+
+      const innerAddress = vodResponse.data?.Result?.InnerUploadAddress
+      if (!innerAddress?.UploadNodes?.length) {
+        logger.error('[douyin] ApplyUploadInner failed:', JSON.stringify(vodResponse.data).substring(0, 500))
+        throw new Error('获取上传地址失败')
+      }
+
+      uploadNodes = innerAddress.UploadNodes
+      logger.info(`[douyin] Upload address obtained, host: ${uploadNodes[0].UploadHost}`)
+    } catch (err) {
+      logger.error('[douyin] ApplyUploadInner error:', err)
+      throw new Error(`获取上传凭证失败: ${err}`)
+    }
+
+    // Step 3: Upload video to ByteDance VOD
+    const node = uploadNodes[0]
+    const storeInfo = node.StoreInfos?.[0]
+    if (!node.UploadHost || !storeInfo?.StoreUri) {
+      throw new Error('上传地址无效')
+    }
+
+    const uploadUrl = `https://${node.UploadHost}/upload/v1/${storeInfo.StoreUri}`
+    const fileBuffer = readFileSync(filePath)
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
-    // Step 2: Upload video via multipart form
-    const fileName = basename(filePath)
-    const formData = new FormData()
-    formData.append('video', createReadStream(filePath), {
-      filename: fileName,
-      contentType: 'video/mp4',
-      knownLength: stats.size
-    })
-    formData.append('file_name', fileName)
-    formData.append('file_size', stats.size.toString())
-    formData.append('file_md5', fileMd5)
-    formData.append('source', '3')
-
-    // Sign the upload URL
-    const cookie = client.getCookieString()
-    const signedUploadUrl = await this.signUrl(API.videoUpload, cookie)
-
     try {
-      const response = await client.uploadFile<{
-        status_code: number
-        video?: { vid: string; video_id: string }
-        error?: string
-      }>(
-        signedUploadUrl,
-        formData,
-        {
-          referer: DOUYIN_URLS.publish,
-          Origin: 'https://creator.douyin.com'
+      const vodUploadResponse = await client.request<{
+        code?: number
+        message?: string
+      }>({
+        method: 'POST',
+        url: uploadUrl,
+        data: fileBuffer,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-Storage-U': userId,
+          Authorization: storeInfo.Auth || '',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          Referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page'
         },
-        (progress) => {
+        timeout: 300_000,
+        onUploadProgress: (progress) => {
           const percent = 10 + Math.round(progress.percent * 0.7)
           onProgress?.({ percent, stage: `上传中 ${progress.percent}%` })
         }
-      )
+      })
 
-      if (response.data.status_code !== 0) {
-        throw new Error(`视频上传失败: ${response.data.error || '未知错误'}`)
+      logger.info(`[douyin] Video uploaded to VOD`)
+      onProgress?.({ percent: 80, stage: '正在提交上传...' })
+    } catch (err) {
+      logger.error('[douyin] VOD upload error:', err)
+      throw new Error(`视频上传失败: ${err}`)
+    }
+
+    // Step 4: Commit the upload
+    try {
+      const commitParams = {
+        SessionKey: node.SessionKey || '',
+        Functions: []
       }
 
-      logger.info(`[douyin] Video uploaded, vid: ${response.data.video?.vid}`)
-      onProgress?.({ percent: 80, stage: '视频上传完成' })
+      const commitSignedOpts = aws4.sign({
+        host: 'vod.bytedanceapi.com',
+        path: '/?',
+        method: 'POST',
+        region: 'cn-north-1',
+        service: 'vod',
+        body: JSON.stringify(commitParams),
+        headers: {
+          'Content-Type': 'application/json',
+          Referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page'
+        }
+      }, {
+        accessKeyId: stsAuth.AccessKeyID,
+        secretAccessKey: stsAuth.SecretAccessKey,
+        sessionToken: stsAuth.SessionToken
+      })
+
+      const commitHeaders = { ...commitSignedOpts.headers }
+      delete commitHeaders.host
+
+      const commitResponse = await client.request<{
+        Result?: { Results?: Array<{ Vid: string }> }
+        status_code?: number
+      }>({
+        method: 'POST',
+        url: `https://vod.bytedanceapi.com/?Action=CommitUploadInner&Version=2020-11-19&SpaceName=pgc&app_id=3062&user_id=${userId}`,
+        data: commitParams,
+        headers: commitHeaders as Record<string, string>
+      })
+
+      const vid = commitResponse.data?.Result?.Results?.[0]?.Vid
+      logger.info(`[douyin] Upload committed, vid: ${vid}`)
+      onProgress?.({ percent: 90, stage: '视频上传完成' })
+
+      return vid || ''
     } catch (err) {
-      logger.error('[douyin] uploadVideoAPI error:', err)
-      throw err
+      logger.error('[douyin] Commit upload error:', err)
+      throw new Error(`提交上传失败: ${err}`)
     }
   }
 
-  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload): Promise<void> {
+  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {
+    const cookie = client.getCookieString()
 
-    const params: Record<string, unknown> = {
-      ...COMMON_PARAMS,
-      title: payload.title,
-      description: payload.description || '',
-      text_extra: payload.hashtags.map((tag) => ({
+    // Build the create_v2 request body (matching yixiaoer's buildPostData_v2 structure)
+    const postData: Record<string, unknown> = {
+      item: {
+        common: {
+          text: payload.description || '',
+          caption: payload.description || '',
+          item_title: payload.title || '',
+          activity: '[]',
+          text_extra: '',
+          challenges: '',
+          mentions: '',
+          hashtag_source: '',
+          hot_sentence: '',
+          visibility_type: 0,
+          download: 1,
+          timing: 0,
+          creation_id: `flow_${Date.now()}`,
+          media_type: 4,
+          video_id: videoId || '',
+          music_source: 0,
+          music_id: '',
+          music_end_time: 1000
+        },
+        cooperation: { co_info: '' },
+        cover: {
+          custom_cover_image_height: 335,
+          custom_cover_image_width: 251,
+          poster: '',
+          poster_delay: 0,
+          horizontal_custom_cover_image_uri: '',
+          horizontal_cover_tsp: 0,
+          horizontal_custom_cover_image_height: 335,
+          horizontal_custom_cover_image_width: 447,
+          cover_tools_extend_info: '',
+          cover_tools_info: ''
+        },
+        mix: {},
+        chapter: {
+          chapter: JSON.stringify({
+            chapter_abstract: '',
+            chapter_details: [],
+            chapter_type: 1,
+            chapter_tools_info: {
+              chapter_recommend_detail: [],
+              chapter_recommend_abstract: '',
+              chapter_source: 2,
+              chapter_recommend_type: -2,
+              create_date: Date.now() / 1000,
+              is_pc: '1',
+              is_pre_generated: '0',
+              is_syn: '1'
+            }
+          })
+        },
+        anchor: {},
+        sync: {
+          limit_client_keys: undefined,
+          should_sync: false,
+          sync_to_toutiao: 0
+        },
+        open_platform: {},
+        assistant: { is_preview: 0, is_post_assistant: 1 },
+        declare: { user_declare_info: '{}' }
+      }
+    }
+
+    // Build hashtags (text_extra)
+    const textExtra: Array<Record<string, unknown>> = []
+    let offset = (payload.title?.length || 0) + 1
+    for (const tag of payload.hashtags) {
+      const tagText = `#${tag} `
+      textExtra.push({
+        start: offset,
         type: 1,
+        user_id: '',
+        hashtag_id: 0,
+        end: offset + tagText.length - 1,
         hashtag_name: tag,
-        hashtag_id: '',
-        start: -1,
-        end: -1
-      })),
-      creation_id: Date.now().toString(),
-      creation_type: 1,
-      is_unicast: 0,
-      private_type: 0,
-      draft: 0,
-      source: 3
+        caption_start: 0,
+        caption_end: tagText.length
+      })
+      offset += tagText.length
     }
-
-    // Add cover if provided
-    if (payload.coverPath && existsSync(payload.coverPath)) {
-      params.cover_image_path = payload.coverPath
-    }
-
-    // Add declarations
-    if (payload.declarations.length > 0) {
-      params.protocol_list = payload.declarations
+    if (textExtra.length > 0) {
+      ;(postData.item as Record<string, unknown>).text_extra = textExtra
     }
 
     // Add platform-specific fields
     if (payload.platformFields) {
       if (payload.platformFields.collection) {
-        params.collection_id = payload.platformFields.collection
-      }
-      if (payload.platformFields.poiLocation) {
-        params.poi_info = payload.platformFields.poiLocation
+        ;(postData.item as Record<string, unknown>).collection_id = payload.platformFields.collection
       }
     }
 
+    // Add declarations
+    if (payload.declarations.length > 0) {
+      const declare = postData.item as Record<string, unknown>
+      ;(declare.declare as Record<string, unknown>).user_declare_info = JSON.stringify(
+        payload.declarations.map((d) => ({ protocol_name: d }))
+      )
+    }
+
     try {
+      // Get CSRF token
+      const csrfToken = await this.getCsrfToken(client)
+
+      // Extract bd_ticket_guard data from cookie
+      const bdTicketKey = this.extractBdTicketGuardKey(cookie)
+      const clientData = this.clientSign(cookie)
+
       // Sign the create URL
-      const cookie = client.getCookieString()
-      const signedCreateUrl = await this.signUrl(API.videoCreate, cookie, JSON.stringify(params))
+      const msToken = this.extractMsToken(cookie)
+      const queryParams = new URLSearchParams({
+        read_aid: '2906',
+        ...COMMON_PARAMS,
+        support_h265: '1',
+        msToken
+      })
+      const baseUrl = `${API.awemeCreate}?${queryParams.toString()}`
+      const signedUrl = await this.signUrl(baseUrl, cookie, JSON.stringify(postData))
 
       const response = await client.post<{
         status_code: number
         status_msg?: string
-        item?: { aweme_id: string }
+        aweme_id?: string
       }>(
-        signedCreateUrl,
-        params,
+        signedUrl,
+        JSON.stringify(postData),
         {
-          referer: DOUYIN_URLS.publish,
-          Origin: 'https://creator.douyin.com',
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'x-secsdk-csrf-token': csrfToken,
+          'bd-ticket-guard-version': '2',
+          'bd-ticket-guard-iteration-version': '1',
+          'bd-ticket-guard-web-sign-type': '0',
+          'bd-ticket-guard-ree-public-key': bdTicketKey,
+          ...(clientData ? { 'bd-ticket-guard-client-data': clientData } : {}),
+          Referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page',
+          Origin: 'https://creator.douyin.com/'
         }
       )
 
@@ -359,7 +635,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         throw new Error(`内容提交失败: ${response.data.status_msg || '未知错误'}`)
       }
 
-      logger.info(`[douyin] Content submitted, aweme_id: ${response.data.item?.aweme_id}`)
+      logger.info(`[douyin] Content submitted, aweme_id: ${response.data.aweme_id}`)
     } catch (err) {
       logger.error('[douyin] submitContentAPI error:', err)
       throw err
@@ -374,5 +650,88 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       stream.on('end', () => resolve(hash.digest('hex')))
       stream.on('error', reject)
     })
+  }
+
+  /**
+   * Extract user_id from cookie string.
+   */
+  private extractUserId(cookie: string): string {
+    const match = cookie.match(/passport_csrf_token=([^;]+)/)
+    const uidMatch = cookie.match(/passport_auth_ssocnct=([^;]+)/)
+    const sidMatch = cookie.match(/sessionid=([^;]+)/)
+    return uidMatch?.[1] || sidMatch?.[1] || '0'
+  }
+
+  /**
+   * Compute SHA-256 hex digest.
+   */
+  private sha256Hex(data: string): string {
+    return createHash('sha256').update(data).digest('hex')
+  }
+
+  /**
+   * Extract bd-ticket-guard-ree-public-key from cookie's bd_ticket_guard_client_data.
+   */
+  private extractBdTicketGuardKey(cookie: string): string {
+    try {
+      const match1 = cookie.match(/bd_ticket_guard_client_data=([^;]+)/)
+      if (match1) {
+        const decoded = Buffer.from(decodeURIComponent(match1[1]), 'base64').toString('utf-8')
+        const parsed = JSON.parse(decoded)
+        return parsed['bd-ticket-guard-ree-public-key'] || ''
+      }
+      const match2 = cookie.match(/bd_ticket_guard_client_data_v2=([^;]+)/)
+      if (match2) {
+        const decoded = Buffer.from(decodeURIComponent(match2[1]), 'base64').toString('utf-8')
+        const parsed = JSON.parse(decoded)
+        return parsed.ree_public_key || ''
+      }
+    } catch {
+      // Ignore parse errors
+    }
+    return ''
+  }
+
+  /**
+   * Generate bd-ticket-guard-client-data signature for create_v2.
+   * Uses EC private key from cookie's security-sdk fields to sign the request.
+   */
+  private clientSign(cookie: string): string {
+    try {
+      // Extract EC private key
+      const cryptMatch = cookie.match(/security-sdk\/s_sdk_crypt_sdk=([^;]+)/)
+      if (!cryptMatch) return ''
+
+      const cryptData = JSON.parse(JSON.parse(decodeURIComponent(cryptMatch[1])).data)
+      const privateKeyPem = cryptData.ec_privateKey
+
+      // Extract ticket and ts_sign
+      const protectMatch = cookie.match(/security-sdk\/s_sdk_sign_data_key\/web_protect=([^;]+)/)
+      if (!protectMatch) return ''
+
+      const protectData = JSON.parse(JSON.parse(decodeURIComponent(protectMatch[1])).data)
+      const { ticket, ts_sign } = protectData
+
+      // Sign: ticket={ticket}&path=/web/api/media/aweme/create_v2/&timestamp={ts}
+      const timestamp = Math.floor(Date.now() / 1000)
+      const payload = `ticket=${ticket}&path=/web/api/media/aweme/create_v2/&timestamp=${timestamp}`
+
+      const { createPrivateKey, createSign } = require('crypto')
+      const key = createPrivateKey(privateKeyPem)
+      const signer = createSign('SHA256')
+      signer.update(payload)
+      signer.end()
+      const reqSign = signer.sign(key, 'base64')
+
+      return Buffer.from(JSON.stringify({
+        ts_sign,
+        req_content: 'ticket,path,timestamp',
+        req_sign: reqSign,
+        timestamp
+      })).toString('base64')
+    } catch (err) {
+      logger.warn('[douyin] clientSign failed (cookie may lack security-sdk fields):', err)
+      return ''
+    }
   }
 }

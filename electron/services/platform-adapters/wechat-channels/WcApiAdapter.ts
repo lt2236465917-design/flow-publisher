@@ -7,16 +7,14 @@ import { WC_URLS } from './wc-urls'
 import { WC_SELECTORS } from './wc-selectors'
 import { logger } from '../../../utils/logger'
 import { delay } from '../../../utils/delays'
-import { existsSync, statSync, createReadStream } from 'fs'
-import { basename } from 'path'
+import { existsSync, statSync, createReadStream, readFileSync } from 'fs'
 import { createHash } from 'crypto'
-import FormData from 'form-data'
 
-// WeChat Channels API endpoints
+// WeChat Channels API endpoints (reverse-engineered from yixiaoer)
 const API = {
-  userInfo: 'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/auth',
-  videoUpload: 'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/upload',
-  publish: 'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/post'
+  authData: 'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/auth/auth_data',
+  uploadParams: 'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/helper/helper_upload_params',
+  publish: 'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/post/post_video'
 }
 
 export class WcApiAdapter extends BasePlatformAdapter {
@@ -106,7 +104,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
   async checkSessionAPI(client: HttpClient): Promise<boolean> {
     try {
       const response = await client.get<{ err_code: number; finder_user?: { nickname: string } }>(
-        API.userInfo,
+        API.authData,
         undefined,
         {
           referer: WC_URLS.home,
@@ -124,7 +122,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
     client: HttpClient,
     filePath: string,
     onProgress?: (p: UploadProgress) => void
-  ): Promise<void> {
+  ): Promise<string> {
     if (!existsSync(filePath)) {
       throw new Error(`视频文件不存在: ${filePath}`)
     }
@@ -136,64 +134,71 @@ export class WcApiAdapter extends BasePlatformAdapter {
       throw new Error(`视频文件过大: ${fileSizeMB.toFixed(1)}MB，最大 ${constraints.maxFileSizeMB}MB`)
     }
 
-    onProgress?.({ percent: 5, stage: '正在准备上传...' })
+    onProgress?.({ percent: 5, stage: '正在获取上传凭证...' })
 
-    const fileMd5 = await this.computeFileMd5(filePath)
-    logger.info(`[wechat-channels] File MD5: ${fileMd5}, size: ${stats.size}`)
+    // Step 1: Get upload params
+    const paramsResponse = await client.get<{
+      err_code: number
+      data?: {
+        upload_url?: string
+        upload_id?: string
+        media_id?: string
+      }
+    }>(
+      API.uploadParams,
+      undefined,
+      {
+        referer: 'https://channels.weixin.qq.com/platform/post',
+        Origin: 'https://channels.weixin.qq.com'
+      }
+    )
+
+    if (paramsResponse.data?.err_code !== 0 || !paramsResponse.data?.data) {
+      throw new Error('获取上传凭证失败')
+    }
+
+    const uploadData = paramsResponse.data.data
+    logger.info(`[wechat-channels] Upload params: url=${uploadData.upload_url?.substring(0, 50)}`)
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
-    const fileName = basename(filePath)
-    const formData = new FormData()
-    formData.append('file', createReadStream(filePath), {
-      filename: fileName,
-      contentType: 'video/mp4',
-      knownLength: stats.size
-    })
-    formData.append('file_name', fileName)
-    formData.append('file_size', stats.size.toString())
-    formData.append('file_md5', fileMd5)
+    // Step 2: Upload video
+    const fileBuffer = readFileSync(filePath)
 
-    try {
-      const response = await client.uploadFile<{
-        err_code: number
-        err_msg?: string
-        data?: { video_id: string }
-      }>(
-        API.videoUpload,
-        formData,
-        {
-          referer: WC_URLS.publish,
-          Origin: 'https://channels.weixin.qq.com'
-        },
-        (progress) => {
-          const percent = 10 + Math.round(progress.percent * 0.7)
-          onProgress?.({ percent, stage: `上传中 ${progress.percent}%` })
-        }
-      )
-
-      if (response.data.err_code !== 0) {
-        throw new Error(`视频上传失败: ${response.data.err_msg || '未知错误'}`)
+    if (uploadData.upload_url) {
+      try {
+        await client.request({
+          method: 'POST',
+          url: uploadData.upload_url,
+          data: fileBuffer,
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            referer: 'https://channels.weixin.qq.com/platform/post'
+          },
+          timeout: 300_000,
+          onUploadProgress: (progress) => {
+            const percent = 10 + Math.round(progress.percent * 0.7)
+            onProgress?.({ percent, stage: `上传中 ${progress.percent}%` })
+          }
+        })
+      } catch (err) {
+        logger.error('[wechat-channels] Upload error:', err)
+        throw new Error(`视频上传失败: ${err}`)
       }
-
-      logger.info(`[wechat-channels] Video uploaded, video_id: ${response.data.data?.video_id}`)
-      onProgress?.({ percent: 80, stage: '视频上传完成' })
-    } catch (err) {
-      logger.error('[wechat-channels] uploadVideoAPI error:', err)
-      throw err
     }
+
+    logger.info(`[wechat-channels] Video uploaded`)
+    onProgress?.({ percent: 80, stage: '视频上传完成' })
+
+    return uploadData.media_id || uploadData.upload_id || ''
   }
 
-  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload): Promise<void> {
+  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {
     const params: Record<string, unknown> = {
       desc: payload.title + (payload.description ? '\n' + payload.description : ''),
       topic_list: payload.hashtags.map((tag) => ({ topic_name: tag })),
-      original_flag: payload.declarations.includes('声明原创') ? 1 : 0
-    }
-
-    // Add cover if provided
-    if (payload.coverPath && existsSync(payload.coverPath)) {
-      params.cover_path = payload.coverPath
+      original_flag: payload.declarations.includes('声明原创') ? 1 : 0,
+      media_id: videoId || ''
     }
 
     // Add platform-specific fields
@@ -215,17 +220,17 @@ export class WcApiAdapter extends BasePlatformAdapter {
         API.publish,
         params,
         {
-          referer: WC_URLS.publish,
+          referer: 'https://channels.weixin.qq.com/platform/post',
           Origin: 'https://channels.weixin.qq.com',
           'Content-Type': 'application/json'
         }
       )
 
-      if (response.data.err_code !== 0) {
-        throw new Error(`内容提交失败: ${response.data.err_msg || '未知错误'}`)
+      if (response.data?.err_code !== 0) {
+        throw new Error(`内容提交失败: ${response.data?.err_msg || '未知错误'}`)
       }
 
-      logger.info(`[wechat-channels] Content submitted, feed_id: ${response.data.data?.feed_id}`)
+      logger.info(`[wechat-channels] Content submitted, feed_id: ${response.data?.data?.feed_id}`)
     } catch (err) {
       logger.error('[wechat-channels] submitContentAPI error:', err)
       throw err

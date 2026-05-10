@@ -84,30 +84,56 @@ export function registerPublishIpcHandlers(): void {
 
       logger.info(`[publish] Upload mode for ${params.platformId}: ${mode}`)
 
+      let videoId: string | undefined
+
+      // Try API mode first, fall back to browser mode on failure
       if (mode === 'api' && adapter.uploadVideoAPI) {
-        // API mode — fast, no browser needed
         const cookieStr = cookieStore.getCookieString(params.accountId)
         if (!cookieStr) {
           return { success: false, error: 'Cookie 不存在，请重新登录' }
         }
 
-        const context: CookieContext = {
-          cookies: cookieStr,
-          platform: params.platformId,
-          accountId: params.accountId
-        }
-        const client = new HttpClient(context)
+        try {
+          const context: CookieContext = {
+            cookies: cookieStr,
+            platform: params.platformId,
+            accountId: params.accountId
+          }
+          const client = new HttpClient(context)
 
-        await adapter.uploadVideoAPI(client, params.filePath, (progress) => {
-          recordRepo.updateStatus(record.id, 'uploading', progress.percent)
-          saveDatabase()
-          mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
-            recordId: record.id,
-            ...progress
+          const result = await adapter.uploadVideoAPI(client, params.filePath, (progress) => {
+            recordRepo.updateStatus(record.id, 'uploading', progress.percent)
+            saveDatabase()
+            mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
+              recordId: record.id,
+              ...progress
+            })
           })
-        })
+          videoId = typeof result === 'string' ? result : undefined
+        } catch (apiErr) {
+          logger.warn(`[publish] API mode failed for ${params.platformId}, falling back to browser mode:`, apiErr)
+
+          // Auto fallback to browser mode
+          if (adapter.uploadVideo) {
+            const progressHandler = (progress: { percent: number; stage: string }) => {
+              recordRepo.updateStatus(record.id, 'uploading', progress.percent)
+              saveDatabase()
+              mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
+                recordId: record.id,
+                ...progress
+              })
+            }
+
+            const ctx = await browserManager.getContext(params.platformId)
+            await cookieStore.loadCookies(ctx, params.accountId)
+            await adapter.uploadVideo(ctx, params.filePath, progressHandler)
+            await browserManager.close()
+          } else {
+            throw apiErr
+          }
+        }
       } else {
-        // Browser mode — legacy Playwright automation
+        // Browser mode — Playwright automation
         if (!adapter.uploadVideo) {
           return { success: false, error: `平台 ${params.platformId} 暂不支持发布` }
         }
@@ -130,7 +156,7 @@ export function registerPublishIpcHandlers(): void {
       recordRepo.updateStatus(record.id, 'uploaded', 100)
       saveDatabase()
 
-      return { success: true, data: { recordId: record.id } }
+      return { success: true, data: { recordId: record.id, videoId } }
     } catch (err) {
       logger.error('PUBLISH_UPLOAD error:', err)
       return { success: false, error: String(err) }
@@ -141,6 +167,7 @@ export function registerPublishIpcHandlers(): void {
   ipcMain.handle(IPC_CHANNELS.PUBLISH_SUBMIT, async (_event, params: {
     recordId: string
     platformId: string
+    videoId?: string
     content: {
       title: string
       description: string
@@ -182,20 +209,32 @@ export function registerPublishIpcHandlers(): void {
       })
 
       if (mode === 'api' && adapter.submitContentAPI) {
-        // API mode
         const cookieStr = cookieStore.getCookieString(record.account_id)
         if (!cookieStr) {
           return { success: false, error: 'Cookie 不存在，请重新登录' }
         }
 
-        const context: CookieContext = {
-          cookies: cookieStr,
-          platform: params.platformId,
-          accountId: record.account_id
-        }
-        const client = new HttpClient(context)
+        try {
+          const context: CookieContext = {
+            cookies: cookieStr,
+            platform: params.platformId,
+            accountId: record.account_id
+          }
+          const client = new HttpClient(context)
+          await adapter.submitContentAPI(client, params.content, params.videoId)
+        } catch (apiErr) {
+          logger.warn(`[publish] API submit failed for ${params.platformId}, falling back to browser mode:`, apiErr)
 
-        await adapter.submitContentAPI(client, params.content)
+          // Auto fallback to browser mode
+          if (adapter.submitContent) {
+            const ctx = await browserManager.getContext(params.platformId)
+            await cookieStore.loadCookies(ctx, record.account_id)
+            await adapter.submitContent(ctx, params.content)
+            await browserManager.close()
+          } else {
+            throw apiErr
+          }
+        }
       } else {
         // Browser mode
         if (!adapter.submitContent) {
