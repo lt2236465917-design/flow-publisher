@@ -17,7 +17,7 @@ export default function UnifiedEditor({ form, onChange }: Props) {
         label="标题"
         required
         rules={[{ required: true, message: '请输入标题' }]}
-        style={{ marginBottom: 8 }}
+        style={{ marginBottom: 10 }}
       >
         <Input
           value={form.title}
@@ -28,7 +28,7 @@ export default function UnifiedEditor({ form, onChange }: Props) {
         />
       </Form.Item>
 
-      <Form.Item label="描述" style={{ marginBottom: 8 }}>
+      <Form.Item label="描述" style={{ marginBottom: 10 }}>
         <TextArea
           value={form.description}
           onChange={(e) => onChange({ description: e.target.value })}
@@ -39,14 +39,14 @@ export default function UnifiedEditor({ form, onChange }: Props) {
         />
       </Form.Item>
 
-      <Form.Item label="话题标签" style={{ marginBottom: 8 }}>
+      <Form.Item label="话题标签" style={{ marginBottom: 10 }}>
         <HashtagInput
           value={form.hashtags}
           onChange={(hashtags) => onChange({ hashtags })}
         />
       </Form.Item>
 
-      <Form.Item label="声明" style={{ marginBottom: 0 }}>
+      <Form.Item label="" style={{ marginBottom: 0 }}>
         <DeclarationPicker
           value={form.declarations}
           onChange={(declarations) => onChange({ declarations })}

@@ -13,24 +13,26 @@ export default function GlobalLoading() {
       style={{
         position: 'fixed',
         top: 0,
-        left: 0,
+        left: 72,
         right: 0,
         zIndex: 9999,
-        pointerEvents: 'none'
+        pointerEvents: 'none',
       }}
     >
+      {/* Thin progress bar at top */}
       <div
         style={{
-          display: 'flex',
-          justifyContent: 'center',
-          paddingTop: 12,
-          pointerEvents: 'auto'
+          height: 2,
+          background: 'linear-gradient(90deg, transparent, #0071e3, transparent)',
+          animation: 'flow-loading-slide 1.5s ease-in-out infinite',
         }}
-      >
-        <Spin tip={currentTask.message} size="small">
-          <div style={{ width: 0, height: 0 }} />
-        </Spin>
-      </div>
+      />
+      <style>{`
+        @keyframes flow-loading-slide {
+          0% { transform: translateX(-100%); }
+          100% { transform: translateX(100%); }
+        }
+      `}</style>
     </div>
   )
 }

@@ -1,15 +1,11 @@
 import { useEffect, useState } from 'react'
-import { Typography, Row, Col, Spin, message, Card } from 'antd'
-import { LoginOutlined } from '@ant-design/icons'
+import { Spin, message } from 'antd'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORM_IDS } from '@/constants/platforms'
 import { useAccountStore } from '@/stores/accountStore'
 import { useQrCodeListener } from '@/hooks/useIpc'
 import PlatformCard from '@/components/account/PlatformCard'
 import QRLoginDialog from '@/components/account/QRLoginDialog'
-import EmptyState from '@/components/common/EmptyState'
-
-const { Title, Paragraph } = Typography
 
 export default function AccountPage() {
   const { accounts, loading, fetchAccounts, startLogin, logout, checkSession } = useAccountStore()
@@ -36,39 +32,47 @@ export default function AccountPage() {
   }
 
   const getAccount = (platformId: PlatformId) => accounts.find((a) => a.platform === platformId)
-  const hasAnyAccount = accounts.length > 0
 
   return (
-    <div>
-      <Title level={3}>账号管理</Title>
-      <Paragraph type="secondary">管理各平台登录账号（抖音、小红书、视频号、快手）</Paragraph>
+    <div style={{ maxWidth: 960, margin: '0 auto' }}>
+      {/* Page Header */}
+      <div style={{ marginBottom: 32 }}>
+        <h1
+          style={{
+            fontFamily: "'Sora', sans-serif",
+            fontSize: 28,
+            fontWeight: 700,
+            color: '#1d1d1f',
+            letterSpacing: '-0.03em',
+            marginBottom: 6,
+          }}
+        >
+          账号管理
+        </h1>
+        <p style={{ fontSize: 14, color: '#86868b', margin: 0 }}>
+          连接你的平台账号，开始跨平台发布
+        </p>
+      </div>
 
       <Spin spinning={loading}>
-        {!hasAnyAccount && !loading ? (
-          <Card style={{ marginTop: 24 }}>
-            <EmptyState
-              icon={<LoginOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />}
-              title="尚未登录任何账号"
-              description="请先登录至少一个平台账号，才能发布视频内容"
-              actionText="登录抖音"
-              onAction={() => handleLogin('douyin')}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(2, 1fr)',
+            gap: 16,
+          }}
+        >
+          {PLATFORM_IDS.map((id) => (
+            <PlatformCard
+              key={id}
+              platformId={id}
+              account={getAccount(id)}
+              onLogin={handleLogin}
+              onLogout={handleLogout}
+              onCheckSession={checkSession}
             />
-          </Card>
-        ) : (
-          <Row gutter={[24, 24]} style={{ marginTop: 24 }}>
-            {PLATFORM_IDS.map((id) => (
-              <Col key={id}>
-                <PlatformCard
-                  platformId={id}
-                  account={getAccount(id)}
-                  onLogin={handleLogin}
-                  onLogout={handleLogout}
-                  onCheckSession={checkSession}
-                />
-              </Col>
-            ))}
-          </Row>
-        )}
+          ))}
+        </div>
       </Spin>
 
       <QRLoginDialog

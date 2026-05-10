@@ -1,12 +1,10 @@
 import { useState, useEffect } from 'react'
-import { Tabs, Empty, Spin, Typography, Form } from 'antd'
+import { Tabs, Empty, Spin, Form } from 'antd'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
 import type { PlatformFieldDefinition } from '@shared/types/platform-fields'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import PlatformFieldRenderer from './PlatformFieldRenderer'
-
-const { Text } = Typography
 
 interface Props {
   platforms: PlatformId[]
@@ -66,14 +64,14 @@ export default function PlatformCustomizer({ platforms, overrides, onChange }: P
       children: (
         <div style={{ padding: '8px 0' }}>
           {isLoading ? (
-            <div style={{ textAlign: 'center', padding: 24 }}>
+            <div style={{ textAlign: 'center', padding: 32 }}>
               <Spin />
             </div>
           ) : fields.length === 0 ? (
             <Empty
               image={Empty.PRESENTED_IMAGE_SIMPLE}
               description="该平台暂无额外设置"
-              style={{ margin: '16px 0' }}
+              style={{ margin: '24px 0' }}
             />
           ) : (
             <Form layout="vertical" style={{ maxWidth: '100%' }} size="small">

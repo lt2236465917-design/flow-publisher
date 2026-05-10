@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Typography, Tabs, Table, Button, Space, Popconfirm, message } from 'antd'
+import { Tabs, Table, Button, Space, Popconfirm, message } from 'antd'
 import { DeleteOutlined, StopOutlined, FileTextOutlined, ClockCircleOutlined } from '@ant-design/icons'
 import dayjs from 'dayjs'
 import { useRecordStore } from '@/stores/recordStore'
@@ -11,8 +11,6 @@ import EmptyState from '@/components/common/EmptyState'
 import { PLATFORMS } from '@/constants/platforms'
 import type { PlatformId } from '@/constants/platforms'
 
-const { Title, Paragraph } = Typography
-
 export default function PublishRecordsPage() {
   const { records, scheduledTasks, loading, fetchRecords, fetchScheduledTasks, cancelScheduledTask, deleteScheduledTask } = useRecordStore()
 
@@ -21,10 +19,7 @@ export default function PublishRecordsPage() {
     fetchScheduledTasks()
   }, [fetchRecords, fetchScheduledTasks])
 
-  // Listen for schedule progress events
   useScheduleProgress()
-
-  // Auto-refresh scheduled tasks every 30s
   usePolling(fetchScheduledTasks, 30000, true)
 
   const handleCancel = async (taskId: string) => {
@@ -50,13 +45,13 @@ export default function PublishRecordsPage() {
       title: '平台',
       dataIndex: 'platforms',
       key: 'platforms',
-      width: 200,
+      width: 160,
       render: (platforms: string[]) => (
-        <Space size={4}>
+        <Space size={6}>
           {platforms.map((p) => {
             const info = PLATFORMS[p as PlatformId]
             return info ? (
-              <span key={p} title={info.displayName}>{info.icon}</span>
+              <span key={p} title={info.displayName} style={{ fontSize: 16 }}>{info.icon}</span>
             ) : (
               <span key={p}>{p}</span>
             )
@@ -77,7 +72,11 @@ export default function PublishRecordsPage() {
       width: 180,
       sorter: (a: { scheduledAt: string }, b: { scheduledAt: string }) =>
         dayjs(a.scheduledAt).unix() - dayjs(b.scheduledAt).unix(),
-      render: (t: string) => dayjs(t).format('YYYY年MM月DD日 HH:mm')
+      render: (t: string) => (
+        <span style={{ color: '#86868b', fontSize: 13 }}>
+          {dayjs(t).format('MM月DD日 HH:mm')}
+        </span>
+      )
     },
     {
       title: '状态',
@@ -87,9 +86,9 @@ export default function PublishRecordsPage() {
       render: (status: string) => <TaskStatusTag status={status} />
     },
     {
-      title: '操作',
+      title: '',
       key: 'actions',
-      width: 150,
+      width: 100,
       render: (_: unknown, record: { id: string; status: string }) => (
         <Space>
           {record.status === 'pending' && (
@@ -124,10 +123,10 @@ export default function PublishRecordsPage() {
   const tabItems = [
     {
       key: 'published',
-      label: `已发布 (${records.length})`,
+      label: `已发布`,
       children: records.length === 0 && !loading ? (
         <EmptyState
-          icon={<FileTextOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />}
+          icon={<FileTextOutlined />}
           title="暂无发布记录"
           description="发布视频后，记录将显示在这里"
         />
@@ -137,10 +136,10 @@ export default function PublishRecordsPage() {
     },
     {
       key: 'scheduled',
-      label: `定时任务 (${scheduledTasks.length})`,
+      label: `定时任务`,
       children: scheduledTasks.length === 0 && !loading ? (
         <EmptyState
-          icon={<ClockCircleOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />}
+          icon={<ClockCircleOutlined />}
           title="暂无定时任务"
           description="在发布页面设置定时发布后，任务将显示在这里"
         />
@@ -156,17 +155,43 @@ export default function PublishRecordsPage() {
             showTotal: (total) => `共 ${total} 条记录`
           }}
           size="middle"
-          scroll={{ x: 800 }}
+          scroll={{ x: 700 }}
         />
       )
     }
   ]
 
   return (
-    <div style={{ maxWidth: 1100, margin: '0 auto', padding: '0 16px' }}>
-      <Title level={3}>发布记录</Title>
-      <Paragraph type="secondary">查看已发布和待发布的内容记录</Paragraph>
-      <Tabs items={tabItems} defaultActiveKey="published" />
+    <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+      {/* Page Header */}
+      <div style={{ marginBottom: 28 }}>
+        <h1
+          style={{
+            fontFamily: "'Sora', sans-serif",
+            fontSize: 28,
+            fontWeight: 700,
+            color: '#1d1d1f',
+            letterSpacing: '-0.03em',
+            marginBottom: 6,
+          }}
+        >
+          发布记录
+        </h1>
+        <p style={{ fontSize: 14, color: '#86868b', margin: 0 }}>
+          查看已发布和待发布的内容记录
+        </p>
+      </div>
+
+      <div
+        style={{
+          background: '#ffffff',
+          borderRadius: 14,
+          border: '1px solid rgba(0, 0, 0, 0.06)',
+          padding: '20px 24px',
+        }}
+      >
+        <Tabs items={tabItems} defaultActiveKey="published" />
+      </div>
     </div>
   )
 }

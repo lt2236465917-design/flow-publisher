@@ -1,9 +1,7 @@
-import { Checkbox, Avatar, Typography, Tag, Space } from 'antd'
+import { Checkbox, Avatar, Space } from 'antd'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
 import { useAccountStore } from '@/stores/accountStore'
-
-const { Text } = Typography
 
 interface Props {
   value: PlatformId[]
@@ -22,8 +20,17 @@ export default function PublishTargetPicker({ value, onChange }: Props) {
 
   if (availablePlatforms.length === 0) {
     return (
-      <div style={{ padding: 16, textAlign: 'center' }}>
-        <Text type="secondary">暂无已登录的平台账号，请先到账号管理页面登录</Text>
+      <div
+        style={{
+          padding: 20,
+          textAlign: 'center',
+          background: '#fafafa',
+          borderRadius: 10,
+          fontSize: 13,
+          color: '#86868b',
+        }}
+      >
+        暂无已登录的平台账号，请先到账号管理页面登录
       </div>
     )
   }
@@ -36,19 +43,43 @@ export default function PublishTargetPicker({ value, onChange }: Props) {
             const info = PLATFORMS[platformId]
             const account = loggedInPlatforms.find((a) => a.platform === platformId)
             return (
-              <Checkbox key={platformId} value={platformId}>
-                <Space size={4}>
-                  <Avatar size={18} style={{ background: info.color, fontSize: 11 }}>
-                    {info.icon}
-                  </Avatar>
-                  <Text style={{ fontSize: 13 }}>{info.displayName}</Text>
-                  {account && (
-                    <Tag color="green" style={{ marginLeft: 2, fontSize: 11 }}>
-                      {account.displayName}
-                    </Tag>
-                  )}
-                </Space>
-              </Checkbox>
+              <div
+                key={platformId}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 14px',
+                  borderRadius: 10,
+                  border: value.includes(platformId) ? '1px solid rgba(0, 113, 227, 0.2)' : '1px solid rgba(0, 0, 0, 0.06)',
+                  background: value.includes(platformId) ? 'rgba(0, 113, 227, 0.04)' : '#fafafa',
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                <Checkbox value={platformId}>
+                  <Space size={6}>
+                    <Avatar
+                      size={22}
+                      style={{
+                        background: info.color,
+                        fontSize: 12,
+                        borderRadius: 6,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      {info.icon}
+                    </Avatar>
+                    <span style={{ fontSize: 13, fontWeight: 500, color: '#1d1d1f' }}>{info.displayName}</span>
+                    {account && (
+                      <span style={{ fontSize: 11, color: '#86868b' }}>
+                        {account.displayName}
+                      </span>
+                    )}
+                  </Space>
+                </Checkbox>
+              </div>
             )
           })}
         </Space>

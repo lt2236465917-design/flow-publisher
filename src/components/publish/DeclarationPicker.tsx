@@ -1,6 +1,4 @@
-import { Checkbox, Typography } from 'antd'
-
-const { Text } = Typography
+import { Checkbox } from 'antd'
 
 const DECLARATIONS = [
   { label: '原创声明', value: '原创声明' },
@@ -19,11 +17,24 @@ interface Props {
 export default function DeclarationPicker({ value, onChange }: Props) {
   return (
     <div>
-      <Text strong style={{ display: 'block', marginBottom: 4, fontSize: 13 }}>内容声明</Text>
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 600,
+          color: '#86868b',
+          textTransform: 'uppercase',
+          letterSpacing: '0.06em',
+          marginBottom: 10,
+        }}
+      >
+        内容声明
+      </div>
       <Checkbox.Group value={value} onChange={onChange as (v: string[]) => void}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 20px' }}>
           {DECLARATIONS.map((d) => (
-            <Checkbox key={d.value} value={d.value} style={{ fontSize: 13 }}>{d.label}</Checkbox>
+            <Checkbox key={d.value} value={d.value} style={{ fontSize: 13 }}>
+              {d.label}
+            </Checkbox>
           ))}
         </div>
       </Checkbox.Group>

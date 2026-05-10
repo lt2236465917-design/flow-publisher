@@ -1,6 +1,6 @@
-appId: com.videosync.publisher
-productName: VideoSync Publisher
-copyright: Copyright © 2026 VideoSync
+appId: com.flow.publisher
+productName: Flow
+copyright: Copyright © 2026 Flow
 directories:
   buildResources: build
 files:
@@ -10,7 +10,7 @@ files:
   - '!{.eslint*,.prettier*,tsconfig*,vitest*}'
   - out
 win:
-  executableName: video-sync-publisher
+  executableName: flow
   target:
     - target: nsis
       arch:
@@ -46,5 +46,5 @@ asarUnpack:
   - resources/**
 publish:
   provider: github
-  owner: videosync
+  owner: flow-app
   repo: publisher

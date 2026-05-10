@@ -1,4 +1,4 @@
-import { Card, Avatar, Space } from 'antd'
+import { Avatar } from 'antd'
 import { LoginOutlined, LogoutOutlined, ReloadOutlined } from '@ant-design/icons'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
@@ -18,38 +18,127 @@ export default function PlatformCard({ platformId, account, onLogin, onLogout, o
   const isLoggedIn = account?.sessionStatus === 'logged_in'
 
   return (
-    <Card
-      hoverable
-      style={{ width: 280 }}
-      actions={
-        isLoggedIn
-          ? [
-              <ReloadOutlined key="refresh" onClick={() => onCheckSession(account!.id)} />,
-              <LogoutOutlined key="logout" onClick={() => onLogout(account!.id)} />
-            ]
-          : [
-              <LoginOutlined key="login" onClick={() => onLogin(platformId)} />
-            ]
-      }
+    <div
+      style={{
+        background: '#ffffff',
+        borderRadius: 14,
+        border: '1px solid rgba(0, 0, 0, 0.06)',
+        padding: '24px 22px',
+        transition: 'all 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+        cursor: isLoggedIn ? 'default' : 'pointer',
+      }}
+      onClick={!isLoggedIn ? () => onLogin(platformId) : undefined}
+      onMouseEnter={(e) => {
+        e.currentTarget.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.06)'
+        e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.1)'
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.boxShadow = 'none'
+        e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.06)'
+      }}
     >
-      <Card.Meta
-        avatar={
-          account?.avatarUrl ? (
-            <Avatar src={account.avatarUrl} size={48} />
-          ) : (
-            <Avatar size={48} style={{ backgroundColor: platform.color, fontSize: 24 }}>
-              {platform.icon}
-            </Avatar>
-          )
-        }
-        title={
-          <Space>
-            <span>{platform.displayName}</span>
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 18 }}>
+        <Avatar
+          size={44}
+          style={{
+            background: platform.color,
+            fontSize: 20,
+            borderRadius: 12,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {platform.icon}
+        </Avatar>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
+            <span
+              style={{
+                fontFamily: "'Sora', sans-serif",
+                fontSize: 15,
+                fontWeight: 600,
+                color: '#1d1d1f',
+                letterSpacing: '-0.01em',
+              }}
+            >
+              {platform.displayName}
+            </span>
             <SessionStatusBadge status={account?.sessionStatus ?? 'not_logged_in'} />
-          </Space>
+          </div>
+          <span style={{ fontSize: 12, color: '#86868b' }}>
+            {isLoggedIn ? account?.displayName || '已登录' : '点击登录'}
+          </span>
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div
+        style={{
+          display: 'flex',
+          gap: 8,
+          paddingTop: 14,
+          borderTop: '1px solid rgba(0, 0, 0, 0.04)',
+        }}
+      >
+        {isLoggedIn ? (
+          <>
+            <ActionButton icon={<ReloadOutlined />} label="检查" onClick={() => onCheckSession(account!.id)} />
+            <ActionButton icon={<LogoutOutlined />} label="退出" onClick={() => onLogout(account!.id)} danger />
+          </>
+        ) : (
+          <ActionButton icon={<LoginOutlined />} label="登录" onClick={() => onLogin(platformId)} primary />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ActionButton({ icon, label, onClick, primary, danger }: {
+  icon: React.ReactNode
+  label: string
+  onClick: () => void
+  primary?: boolean
+  danger?: boolean
+}) {
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onClick() }}
+      style={{
+        flex: 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 6,
+        padding: '8px 0',
+        borderRadius: 8,
+        border: primary ? 'none' : '1px solid rgba(0, 0, 0, 0.08)',
+        background: primary ? '#0071e3' : 'transparent',
+        color: primary ? '#fff' : danger ? '#ff3b30' : '#86868b',
+        fontSize: 12,
+        fontWeight: 500,
+        cursor: 'pointer',
+        transition: 'all 0.2s ease',
+        fontFamily: "'DM Sans', sans-serif",
+      }}
+      onMouseEnter={(e) => {
+        if (primary) {
+          e.currentTarget.style.background = '#0077ed'
+        } else {
+          e.currentTarget.style.background = 'rgba(0, 0, 0, 0.03)'
         }
-        description={isLoggedIn ? account?.displayName || '已登录' : '点击登录'}
-      />
-    </Card>
+      }}
+      onMouseLeave={(e) => {
+        if (primary) {
+          e.currentTarget.style.background = '#0071e3'
+        } else {
+          e.currentTarget.style.background = 'transparent'
+        }
+      }}
+    >
+      {icon}
+      {label}
+    </button>
   )
 }

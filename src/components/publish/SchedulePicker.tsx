@@ -1,8 +1,6 @@
 import { useState } from 'react'
-import { Modal, DatePicker, Typography } from 'antd'
+import { Modal, DatePicker } from 'antd'
 import dayjs, { type Dayjs } from 'dayjs'
-
-const { Text } = Typography
 
 interface Props {
   open: boolean
@@ -47,7 +45,6 @@ export default function SchedulePicker({ open, onConfirm, onCancel }: Props) {
 
   return (
     <Modal
-      title="选择发布时间"
       open={open}
       onOk={handleOk}
       onCancel={() => {
@@ -57,11 +54,25 @@ export default function SchedulePicker({ open, onConfirm, onCancel }: Props) {
       okText="确认定时"
       cancelText="取消"
       okButtonProps={{ disabled: !selectedTime }}
+      title={null}
+      width={380}
     >
-      <div style={{ padding: '16px 0' }}>
-        <Text type="secondary" style={{ display: 'block', marginBottom: 16 }}>
-          定时时间需在当前时间5分钟之后
-        </Text>
+      <div style={{ padding: '8px 0' }}>
+        <div
+          style={{
+            fontFamily: "'Sora', sans-serif",
+            fontSize: 18,
+            fontWeight: 600,
+            color: '#1d1d1f',
+            letterSpacing: '-0.02em',
+            marginBottom: 4,
+          }}
+        >
+          选择发布时间
+        </div>
+        <div style={{ fontSize: 13, color: '#86868b', marginBottom: 20 }}>
+          定时时间需在当前时间 5 分钟之后
+        </div>
         <DatePicker
           showTime
           format="YYYY年MM月DD日 HH:mm"

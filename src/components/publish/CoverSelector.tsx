@@ -1,10 +1,8 @@
 import { useState } from 'react'
-import { Spin, Typography, Image, message } from 'antd'
+import { Spin, Image, message } from 'antd'
 import { PictureOutlined, UploadOutlined, SwapOutlined } from '@ant-design/icons'
 import type { VideoFrame } from '@/types/video.types'
 import CropModal from './CropModal'
-
-const { Text } = Typography
 
 interface Props {
   frames: VideoFrame[]
@@ -13,7 +11,6 @@ interface Props {
   horizontalCover: string | null
   verticalCover: string | null
   onSelectFrame: (index: number | null) => void
-  /** Opens file dialog, returns data URL of selected image */
   onPickImage: () => Promise<string | null>
   onCropConfirm: (type: 'horizontal' | 'vertical', croppedDataUrl: string) => void
 }
@@ -46,7 +43,6 @@ export default function CoverSelector({
     openCrop(target, dataUrl)
   }
 
-  // Click on cover box: crop existing image, or upload new one
   const handleClickCover = (target: 'horizontal' | 'vertical', coverSrc: string | null, frameSrc: string | null) => {
     const src = coverSrc || frameSrc
     if (src) {
@@ -66,7 +62,7 @@ export default function CoverSelector({
 
   if (loading) {
     return (
-      <div style={{ textAlign: 'center', padding: 32 }}>
+      <div style={{ textAlign: 'center', padding: 40 }}>
         <Spin tip="正在提取封面帧..." />
       </div>
     )
@@ -77,25 +73,22 @@ export default function CoverSelector({
     : null
 
   return (
-    <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-      {/* Left: Custom covers */}
-      <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
+    <div style={{ display: 'flex', gap: 20, alignItems: 'flex-start' }}>
+      {/* Custom covers */}
+      <div style={{ display: 'flex', gap: 12, flexShrink: 0 }}>
         <CoverBox
-          label="横版封面"
-          ratio="4:3"
-          width={140}
-          height={105}
+          label="横版 4:3"
+          width={148}
+          height={111}
           coverSrc={horizontalCover}
           fallbackSrc={selectedFrameSrc}
           onClick={() => handleClickCover('horizontal', horizontalCover, selectedFrameSrc)}
           onReplace={() => handleUpload('horizontal')}
         />
-
         <CoverBox
-          label="竖版封面"
-          ratio="3:4"
-          width={79}
-          height={105}
+          label="竖版 3:4"
+          width={83}
+          height={111}
           coverSrc={verticalCover}
           fallbackSrc={selectedFrameSrc}
           onClick={() => handleClickCover('vertical', verticalCover, selectedFrameSrc)}
@@ -104,15 +97,26 @@ export default function CoverSelector({
       </div>
 
       {/* Divider */}
-      <div style={{ width: 1, background: '#f0f0f0', flexShrink: 0, alignSelf: 'stretch' }} />
+      <div style={{ width: 1, background: 'rgba(0, 0, 0, 0.06)', flexShrink: 0, alignSelf: 'stretch' }} />
 
-      {/* Right: Recommended frames */}
+      {/* Recommended frames */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <Text strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>智能推荐</Text>
+        <div
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            color: '#86868b',
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+            marginBottom: 10,
+          }}
+        >
+          智能推荐
+        </div>
         {frames.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: 16, color: '#999' }}>
-            <PictureOutlined style={{ fontSize: 20, marginBottom: 4 }} />
-            <div><Text type="secondary" style={{ fontSize: 12 }}>上传视频后将自动推荐封面</Text></div>
+          <div style={{ textAlign: 'center', padding: 20, color: '#d2d2d7' }}>
+            <PictureOutlined style={{ fontSize: 24, marginBottom: 6, display: 'block' }} />
+            <div style={{ fontSize: 12, color: '#aeaeb2' }}>上传视频后将自动推荐封面</div>
           </div>
         ) : (
           <div style={{ display: 'flex', gap: 8 }}>
@@ -124,12 +128,13 @@ export default function CoverSelector({
                   position: 'relative',
                   flex: '1 1 0',
                   minWidth: 0,
-                  borderRadius: 6,
+                  borderRadius: 8,
                   overflow: 'hidden',
                   cursor: 'pointer',
-                  border: selectedIndex === i ? '2px solid #1677ff' : '2px solid #f0f0f0',
-                  transition: 'border-color 0.2s',
-                  aspectRatio: '16 / 9'
+                  border: selectedIndex === i ? '2px solid #0071e3' : '2px solid transparent',
+                  outline: selectedIndex === i ? 'none' : '1px solid rgba(0, 0, 0, 0.06)',
+                  transition: 'all 0.2s ease',
+                  aspectRatio: '16 / 9',
                 }}
               >
                 <Image
@@ -140,19 +145,37 @@ export default function CoverSelector({
                   preview={false}
                   fallback="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
                 />
-                <div style={{
-                  position: 'absolute', bottom: 0, left: 0, right: 0,
-                  background: 'rgba(0,0,0,0.5)', color: '#fff',
-                  fontSize: 10, textAlign: 'center', padding: '1px 0'
-                }}>
+                <div
+                  style={{
+                    position: 'absolute',
+                    bottom: 0,
+                    left: 0,
+                    right: 0,
+                    background: 'linear-gradient(transparent, rgba(0,0,0,0.6))',
+                    color: '#fff',
+                    fontSize: 10,
+                    textAlign: 'center',
+                    padding: '8px 0 4px',
+                    fontWeight: 500,
+                  }}
+                >
                   {Math.floor(frame.timestamp / 60)}:{String(Math.floor(frame.timestamp % 60)).padStart(2, '0')}
                 </div>
                 {selectedIndex === i && (
-                  <div style={{
-                    position: 'absolute', top: 3, right: 3,
-                    background: '#1677ff', color: '#fff',
-                    fontSize: 10, padding: '1px 5px', borderRadius: 3
-                  }}>
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 4,
+                      right: 4,
+                      background: '#0071e3',
+                      color: '#fff',
+                      fontSize: 9,
+                      fontWeight: 600,
+                      padding: '2px 6px',
+                      borderRadius: 4,
+                      letterSpacing: '0.03em',
+                    }}
+                  >
                     已选
                   </div>
                 )}
@@ -162,7 +185,6 @@ export default function CoverSelector({
         )}
       </div>
 
-      {/* Crop Modal */}
       <CropModal
         visible={cropTarget !== null}
         imageSrc={cropImageSrc}
@@ -175,10 +197,8 @@ export default function CoverSelector({
   )
 }
 
-/* Single cover box */
 function CoverBox({
   label,
-  ratio,
   width,
   height,
   coverSrc,
@@ -187,7 +207,6 @@ function CoverBox({
   onReplace
 }: {
   label: string
-  ratio: string
   width: number
   height: number
   coverSrc: string | null
@@ -197,30 +216,29 @@ function CoverBox({
 }) {
   const displaySrc = coverSrc || fallbackSrc
   const hasCustomCover = !!coverSrc
-  const hasFallback = !!fallbackSrc
 
   return (
     <div style={{ textAlign: 'center' }}>
-      <div style={{ fontSize: 11, color: '#666', marginBottom: 4 }}>
-        {label} ({ratio})
+      <div style={{ fontSize: 10, fontWeight: 600, color: '#86868b', marginBottom: 6, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+        {label}
       </div>
       <div
         style={{
           width,
           height,
-          borderRadius: 8,
+          borderRadius: 10,
           overflow: 'hidden',
-          border: '2px dashed #d9d9d9',
+          border: displaySrc ? '1px solid rgba(0, 0, 0, 0.06)' : '2px dashed rgba(0, 0, 0, 0.1)',
           cursor: 'pointer',
           position: 'relative',
-          background: '#fafafa',
+          background: displaySrc ? 'transparent' : '#fafafa',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          transition: 'border-color 0.2s'
+          transition: 'all 0.2s ease',
         }}
-        onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#1677ff' }}
-        onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#d9d9d9' }}
+        onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#0071e3' }}
+        onMouseLeave={(e) => { e.currentTarget.style.borderColor = displaySrc ? 'rgba(0, 0, 0, 0.06)' : 'rgba(0, 0, 0, 0.1)' }}
       >
         {displaySrc ? (
           <>
@@ -229,41 +247,53 @@ function CoverBox({
               onClick={onClick}
               style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block', cursor: 'pointer' }}
             />
-            {/* Bottom bar */}
-            <div style={{
-              position: 'absolute', bottom: 0, left: 0, right: 0,
-              background: 'rgba(0,0,0,0.5)', color: '#fff',
-              fontSize: 11, padding: '4px 0',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12
-            }}>
-              <span
-                onClick={onClick}
-                style={{ cursor: 'pointer' }}
-              >
-                裁剪
-              </span>
+            <div
+              style={{
+                position: 'absolute',
+                bottom: 0,
+                left: 0,
+                right: 0,
+                background: 'linear-gradient(transparent, rgba(0,0,0,0.6))',
+                color: '#fff',
+                fontSize: 11,
+                padding: '12px 0 6px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 14,
+                fontWeight: 500,
+              }}
+            >
+              <span onClick={onClick} style={{ cursor: 'pointer' }}>裁剪</span>
               <span
                 onClick={(e) => { e.stopPropagation(); onReplace() }}
                 style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 3 }}
               >
-                <SwapOutlined /> 更换
+                <SwapOutlined style={{ fontSize: 10 }} /> 更换
               </span>
             </div>
-            {/* Fallback indicator */}
-            {!hasCustomCover && hasFallback && (
-              <div style={{
-                position: 'absolute', top: 4, left: 4,
-                background: 'rgba(0,0,0,0.5)', color: '#fff',
-                fontSize: 9, padding: '1px 5px', borderRadius: 3
-              }}>
+            {!hasCustomCover && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 4,
+                  left: 4,
+                  background: 'rgba(0, 113, 227, 0.85)',
+                  color: '#fff',
+                  fontSize: 9,
+                  fontWeight: 600,
+                  padding: '1px 5px',
+                  borderRadius: 4,
+                }}
+              >
                 推荐
               </div>
             )}
           </>
         ) : (
-          <div onClick={onClick} style={{ color: '#bbb', fontSize: 12, cursor: 'pointer' }}>
-            <UploadOutlined style={{ fontSize: 20, display: 'block', marginBottom: 4 }} />
-            点击上传
+          <div onClick={onClick} style={{ color: '#d2d2d7', fontSize: 12, cursor: 'pointer' }}>
+            <UploadOutlined style={{ fontSize: 22, display: 'block', marginBottom: 6 }} />
+            <span style={{ fontSize: 11, color: '#aeaeb2' }}>点击上传</span>
           </div>
         )}
       </div>

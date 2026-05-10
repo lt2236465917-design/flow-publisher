@@ -1,3 +1,60 @@
+/* ═══════════════════════════════════════════════════════════
+   Flow Design System
+   "Simplicity is the ultimate sophistication."
+   ═══════════════════════════════════════════════════════════ */
+
+:root {
+  /* Surface */
+  --flow-bg: #ffffff;
+  --flow-surface: #f5f5f7;
+  --flow-surface-elevated: #ffffff;
+  --flow-border: rgba(0, 0, 0, 0.06);
+  --flow-border-strong: rgba(0, 0, 0, 0.1);
+  --flow-divider: rgba(0, 0, 0, 0.04);
+
+  /* Text */
+  --flow-text-primary: #1d1d1f;
+  --flow-text-secondary: #86868b;
+  --flow-text-tertiary: #aeaeb2;
+
+  /* Accent */
+  --flow-accent: #0071e3;
+  --flow-accent-hover: #0077ed;
+  --flow-accent-soft: rgba(0, 113, 227, 0.08);
+  --flow-accent-medium: rgba(0, 113, 227, 0.15);
+
+  /* Semantic */
+  --flow-success: #34c759;
+  --flow-error: #ff3b30;
+  --flow-warning: #ff9500;
+  --flow-info: #5ac8fa;
+
+  /* Typography */
+  --flow-font-heading: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
+  --flow-font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  /* Sidebar */
+  --flow-sidebar-bg: #1d1d1f;
+  --flow-sidebar-hover: rgba(255, 255, 255, 0.06);
+  --flow-sidebar-active: rgba(255, 255, 255, 0.1);
+  --flow-sidebar-text: rgba(255, 255, 255, 0.55);
+  --flow-sidebar-text-active: #ffffff;
+  --flow-sidebar-accent: #2997ff;
+
+  /* Elevation */
+  --flow-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --flow-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --flow-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.08);
+
+  /* Radius */
+  --flow-radius-sm: 6px;
+  --flow-radius-md: 10px;
+  --flow-radius-lg: 14px;
+  --flow-radius-xl: 20px;
+}
+
+/* ── Reset ─────────────────────────────────────────────── */
+
 * {
   margin: 0;
   padding: 0;
@@ -7,17 +64,19 @@
 html, body, #root {
   height: 100%;
   width: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
-    'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
-    'Noto Color Emoji';
+  font-family: var(--flow-font-body);
+  color: var(--flow-text-primary);
+  background: var(--flow-bg);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'ss01', 'ss02', 'cv01';
 }
 
-/* Custom scrollbar */
+/* ── Scrollbar (thin, elegant) ─────────────────────────── */
+
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 
 ::-webkit-scrollbar-track {
@@ -25,15 +84,16 @@ html, body, #root {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #d9d9d9;
-  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 10px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #bfbfbf;
+  background: rgba(0, 0, 0, 0.2);
 }
 
-/* Drag region for frameless window (if needed) */
+/* ── Drag region ───────────────────────────────────────── */
+
 .drag-region {
   -webkit-app-region: drag;
 }
@@ -42,31 +102,36 @@ html, body, #root {
   -webkit-app-region: no-drag;
 }
 
-/* Page transition */
+/* ── Page transitions ──────────────────────────────────── */
+
 .page-enter {
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateY(12px);
 }
 
 .page-enter-active {
   opacity: 1;
   transform: translateY(0);
-  transition: opacity 0.15s ease, transform 0.15s ease;
+  transition: opacity 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94),
+              transform 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
-/* Network status banner */
+/* ── Network banner ────────────────────────────────────── */
+
 .network-offline {
   position: fixed;
   top: 0;
   left: 0;
   right: 0;
   z-index: 10000;
-  background: #ff4d4f;
+  background: var(--flow-error);
   color: white;
   text-align: center;
-  padding: 4px 0;
+  padding: 6px 0;
   font-size: 12px;
-  animation: slideDown 0.3s ease;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  animation: slideDown 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94);
 }
 
 @keyframes slideDown {
@@ -74,32 +139,15 @@ html, body, #root {
   to { transform: translateY(0); }
 }
 
-/* Focus visible for keyboard navigation */
+/* ── Focus visible ─────────────────────────────────────── */
+
 *:focus-visible {
-  outline: 2px solid #1677ff;
+  outline: 2px solid var(--flow-accent);
   outline-offset: 2px;
 }
 
-/* Smooth transitions for interactive elements */
-.ant-card {
-  transition: box-shadow 0.2s ease;
-}
+/* ── Loading overlay ───────────────────────────────────── */
 
-.ant-card:hover {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.09);
-}
-
-/* Table row hover enhancement */
-.ant-table-tbody > tr:hover > td {
-  background: #fafafa !important;
-}
-
-/* Empty state center alignment */
-.ant-empty {
-  padding: 32px 0;
-}
-
-/* Loading spinner overlay */
 .global-loading-overlay {
   position: fixed;
   top: 0;
@@ -111,4 +159,257 @@ html, body, #root {
 
 .global-loading-overlay .ant-spin {
   pointer-events: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Ant Design Overrides — Make it feel like Flow, not Ant
+   ═══════════════════════════════════════════════════════════ */
+
+/* Cards — remove heavy borders, add subtle elevation */
+.ant-card {
+  border-radius: var(--flow-radius-lg) !important;
+  border: 1px solid var(--flow-border) !important;
+  box-shadow: var(--flow-shadow-sm) !important;
+  transition: box-shadow 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94),
+              border-color 0.3s ease !important;
+  background: var(--flow-surface-elevated) !important;
+}
+
+.ant-card:hover {
+  box-shadow: var(--flow-shadow-md) !important;
+  border-color: var(--flow-border-strong) !important;
+}
+
+.ant-card .ant-card-head {
+  border-bottom: 1px solid var(--flow-divider) !important;
+  font-family: var(--flow-font-heading) !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em;
+}
+
+.ant-card .ant-card-head-title {
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  color: var(--flow-text-primary) !important;
+}
+
+/* Buttons — rounded, refined */
+.ant-btn {
+  border-radius: 8px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.01em;
+  transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94) !important;
+  font-family: var(--flow-font-body) !important;
+  height: 36px !important;
+}
+
+.ant-btn-primary {
+  background: var(--flow-accent) !important;
+  border-color: var(--flow-accent) !important;
+  box-shadow: 0 1px 3px rgba(0, 113, 227, 0.2) !important;
+}
+
+.ant-btn-primary:hover {
+  background: var(--flow-accent-hover) !important;
+  border-color: var(--flow-accent-hover) !important;
+  box-shadow: 0 4px 12px rgba(0, 113, 227, 0.25) !important;
+  transform: translateY(-1px);
+}
+
+.ant-btn-default {
+  border-color: var(--flow-border-strong) !important;
+  color: var(--flow-text-primary) !important;
+}
+
+.ant-btn-default:hover {
+  border-color: var(--flow-accent) !important;
+  color: var(--flow-accent) !important;
+}
+
+/* Inputs — clean, minimal */
+.ant-input,
+.ant-input-affix-wrapper,
+.ant-picker {
+  border-radius: 8px !important;
+  border-color: var(--flow-border-strong) !important;
+  transition: all 0.2s ease !important;
+  font-family: var(--flow-font-body) !important;
+}
+
+.ant-input:focus,
+.ant-input-focused,
+.ant-input-affix-wrapper:focus,
+.ant-input-affix-wrapper-focused,
+.ant-picker-focused {
+  border-color: var(--flow-accent) !important;
+  box-shadow: 0 0 0 3px var(--flow-accent-soft) !important;
+}
+
+.ant-input::placeholder {
+  color: var(--flow-text-tertiary) !important;
+}
+
+/* Tags — softer, rounded */
+.ant-tag {
+  border-radius: 6px !important;
+  font-weight: 500 !important;
+  border: none !important;
+  font-size: 12px !important;
+  padding: 2px 8px !important;
+  line-height: 20px !important;
+}
+
+/* Tables — clean, spacious */
+.ant-table {
+  font-family: var(--flow-font-body) !important;
+}
+
+.ant-table-thead > tr > th {
+  background: var(--flow-surface) !important;
+  font-weight: 600 !important;
+  font-size: 12px !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+  color: var(--flow-text-secondary) !important;
+  border-bottom: 1px solid var(--flow-border) !important;
+}
+
+.ant-table-tbody > tr > td {
+  border-bottom: 1px solid var(--flow-divider) !important;
+  transition: background 0.15s ease !important;
+}
+
+.ant-table-tbody > tr:hover > td {
+  background: var(--flow-surface) !important;
+}
+
+/* Menu (sidebar) — override Ant's default */
+.ant-menu {
+  font-family: var(--flow-font-body) !important;
+}
+
+.ant-menu-item {
+  border-radius: 8px !important;
+  margin: 2px 8px !important;
+  transition: all 0.2s ease !important;
+}
+
+/* Tabs — refined underline */
+.ant-tabs-tab {
+  font-family: var(--flow-font-body) !important;
+  font-weight: 500 !important;
+  transition: all 0.2s ease !important;
+}
+
+.ant-tabs-tab-active .ant-tabs-tab-btn {
+  color: var(--flow-accent) !important;
+  font-weight: 600 !important;
+}
+
+.ant-tabs-ink-bar {
+  background: var(--flow-accent) !important;
+  height: 2px !important;
+  border-radius: 1px !important;
+}
+
+/* Progress bar — smooth */
+.ant-progress-inner {
+  border-radius: 4px !important;
+}
+
+/* Modal — refined */
+.ant-modal-content {
+  border-radius: var(--flow-radius-xl) !important;
+  box-shadow: var(--flow-shadow-lg) !important;
+  overflow: hidden;
+}
+
+.ant-modal-header {
+  font-family: var(--flow-font-heading) !important;
+}
+
+/* Segmented control — Apple-like */
+.ant-segmented {
+  border-radius: 8px !important;
+  padding: 2px !important;
+  background: var(--flow-surface) !important;
+}
+
+.ant-segmented-item {
+  border-radius: 6px !important;
+  font-weight: 500 !important;
+  transition: all 0.2s ease !important;
+}
+
+.ant-segmented-item-selected {
+  background: var(--flow-surface-elevated) !important;
+  box-shadow: var(--flow-shadow-sm) !important;
+  font-weight: 600 !important;
+}
+
+/* Badge */
+.ant-badge-status-dot {
+  width: 7px !important;
+  height: 7px !important;
+}
+
+/* Empty state */
+.ant-empty {
+  padding: 40px 0 !important;
+}
+
+/* Statistic */
+.ant-statistic-title {
+  color: var(--flow-text-secondary) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.05em !important;
+}
+
+.ant-statistic-content {
+  font-family: var(--flow-font-heading) !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.02em !important;
+}
+
+/* Descriptions */
+.ant-descriptions-item-label {
+  color: var(--flow-text-secondary) !important;
+  font-weight: 500 !important;
+  font-size: 13px !important;
+}
+
+/* Switch */
+.ant-switch {
+  min-width: 40px !important;
+}
+
+/* Divider */
+.ant-divider {
+  border-color: var(--flow-divider) !important;
+}
+
+/* Popconfirm */
+.ant-popconfirm .ant-popover-inner {
+  border-radius: var(--flow-radius-md) !important;
+}
+
+/* Tooltip */
+.ant-tooltip-inner {
+  border-radius: 6px !important;
+  font-size: 12px !important;
+  font-family: var(--flow-font-body) !important;
+}
+
+/* Checkbox */
+.ant-checkbox-wrapper {
+  font-family: var(--flow-font-body) !important;
+}
+
+/* Form labels */
+.ant-form-item-label > label {
+  font-weight: 500 !important;
+  color: var(--flow-text-primary) !important;
+  font-size: 13px !important;
 }

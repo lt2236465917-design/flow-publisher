@@ -38,7 +38,14 @@ export default function HashtagInput({ value, onChange, maxTags = 10 }: Props) {
           key={tag}
           closable
           onClose={() => handleClose(tag)}
-          style={{ fontSize: 13 }}
+          style={{
+            fontSize: 13,
+            background: 'rgba(0, 113, 227, 0.06)',
+            color: '#0071e3',
+            borderRadius: 6,
+            padding: '2px 8px',
+            border: 'none',
+          }}
         >
           #{tag}
         </Tag>
@@ -47,7 +54,7 @@ export default function HashtagInput({ value, onChange, maxTags = 10 }: Props) {
         <Input
           ref={inputRef as never}
           size="small"
-          style={{ width: 120 }}
+          style={{ width: 120, borderRadius: 6 }}
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onBlur={handleInputConfirm}
@@ -56,7 +63,16 @@ export default function HashtagInput({ value, onChange, maxTags = 10 }: Props) {
         />
       ) : value.length < maxTags ? (
         <Tooltip title={`最多 ${maxTags} 个标签`}>
-          <Tag onClick={showInput} style={{ borderStyle: 'dashed', cursor: 'pointer' }}>
+          <Tag
+            onClick={showInput}
+            style={{
+              borderStyle: 'dashed',
+              cursor: 'pointer',
+              borderRadius: 6,
+              background: 'transparent',
+              color: '#86868b',
+            }}
+          >
             <PlusOutlined /> 添加标签
           </Tag>
         </Tooltip>

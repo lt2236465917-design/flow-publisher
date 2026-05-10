@@ -69,38 +69,52 @@ export default function CropModal({ visible, imageSrc, aspect, title, onConfirm,
 
   return (
     <Modal
-      title={title || '裁剪封面'}
       open={visible}
       onCancel={onCancel}
-      width={600}
+      width={560}
+      title={null}
       footer={
-        <Space>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <Button onClick={onCancel}>取消</Button>
           <Button type="primary" onClick={handleConfirm}>确认裁剪</Button>
-        </Space>
+        </div>
       }
     >
-      <div style={{ position: 'relative', width: '100%', height: 360, background: '#1a1a1a', borderRadius: 8 }}>
-        <Cropper
-          image={imageSrc}
-          crop={crop}
-          zoom={zoom}
-          aspect={aspect}
-          onCropChange={setCrop}
-          onZoomChange={setZoom}
-          onCropComplete={onCropComplete}
-        />
-      </div>
-      <div style={{ padding: '16px 0' }}>
-        <span style={{ marginRight: 8, fontSize: 13, color: '#666' }}>缩放</span>
-        <Slider
-          min={1}
-          max={3}
-          step={0.1}
-          value={zoom}
-          onChange={setZoom}
-          style={{ width: '80%', display: 'inline-block' }}
-        />
+      <div style={{ padding: '4px 0 0' }}>
+        <div
+          style={{
+            fontFamily: "'Sora', sans-serif",
+            fontSize: 18,
+            fontWeight: 600,
+            color: '#1d1d1f',
+            letterSpacing: '-0.02em',
+            marginBottom: 16,
+          }}
+        >
+          {title || '裁剪封面'}
+        </div>
+        <div style={{ position: 'relative', width: '100%', height: 340, background: '#1a1a1a', borderRadius: 10, overflow: 'hidden' }}>
+          <Cropper
+            image={imageSrc}
+            crop={crop}
+            zoom={zoom}
+            aspect={aspect}
+            onCropChange={setCrop}
+            onZoomChange={setZoom}
+            onCropComplete={onCropComplete}
+          />
+        </div>
+        <div style={{ padding: '16px 4px 0', display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 12, color: '#86868b', fontWeight: 500, flexShrink: 0 }}>缩放</span>
+          <Slider
+            min={1}
+            max={3}
+            step={0.1}
+            value={zoom}
+            onChange={setZoom}
+            style={{ flex: 1 }}
+          />
+        </div>
       </div>
     </Modal>
   )

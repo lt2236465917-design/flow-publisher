@@ -1,7 +1,7 @@
 {
-  "name": "video-sync-publisher",
+  "name": "flow-publisher",
   "version": "0.1.0",
-  "description": "多平台视频同步发布工具",
+  "description": "Create once. Flow everywhere.",
   "main": "./out/main/index.js",
   "author": "",
   "license": "MIT",

@@ -1,9 +1,6 @@
 import { useEffect, useRef } from 'react'
-import { Tag, Space, Typography, Button } from 'antd'
 import { DeleteOutlined } from '@ant-design/icons'
 import type { VideoMetadata } from '@/types/video.types'
-
-const { Text } = Typography
 
 interface Props {
   video: VideoMetadata
@@ -34,8 +31,27 @@ export default function VideoPreview({ video, onRemove }: Props) {
   const videoSrc = `local-file://${video.filePath.replace(/\\/g, '/')}`
 
   return (
-    <div style={{ display: 'flex', gap: 12, padding: 10, background: '#fafafa', borderRadius: 8, border: '1px solid #f0f0f0', marginTop: 8 }}>
-      <div style={{ position: 'relative', width: 160, minHeight: 90, borderRadius: 6, overflow: 'hidden', background: '#000', flexShrink: 0 }}>
+    <div
+      style={{
+        display: 'flex',
+        gap: 16,
+        padding: 14,
+        background: '#f5f5f7',
+        borderRadius: 12,
+        marginTop: 12,
+      }}
+    >
+      <div
+        style={{
+          position: 'relative',
+          width: 180,
+          minHeight: 100,
+          borderRadius: 10,
+          overflow: 'hidden',
+          background: '#000',
+          flexShrink: 0,
+        }}
+      >
         <video
           ref={videoRef}
           src={videoSrc}
@@ -46,26 +62,70 @@ export default function VideoPreview({ video, onRemove }: Props) {
       </div>
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minWidth: 0 }}>
         <div>
-          <Text strong style={{ fontSize: 13, wordBreak: 'break-all', display: 'block' }}>{video.fileName}</Text>
-          <Space size={4} style={{ marginTop: 4 }} wrap>
-            <Tag style={{ fontSize: 11 }}>{video.format.toUpperCase()}</Tag>
-            <Tag style={{ fontSize: 11 }}>{video.width}x{video.height}</Tag>
-            <Tag style={{ fontSize: 11 }}>{formatDuration(video.duration)}</Tag>
-            <Tag style={{ fontSize: 11 }}>{formatFileSize(video.fileSize)}</Tag>
-            {video.fps > 0 && <Tag style={{ fontSize: 11 }}>{video.fps}fps</Tag>}
-          </Space>
+          <div
+            style={{
+              fontSize: 14,
+              fontWeight: 600,
+              color: '#1d1d1f',
+              wordBreak: 'break-all',
+              marginBottom: 8,
+              fontFamily: "'DM Sans', sans-serif",
+            }}
+          >
+            {video.fileName}
+          </div>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <MetaTag>{video.format.toUpperCase()}</MetaTag>
+            <MetaTag>{video.width}×{video.height}</MetaTag>
+            <MetaTag>{formatDuration(video.duration)}</MetaTag>
+            <MetaTag>{formatFileSize(video.fileSize)}</MetaTag>
+            {video.fps > 0 && <MetaTag>{video.fps}fps</MetaTag>}
+          </div>
         </div>
-        <Button
-          type="text"
-          danger
-          size="small"
-          icon={<DeleteOutlined />}
+        <button
           onClick={onRemove}
-          style={{ alignSelf: 'flex-start', padding: '0 4px' }}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            padding: '4px 8px',
+            border: 'none',
+            background: 'transparent',
+            color: '#ff3b30',
+            fontSize: 12,
+            fontWeight: 500,
+            cursor: 'pointer',
+            borderRadius: 6,
+            transition: 'background 0.15s ease',
+            fontFamily: "'DM Sans', sans-serif",
+            alignSelf: 'flex-start',
+            marginTop: 8,
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 59, 48, 0.06)' }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
         >
+          <DeleteOutlined style={{ fontSize: 12 }} />
           移除
-        </Button>
+        </button>
       </div>
     </div>
+  )
+}
+
+function MetaTag({ children }: { children: React.ReactNode }) {
+  return (
+    <span
+      style={{
+        fontSize: 11,
+        fontWeight: 500,
+        color: '#86868b',
+        background: 'rgba(0, 0, 0, 0.04)',
+        padding: '2px 8px',
+        borderRadius: 6,
+        letterSpacing: '0.02em',
+      }}
+    >
+      {children}
+    </span>
   )
 }

@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useState, useMemo } from 'react'
-import { Typography, Button, Space, Card, Progress, List, Tag, message, Alert, Divider } from 'antd'
+import { Button, Space, Progress, List, Tag, message, Alert } from 'antd'
 import { SendOutlined, ReloadOutlined, ClockCircleOutlined, VideoCameraOutlined } from '@ant-design/icons'
 import VideoDropZone from '@/components/publish/VideoDropZone'
 import VideoPreview from '@/components/publish/VideoPreview'
@@ -15,8 +15,6 @@ import EmptyState from '@/components/common/EmptyState'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
-
-const { Title, Paragraph, Text } = Typography
 
 interface AccountInfo {
   id: string
@@ -37,7 +35,6 @@ export default function PublishPage() {
   const hasActiveTasks = flow.tasks.some((t) => t.status === 'uploading' || t.status === 'submitting')
   const allDone = flow.tasks.length > 0 && flow.tasks.every((t) => t.status === 'done')
 
-  // Keyboard shortcuts
   const shortcuts = useMemo(() => ({
     'ctrl+o': () => { if (!hasActiveTasks) flow.selectVideo() },
     'ctrl+enter': () => { if (!hasActiveTasks && flow.video && flow.form.platforms.length > 0) flow.publish() },
@@ -60,7 +57,6 @@ export default function PublishPage() {
       return
     }
 
-    // Convert cover data URL to temp file (new cover format + legacy fallback)
     const coverSource = form.cover.horizontal_4_3 || form.horizontalCover
     let coverFilePath: string | undefined
     if (coverSource) {
@@ -73,7 +69,6 @@ export default function PublishPage() {
       }
     }
 
-    // Look up account IDs for each platform
     const accountsRes = await window.electron.ipcRenderer.invoke<AccountInfo[]>(IPC_CHANNELS.ACCOUNT_LIST)
     const accounts = accountsRes.data || []
     const accountIds: Record<string, string> = {}
@@ -88,7 +83,6 @@ export default function PublishPage() {
       accountIds[platformId] = account.id
     }
 
-    // Build merged content per platform (shared + platform overrides)
     const sharedContent = {
       title: form.title,
       description: form.description,
@@ -146,16 +140,34 @@ export default function PublishPage() {
   }, [])
 
   return (
-    <div style={{ maxWidth: 900, margin: '0 auto', padding: '0 16px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <Title level={4} style={{ margin: 0 }}>内容发布</Title>
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          Ctrl+O 选择 | Ctrl+Enter 发布 | Ctrl+R 重置
-        </Text>
+    <div style={{ maxWidth: 800, margin: '0 auto' }}>
+      {/* Page Header */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 28 }}>
+        <div>
+          <h1
+            style={{
+              fontFamily: "'Sora', sans-serif",
+              fontSize: 28,
+              fontWeight: 700,
+              color: '#1d1d1f',
+              letterSpacing: '-0.03em',
+              marginBottom: 6,
+            }}
+          >
+            内容发布
+          </h1>
+          <p style={{ fontSize: 14, color: '#86868b', margin: 0 }}>
+            创建一次，发布到所有平台
+          </p>
+        </div>
+        <span style={{ fontSize: 11, color: '#aeaeb2', letterSpacing: '0.02em' }}>
+          Ctrl+O 选择 · Ctrl+Enter 发布 · Ctrl+R 重置
+        </span>
       </div>
 
-      {/* Section 1: Video Selection */}
-      <Card size="small" title="选择视频" style={{ marginBottom: 8 }}>
+      {/* Video Selection */}
+      <SectionCard>
+        <SectionTitle>选择视频</SectionTitle>
         <VideoDropZone video={flow.video} onSelect={flow.selectVideo} onDropFile={flow.handleDropFile} />
         {flow.video && (
           <VideoPreview
@@ -163,13 +175,32 @@ export default function PublishPage() {
             onRemove={() => flow.setVideo(null)}
           />
         )}
-      </Card>
+      </SectionCard>
 
-      {/* Section 2: Edit (Cover + Content + Platforms + Customization) */}
+      {/* No video — guidance */}
+      {!flow.video && (
+        <div
+          style={{
+            background: '#ffffff',
+            borderRadius: 14,
+            border: '1px solid rgba(0, 0, 0, 0.06)',
+            marginTop: 14,
+          }}
+        >
+          <EmptyState
+            icon={<VideoCameraOutlined />}
+            title="选择要发布的视频"
+            description="将视频文件拖放到上方区域，或点击选择文件"
+            actionText="选择视频文件"
+            onAction={flow.selectVideo}
+          />
+        </div>
+      )}
+
+      {/* Edit Content */}
       {flow.video && (
-        <Card size="small" title="编辑内容" style={{ marginBottom: 8 }}>
-          {/* Cover */}
-          <Text strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>封面设置</Text>
+        <SectionCard>
+          <SectionTitle>封面设置</SectionTitle>
           <CoverSelector
             frames={flow.frames}
             loading={flow.extractingFrames}
@@ -193,29 +224,23 @@ export default function PublishPage() {
             }}
           />
 
-          <Divider style={{ margin: '12px 0' }} />
+          <Divider />
 
-          {/* Content */}
-          <Text strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>基本信息</Text>
-          <UnifiedEditor
-            form={flow.form}
-            onChange={flow.updateForm}
-          />
+          <SectionTitle>基本信息</SectionTitle>
+          <UnifiedEditor form={flow.form} onChange={flow.updateForm} />
 
-          <Divider style={{ margin: '12px 0' }} />
+          <Divider />
 
-          {/* Platform selection */}
-          <Text strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>发布平台</Text>
+          <SectionTitle>发布平台</SectionTitle>
           <PublishTargetPicker
             value={flow.form.platforms}
             onChange={(platforms: PlatformId[]) => flow.updateForm({ platforms })}
           />
 
-          {/* Platform customization */}
           {flow.form.platforms.length > 0 && (
             <>
-              <Divider style={{ margin: '12px 0' }} />
-              <Text strong style={{ display: 'block', marginBottom: 8, fontSize: 13 }}>平台定制</Text>
+              <Divider />
+              <SectionTitle>平台定制</SectionTitle>
               <PlatformCustomizer
                 platforms={flow.form.platforms}
                 overrides={flow.form.platformOverrides}
@@ -223,27 +248,14 @@ export default function PublishPage() {
               />
             </>
           )}
-        </Card>
+        </SectionCard>
       )}
 
-      {/* No video selected — show guidance */}
-      {!flow.video && (
-        <Card size="small">
-          <EmptyState
-            icon={<VideoCameraOutlined style={{ fontSize: 48, color: '#bfbfbf' }} />}
-            title="选择要发布的视频"
-            description="将视频文件拖放到上方区域，或点击选择文件按钮"
-            actionText="选择视频文件"
-            onAction={flow.selectVideo}
-          />
-        </Card>
-      )}
-
-      {/* Section 3: Publish + Progress */}
+      {/* Publish Actions */}
       {flow.video && (
-        <Card size="small" style={{ marginBottom: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-            <Space>
+        <SectionCard>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
+            <Space size={10}>
               <Button
                 type="primary"
                 icon={<SendOutlined />}
@@ -270,20 +282,21 @@ export default function PublishPage() {
             </Space>
           </div>
 
-          {/* Task Progress (inline, only when active) */}
+          {/* Task Progress */}
           {flow.tasks.length > 0 && (
-            <div style={{ marginTop: 12 }}>
+            <div style={{ marginTop: 16 }}>
               <List
                 size="small"
                 dataSource={flow.tasks}
                 renderItem={(task) => {
                   const info = PLATFORMS[task.platform]
                   return (
-                    <List.Item style={{ padding: '4px 0' }}>
+                    <List.Item style={{ padding: '8px 0', border: 'none' }}>
                       <div style={{ width: '100%' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-                          <Space size={4}>
-                            <Text strong style={{ fontSize: 13 }}>{info?.icon} {info?.displayName}</Text>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                          <Space size={6}>
+                            <span style={{ fontSize: 15 }}>{info?.icon}</span>
+                            <span style={{ fontSize: 13, fontWeight: 500, color: '#1d1d1f' }}>{info?.displayName}</span>
                             <Tag color={
                               task.status === 'done' ? 'success' :
                               task.status === 'error' ? 'error' : 'processing'
@@ -294,16 +307,17 @@ export default function PublishPage() {
                                task.status === 'error' ? '失败' : task.status}
                             </Tag>
                           </Space>
-                          <Text type="secondary" style={{ fontSize: 12 }}>{task.progress}%</Text>
+                          <span style={{ fontSize: 12, color: '#86868b' }}>{task.progress}%</span>
                         </div>
                         <Progress
                           percent={task.progress}
                           status={task.status === 'error' ? 'exception' : task.status === 'done' ? 'success' : 'active'}
                           showInfo={false}
                           size="small"
+                          strokeColor={task.status === 'done' ? '#34c759' : task.status === 'error' ? '#ff3b30' : '#0071e3'}
                         />
                         {task.error && (
-                          <Alert type="error" message={task.error} style={{ marginTop: 4 }} banner />
+                          <Alert type="error" message={task.error} style={{ marginTop: 6, borderRadius: 8 }} banner />
                         )}
                       </div>
                     </List.Item>
@@ -311,19 +325,69 @@ export default function PublishPage() {
                 }}
               />
               {allDone && (
-                <Alert type="success" message="所有平台发布完成！" showIcon style={{ marginTop: 8 }} />
+                <Alert
+                  type="success"
+                  message="所有平台发布完成！"
+                  showIcon
+                  style={{ marginTop: 10, borderRadius: 8 }}
+                />
               )}
             </div>
           )}
-        </Card>
+        </SectionCard>
       )}
 
-      {/* Schedule Modal */}
       <SchedulePicker
         open={scheduleModalOpen}
         onConfirm={handleScheduleConfirm}
         onCancel={() => setScheduleModalOpen(false)}
       />
     </div>
+  )
+}
+
+function SectionCard({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        background: '#ffffff',
+        borderRadius: 14,
+        border: '1px solid rgba(0, 0, 0, 0.06)',
+        padding: '20px 24px',
+        marginBottom: 14,
+      }}
+    >
+      {children}
+    </div>
+  )
+}
+
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <h3
+      style={{
+        fontFamily: "'Sora', sans-serif",
+        fontSize: 13,
+        fontWeight: 600,
+        color: '#86868b',
+        textTransform: 'uppercase',
+        letterSpacing: '0.06em',
+        marginBottom: 14,
+      }}
+    >
+      {children}
+    </h3>
+  )
+}
+
+function Divider() {
+  return (
+    <div
+      style={{
+        height: 1,
+        background: 'rgba(0, 0, 0, 0.04)',
+        margin: '18px 0',
+      }}
+    />
   )
 }

@@ -19,7 +19,7 @@ export default function PageTransition({ children }: PageTransitionProps) {
       const timer = setTimeout(() => {
         setDisplayChildren(children)
         setTransitioning(false)
-      }, 150)
+      }, 200)
 
       return () => clearTimeout(timer)
     } else {
@@ -31,8 +31,8 @@ export default function PageTransition({ children }: PageTransitionProps) {
     <div
       style={{
         opacity: transitioning ? 0 : 1,
-        transform: transitioning ? 'translateY(8px)' : 'translateY(0)',
-        transition: 'opacity 0.15s ease, transform 0.15s ease'
+        transform: transitioning ? 'translateY(12px)' : 'translateY(0)',
+        transition: 'opacity 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94), transform 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
       }}
     >
       {displayChildren}

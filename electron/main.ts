@@ -22,12 +22,14 @@ protocol.registerSchemesAsPrivileged([
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: 1280,
+    height: 860,
     minWidth: 1000,
     minHeight: 700,
     show: false,
     autoHideMenuBar: true,
+    title: 'Flow',
+    backgroundColor: '#1d1d1f',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -57,7 +59,7 @@ process.on('unhandledRejection', (reason) => {
 })
 
 app.whenReady().then(async () => {
-  app.setAppUserModelId('com.videosync.publisher')
+  app.setAppUserModelId('com.flow.publisher')
 
   // Handle local-file:// protocol to serve local files
   protocol.handle('local-file', (request) => {
