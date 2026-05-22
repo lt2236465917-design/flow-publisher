@@ -127,7 +127,8 @@ export function registerPublishIpcHandlers(): void {
             const ctx = await browserManager.getContext(params.platformId)
             await cookieStore.loadCookies(ctx, params.accountId)
             await adapter.uploadVideo(ctx, params.filePath, progressHandler)
-            await browserManager.close()
+            // Don't close browser here — submitContent needs the same page context
+            // Browser will be closed by PUBLISH_SUBMIT handler
           } else {
             throw apiErr
           }
@@ -150,7 +151,8 @@ export function registerPublishIpcHandlers(): void {
           })
         })
 
-        await browserManager.close()
+        // Don't close browser here — submitContent needs the same page context
+        // Browser will be closed by PUBLISH_SUBMIT handler
       }
 
       recordRepo.updateStatus(record.id, 'uploaded', 100)

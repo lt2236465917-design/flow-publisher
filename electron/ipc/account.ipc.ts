@@ -90,9 +90,49 @@ export function registerAccountIpcHandlers(): void {
       const result: LoginResult = await adapter.waitForLoginResult(page)
 
       if (result.success) {
+        logger.info('[account] Login successful, waiting for cookies to stabilize...')
+
+        // Wait for JavaScript to set additional cookies
+        await new Promise(resolve => setTimeout(resolve, 5000))
+
+        // Navigate to different pages to trigger more cookie setting
+        logger.info('[account] Navigating to trigger more cookies...')
+        try {
+          await page.goto('https://channels.weixin.qq.com/platform/post/list', { waitUntil: 'domcontentloaded', timeout: 15000 })
+          await new Promise(resolve => setTimeout(resolve, 3000))
+        } catch (e) {
+          logger.warn('[account] Navigation failed:', e)
+        }
+
+        // Try to trigger API calls that set cookies
+        try {
+          await page.evaluate(() => {
+            // Trigger a fetch to the auth endpoint to set cookies
+            return fetch('/cgi-bin/mmfinderassistant-bin/auth/auth_data', {
+              credentials: 'include'
+            }).catch(() => {})
+          })
+          await new Promise(resolve => setTimeout(resolve, 2000))
+        } catch (e) {
+          logger.warn('[account] Cookie trigger failed:', e)
+        }
+
+        // Log current URL and page state
+        const currentUrl = page.url()
+        logger.info(`[account] Current URL after login: ${currentUrl}`)
+
+        // Get cookies before saving
+        const cookies = await context.cookies()
+        const domains = [...new Set(cookies.map(c => c.domain))]
+        const cookieNames = cookies.map(c => c.name)
+        logger.info(`[account] Cookies in context: ${cookies.length}, domains: ${domains.join(', ')}`)
+        logger.info(`[account] Cookie names: ${cookieNames.join(', ')}`)
+
         await cookieStore.saveCookies(accountId!, context)
         repo.updateSession(accountId!, 'logged_in', undefined, result.displayName)
         saveDatabase()
+
+        logger.info('[account] Cookies saved successfully')
       }
 
       await browserManager.close()

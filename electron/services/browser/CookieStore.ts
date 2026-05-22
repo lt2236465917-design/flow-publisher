@@ -8,7 +8,13 @@ export class CookieStore {
     const repo = getAccountRepository()
     repo.updateSession(accountId, 'logged_in', JSON.stringify(cookies))
     saveDatabase()
+
+    // Log cookie details for debugging
+    const domains = [...new Set(cookies.map(c => c.domain))]
+    const cookieNames = cookies.map(c => c.name)
     logger.info(`Cookies saved for account ${accountId}, count: ${cookies.length}`)
+    logger.info(`  domains: ${domains.join(', ')}`)
+    logger.info(`  names: ${cookieNames.join(', ')}`)
   }
 
   async loadCookies(context: BrowserContext, accountId: string): Promise<boolean> {
@@ -44,13 +50,18 @@ export class CookieStore {
     const repo = getAccountRepository()
     const account = repo.getById(accountId)
     if (!account || !account.cookies || account.cookies === '[]') {
+      logger.warn(`No cookies found for account ${accountId}`)
       return null
     }
     try {
       const cookies: Cookie[] = JSON.parse(account.cookies)
-      if (cookies.length === 0) return null
+      if (cookies.length === 0) {
+        logger.warn(`Empty cookies array for account ${accountId}`)
+        return null
+      }
       const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ')
-      logger.info(`Cookie string exported for account ${accountId}, length: ${cookieStr.length}`)
+      const domains = [...new Set(cookies.map(c => c.domain))]
+      logger.info(`Cookie string exported for account ${accountId}, length: ${cookieStr.length}, domains: ${domains.join(', ')}`)
       return cookieStr
     } catch (err) {
       logger.error(`Failed to export cookie string for account ${accountId}:`, err)

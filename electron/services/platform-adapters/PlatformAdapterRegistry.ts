@@ -28,11 +28,18 @@ export function getPublishMode(): PublishMode {
 
 /**
  * Check if an adapter supports API mode.
- * An adapter supports API mode if it implements uploadVideoAPI and submitContentAPI.
+ * An adapter supports API mode if it implements uploadVideoAPI and submitContentAPI
+ * and doesn't explicitly disable API mode via supportsApiMode() method.
  */
 export function supportsApiMode(platformId: string): boolean {
   const adapter = adapters.get(platformId)
   if (!adapter) return false
+
+  // Check if adapter explicitly disables API mode
+  if (typeof (adapter as any).supportsApiMode === 'function' && !(adapter as any).supportsApiMode()) {
+    return false
+  }
+
   return !!(adapter.uploadVideoAPI && adapter.submitContentAPI)
 }
 
