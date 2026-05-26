@@ -134,6 +134,12 @@ export function usePublishFlow() {
       return
     }
 
+    // 视频号标题至少6个字
+    if (form.platforms.includes('wechat-channels') && form.title.trim().length < 6) {
+      message.error('视频号标题至少需要6个字')
+      return
+    }
+
     for (const platformId of form.platforms) {
       const validation = await validateForPlatform(video.filePath, platformId)
       if (!validation.valid) {

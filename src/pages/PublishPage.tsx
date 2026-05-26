@@ -227,7 +227,7 @@ export default function PublishPage() {
           <Divider />
 
           <SectionTitle>基本信息</SectionTitle>
-          <UnifiedEditor form={flow.form} onChange={flow.updateForm} />
+          <UnifiedEditor form={flow.form} onChange={flow.updateForm} platforms={flow.form.platforms} />
 
           <Divider />
 

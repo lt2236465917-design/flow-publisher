@@ -8,15 +8,21 @@ const { TextArea } = Input
 interface Props {
   form: PublishFormData
   onChange: (patch: Partial<PublishFormData>) => void
+  platforms?: string[]
 }
 
-export default function UnifiedEditor({ form, onChange }: Props) {
+export default function UnifiedEditor({ form, onChange, platforms }: Props) {
+  const needsMinTitle = platforms?.includes('wechat-channels')
+  const titleLen = form.title.trim().length
+  const titleTooShort = needsMinTitle && titleLen > 0 && titleLen < 6
+
   return (
     <Form layout="vertical" style={{ maxWidth: '100%' }} size="small">
       <Form.Item
         label="标题"
         required
-        rules={[{ required: true, message: '请输入标题' }]}
+        validateStatus={titleTooShort ? 'error' : undefined}
+        help={titleTooShort ? '视频号标题至少需要6个字' : needsMinTitle ? '视频号要求标题不少于6个字' : undefined}
         style={{ marginBottom: 10 }}
       >
         <Input
