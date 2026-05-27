@@ -15,7 +15,8 @@ import { ffmpegService } from '../../ffmpeg/FFmpegService'
 const API = {
   authData: 'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/auth/auth_data',
   uploadParams: 'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/helper/helper_upload_params',
-  publish: 'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/post/post_create'
+  publish: 'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/post/post_create',
+  draft: 'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/post/post_draft'
 }
 
 /**
@@ -506,6 +507,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
     const CDN_HOST = 'finderassistancea.video.qq.com'
     const CONCURRENCY = 3 // matching yixiaoer
 
+    // PartInfo map — keyed by PartNumber (1-based), used for both verification and complete call
     const partInfoMap = new Map<number, { PartNumber: number; ETag: string }>()
     let completedChunks = 0
 
@@ -534,7 +536,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
         const req = https.request({
           hostname: CDN_HOST,
           port: 443,
-          path: `/uploadpartdfs?PartNumber=${partNumber}&UploadID=${encodeURIComponent(uploadId)}`,
+          path: `/uploadpartdfs?PartNumber=${partNumber}&UploadID=${uploadId}`,
           method: 'PUT',
           agent,
           headers: {
@@ -551,8 +553,12 @@ export class WcApiAdapter extends BasePlatformAdapter {
           res.on('end', () => {
             try {
               const json = JSON.parse(data)
-              if (json.ETag) resolve({ partNum: partNumber, etag: json.ETag })
-              else reject(new Error(`Chunk ${partNumber} failed: ${data.substring(0, 200)}`))
+              // Validate ETag — must be a non-empty string
+              if (json.ETag && typeof json.ETag === 'string' && json.ETag.length > 0) {
+                resolve({ partNum: partNumber, etag: json.ETag })
+              } else {
+                reject(new Error(`Chunk ${partNumber} no ETag: ${data.substring(0, 200)}`))
+              }
             } catch {
               reject(new Error(`Chunk ${partNumber} non-JSON: ${data.substring(0, 200)}`))
             }
@@ -575,7 +581,8 @@ export class WcApiAdapter extends BasePlatformAdapter {
             err.message?.includes('ECONNRESET') ||
             err.message?.includes('ETIMEDOUT') ||
             err.message?.includes('timeout') ||
-            err.message?.includes('non-JSON')
+            err.message?.includes('non-JSON') ||
+            err.message?.includes('no ETag')
           if (isRetryable && attempt < maxRetries - 1) {
             logger.warn(`[wechat-channels] Chunk ${i + 1} attempt ${attempt + 1} failed (${err.message}), retrying...`)
             await delay(1000 * (attempt + 1))
@@ -587,43 +594,66 @@ export class WcApiAdapter extends BasePlatformAdapter {
       throw new Error(`Chunk ${i + 1} failed after ${maxRetries} attempts`)
     }
 
-    // Run concurrent chunks with retry
-    const queue: number[] = Array.from({ length: totalChunks }, (_, i) => i)
-    const inFlight = new Map<number, Promise<void>>()
+    // --- Concurrency control matching yixiaoer's Promise.race pattern ---
+    // This ensures ALL errors are properly awaited, not silently swallowed.
     logger.info(`[wechat-channels] Starting upload: ${totalChunks} chunks of ${CHUNK_SIZE / 1024 / 1024}MB, concurrency=${CONCURRENCY}`)
 
-    const startNext = () => {
-      const next = queue.shift()
-      if (next === undefined) return
-      const p = uploadChunkWithRetry(next).then((result) => {
+    const pending: Promise<void>[] = []
+    let firstError: Error | null = null
+
+    for (let i = 0; i < totalChunks; i++) {
+      // If a previous chunk already failed, stop launching new ones
+      if (firstError) break
+
+      const p = uploadChunkWithRetry(i).then((result) => {
         completedChunks++
         logger.info(`[wechat-channels] Chunk ${result.partNum}/${totalChunks} uploaded, ETag=${result.etag.substring(0, 20)}...`)
         onProgress?.({ percent: 10 + Math.round((completedChunks / totalChunks) * 70), stage: `上传中 ${completedChunks}/${totalChunks}` })
-        inFlight.delete(next)
         partInfoMap.set(result.partNum, { PartNumber: result.partNum, ETag: result.etag })
-        startNext()
-      }).catch((err) => {
-        logger.error(`[wechat-channels] Chunk ${next + 1} failed permanently: ${err.message}`)
-        inFlight.delete(next)
-        throw err
+      }).catch((err: Error) => {
+        logger.error(`[wechat-channels] Chunk ${i + 1} failed permanently: ${err.message}`)
+        if (!firstError) firstError = err
       })
-      inFlight.set(next, p)
+
+      pending.push(p)
+
+      // When we reach concurrency limit, wait for the earliest to finish
+      if (pending.length >= CONCURRENCY) {
+        await pending.shift()
+      }
     }
-    for (let c = 0; c < Math.min(CONCURRENCY, totalChunks); c++) startNext()
-    await Promise.all(inFlight.values())
+
+    // Drain remaining pending uploads — ALL must settle before we proceed
+    await Promise.allSettled(pending)
+
+    // Check if any chunk failed
+    if (firstError) {
+      agent.destroy()
+      throw new Error(`视频分片上传失败: ${firstError.message}`)
+    }
 
     if (partInfoMap.size !== totalChunks) {
+      agent.destroy()
       throw new Error(`上传不完整: ${partInfoMap.size}/${totalChunks} chunks uploaded`)
     }
 
-    // Complete via HTTP/1.1
-    const partInfoArray = Array.from(partInfoMap.values())
+    // --- Build PartInfo array in PartNumber order (NOT insertion order) ---
+    // yixiaoer does: for (let i = 1; i <= je.size; i++) { push(je.get(i)) }
+    const partInfoArray: { PartNumber: number; ETag: string }[] = []
+    for (let i = 1; i <= totalChunks; i++) {
+      const info = partInfoMap.get(i)
+      if (info) partInfoArray.push(info)
+    }
+
+    logger.info(`[wechat-channels] All ${totalChunks} chunks uploaded. PartInfo ordered: [${partInfoArray.map(p => p.PartNumber).join(',')}]`)
+
+    // --- Complete multipart upload ---
     const completeBody = JSON.stringify({ TransFlag: '0_0', PartInfo: partInfoArray })
     const downloadUrl = await new Promise<string>((resolve, reject) => {
       const req = https.request({
         hostname: CDN_HOST,
         port: 443,
-        path: `/completepartuploaddfs?UploadID=${encodeURIComponent(uploadId)}`,
+        path: `/completepartuploaddfs?UploadID=${uploadId}`,
         method: 'POST',
         agent,
         headers: {
@@ -639,13 +669,17 @@ export class WcApiAdapter extends BasePlatformAdapter {
         res.on('data', (c: Buffer) => { data += c.toString() })
         res.on('end', () => {
           logger.info(`[wechat-channels] completepartuploaddfs response: status=${res.statusCode}, data=${data.substring(0, 500)}`)
+          // 404 or any non-200 is a hard failure — don't try to parse as success
+          if (res.statusCode !== 200) {
+            reject(new Error(`completepartuploaddfs HTTP ${res.statusCode}: ${data.substring(0, 300)}`))
+            return
+          }
           try {
             const json = JSON.parse(data)
-            if (json.errCode && json.errCode !== 0) reject(new Error(`Complete failed: ${json.errMsg}`))
+            if (json.errCode && json.errCode !== 0) reject(new Error(`Complete failed: errCode=${json.errCode}, ${json.errMsg}`))
             else resolve(json.DownloadURL || json.downloadUrl || json.download_url || '')
           } catch {
-            logger.warn(`[wechat-channels] completepartuploaddfs non-JSON: ${data.substring(0, 300)}`)
-            resolve('')
+            reject(new Error(`completepartuploaddfs non-JSON: ${data.substring(0, 300)}`))
           }
         })
       })
@@ -657,6 +691,11 @@ export class WcApiAdapter extends BasePlatformAdapter {
 
     logger.info(`[wechat-channels] completepartuploaddfs result downloadUrl: ${(downloadUrl || '').substring(0, 100)}`)
     agent.destroy()
+
+    if (!downloadUrl) {
+      throw new Error('completepartuploaddfs 返回空 DownloadURL')
+    }
+
     return downloadUrl
   }
 
@@ -780,7 +819,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
       latitude: 0,
       feedLongitude: 0,
       feedLatitude: 0,
-      originalFlag: 0, // yixiaoer always sends 0
+      originalFlag: 0,
       objectType: 0,
       postFlag: 0,
       isFullPost,
@@ -816,7 +855,6 @@ export class WcApiAdapter extends BasePlatformAdapter {
         _log_finder_id: finderUsername || '',
         clipKey,
         draftId,
-        // NOTE: yixiaoer swaps width/height in report (likely a bug, but must match)
         height: videoWidth || 1920,
         width: videoHeight || 1280,
         pluginSessionId: null,
@@ -830,25 +868,35 @@ export class WcApiAdapter extends BasePlatformAdapter {
       },
       clientid: require('crypto').randomUUID(),
       timestamp: getTimestamp13(),
-      _log_finder_id: finderId || '',
+      _log_finder_id: finderUsername || '',
       scene: 7,
       reqScene: 7,
       videoClipTaskId: draftId
     }
 
-    // Wrap in postReq envelope for pubType=0 (standard publish)
-    const postData: Record<string, unknown> = {
-      _log_finder_id: finderId || '',
-      objectId: null,
-      pluginSessionId: null,
-      postReq,
-      rawKeyBuff: '',
-      scene: 7,
-      reqScene: 7,
-      timestamp: getTimestamp13()
+    // Add mode + megavideoDesc for videos > 60s (matching yixiaoer)
+    if (videoDuration > 60) {
+      postReq.mode = 1
+      postReq.megavideoDesc = {
+        description: desc,
+        location,
+        extReading: { link: '', title: '' },
+        feadLocation: { latitude: 0, longitude: 0 },
+        media: [{
+          coverUrl,
+          thumbUrl: coverUrl,
+          url: downloadUrl,
+          videoPlayLen: videoDuration,
+          videoPlayLenMs: videoDuration * 1000,
+          width: videoWidth,
+          height: videoHeight,
+          fileSize,
+          md5sum
+        }]
+      }
     }
 
-    logger.info(`[wechat-channels] Submit body: ${JSON.stringify(postData).substring(0, 8000)}`)
+    logger.info(`[wechat-channels] Submit body: ${JSON.stringify(postReq).substring(0, 8000)}`)
     logger.info(`[wechat-channels] Key values — downloadUrl: ${downloadUrl}, finderId: ${finderId}, finderUsername: ${finderUsername}, draftId: ${draftId}, clipKey: ${clipKey}, md5sum: ${md5sum}, coverUrl: ${coverUrl}`)
 
     try {
@@ -858,11 +906,10 @@ export class WcApiAdapter extends BasePlatformAdapter {
         data?: { feedId: string }
       }>(
         API.publish,
-        postData,
+        postReq,
         {
           referer: 'https://channels.weixin.qq.com/platform/post/create',
-          Origin: 'https://channels.weixin.qq.com',
-          'Content-Type': 'application/json'
+          'Content-type': 'application/json'
         }
       )
 

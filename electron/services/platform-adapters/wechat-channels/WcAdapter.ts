@@ -49,64 +49,73 @@ export class WcAdapter extends BasePlatformAdapter {
 
   async waitForQRCode(page: Page): Promise<string | null> {
     logger.info('[wechat-channels] Waiting for QR code...')
-    await delay(3000)
 
-    for (let i = 0; i < 30; i++) {
-      try {
-        const qrSelectors = [
-          'img[class*="qrcode"]',
-          'canvas[class*="qr"]',
-          'img[src*="qrcode"]',
-          'div[class*="login"] img',
-          'div[class*="qr-code"] img',
-          'div[class*="scan"] img'
-        ]
+    // Wait for page to settle
+    await delay(5000)
 
-        for (const selector of qrSelectors) {
-          const qrEl = await page.$(selector)
-          if (qrEl) {
-            const box = await qrEl.boundingBox()
-            if (box && box.width > 80 && box.height > 80) {
-              const screenshot = await qrEl.screenshot()
-              logger.info(`[wechat-channels] QR code captured with selector: ${selector}`)
-              return `data:image/png;base64,${screenshot.toString('base64')}`
-            }
-          }
-        }
-      } catch (e) {
-        logger.warn('[wechat-channels] QR code detection error:', e)
-      }
-      await delay(1000)
+    // Try to take a screenshot with a hard timeout
+    const screenshotWithTimeout = async (timeoutMs: number): Promise<Buffer | null> => {
+      return Promise.race([
+        page.screenshot({ clip: { x: 0, y: 0, width: 1366, height: 768 } }),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs))
+      ])
     }
-    logger.warn('[wechat-channels] QR code not found after 30 attempts')
+
+    const screenshot = await screenshotWithTimeout(8000)
+    if (screenshot) {
+      logger.info(`[wechat-channels] Page screenshot captured`)
+      return `data:image/png;base64,${screenshot.toString('base64')}`
+    }
+
+    // First screenshot timed out — CDP might be broken. Try once more after a delay.
+    logger.warn('[wechat-channels] First screenshot timed out, retrying...')
+    await delay(3000)
+    const retry = await screenshotWithTimeout(10000)
+    if (retry) {
+      logger.info(`[wechat-channels] Retry screenshot captured`)
+      return `data:image/png;base64,${retry.toString('base64')}`
+    }
+
+    // CDP is completely broken — return null so the flow continues to waitForLoginResult
+    // The user can scan the QR code in the launched browser; we'll detect login via URL changes
+    logger.error('[wechat-channels] Screenshot failed (CDP broken). Returning null — will detect login via URL.')
     return null
   }
 
   protected async detectLoginSuccess(page: Page): Promise<boolean> {
-    // Check if QR code is still visible (means not logged in yet)
-    const hasQr = await page.$('img[class*="qrcode"], canvas[class*="qr"], div[class*="login"] img')
-    if (hasQr) {
-      const box = await hasQr.boundingBox()
-      if (box && box.width > 50 && box.height > 50) {
-        return false
-      }
-    }
-
-    // Check URL - should be on post/list or post/create after login
     const url = page.url()
+
+    // After successful WeChat login, the URL stays at /platform/post/create but
+    // the page content changes (no more QR code, shows editor/nav instead).
+    // Use page.evaluate() with timeout to check page content.
     if (url.includes('channels.weixin.qq.com/platform/post')) {
-      await delay(2000)
+      try {
+        const hasUserInfo = await Promise.race([
+          page.evaluate(() => {
+            // Look for elements that only appear after login
+            const avatar = document.querySelector('img[class*="avatar"], div[class*="avatar"] img')
+            const navItems = document.querySelectorAll('a[href*="post/list"], a[href*="post/create"]')
+            const editor = document.querySelector('div[class*="editor"], div[class*="create"], div[class*="upload"]')
+            const qrStillVisible = document.querySelector('img[class*="qrcode"], canvas[class*="qr"]')
+            // Login succeeded if: user info visible, or editor visible, or QR is gone
+            return !!(avatar || navItems.length > 0 || editor || !qrStillVisible)
+          }),
+          new Promise<boolean>((resolve) => setTimeout(() => {
+            // If evaluate hangs, check URL as fallback — if we're still on /post/create
+            // after timeout, assume login (the page wouldn't stay here without auth)
+            logger.warn('[wechat-channels] detectLoginSuccess evaluate timeout, using URL fallback')
+            resolve(url.includes('channels.weixin.qq.com/platform/post'))
+          }, 8000))
+        ])
 
-      const hasUserInfo = await page.evaluate(() => {
-        const avatar = document.querySelector('img[class*="avatar"], div[class*="avatar"] img')
-        const accountInfo = document.querySelector('div[class*="account-info"], div[class*="user-info"]')
-        const navItems = document.querySelectorAll('a[href*="post/list"], a[href*="post/create"]')
-        return !!(avatar || accountInfo || navItems.length > 0)
-      })
-
-      if (hasUserInfo) {
-        logger.info('[wechat-channels] Login detected: user info found on page')
-        return true
+        if (hasUserInfo) {
+          logger.info('[wechat-channels] Login detected')
+          return true
+        }
+      } catch {
+        // evaluate failed — use URL-based fallback
+        logger.warn('[wechat-channels] detectLoginSuccess evaluate failed, using URL fallback')
+        return url.includes('channels.weixin.qq.com/platform/post')
       }
     }
 

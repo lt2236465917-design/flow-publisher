@@ -80,13 +80,25 @@ export function registerAccountIpcHandlers(): void {
       const page = await adapter.startLogin(context)
 
       // Send QR code to renderer
+      logger.info('[account] Waiting for QR code...')
       const qrDataUrl = await adapter.waitForQRCode(page)
       if (qrDataUrl) {
+        logger.info('[account] QR code captured, sending to renderer')
         const mainWindow = BrowserWindow.getAllWindows()[0]
         mainWindow?.webContents.send('account:qr-code', { accountId, platformId, qrDataUrl })
+      } else {
+        logger.warn('[account] QR code not captured (CDP may be broken). Login will proceed with URL-based detection.')
+        // Notify the user that they need to scan QR in the browser window
+        const mainWindow = BrowserWindow.getAllWindows()[0]
+        mainWindow?.webContents.send('account:qr-code', {
+          accountId, platformId,
+          qrDataUrl: null,
+          fallbackMessage: '无法截取二维码，请在弹出的浏览器窗口中扫码登录'
+        })
       }
 
       // Wait for login result
+      logger.info('[account] Waiting for login result...')
       const result: LoginResult = await adapter.waitForLoginResult(page)
 
       if (result.success) {
@@ -95,44 +107,65 @@ export function registerAccountIpcHandlers(): void {
         // Wait for JavaScript to set additional cookies
         await new Promise(resolve => setTimeout(resolve, 5000))
 
-        // Navigate to different pages to trigger more cookie setting
-        logger.info('[account] Navigating to trigger more cookies...')
-        try {
-          await page.goto('https://channels.weixin.qq.com/platform/post/list', { waitUntil: 'domcontentloaded', timeout: 15000 })
-          await new Promise(resolve => setTimeout(resolve, 3000))
-        } catch (e) {
-          logger.warn('[account] Navigation failed:', e)
+        // Check if browser is still open before trying to interact
+        const isStillOpen = browserManager.isOpen()
+
+        if (isStillOpen) {
+          // Navigate to different pages to trigger more cookie setting
+          logger.info('[account] Navigating to trigger more cookies...')
+          try {
+            await page.goto('https://channels.weixin.qq.com/platform/post/list', { waitUntil: 'domcontentloaded', timeout: 15000 })
+            await new Promise(resolve => setTimeout(resolve, 3000))
+          } catch (e) {
+            logger.warn('[account] Navigation failed:', e)
+          }
+
+          // Try to trigger API calls that set cookies
+          try {
+            await page.evaluate(() => {
+              return fetch('/cgi-bin/mmfinderassistant-bin/auth/auth_data', {
+                credentials: 'include'
+              }).catch(() => {})
+            })
+            await new Promise(resolve => setTimeout(resolve, 2000))
+          } catch (e) {
+            logger.warn('[account] Cookie trigger failed:', e)
+          }
+
+          // Log current URL and page state
+          try {
+            const currentUrl = page.url()
+            logger.info(`[account] Current URL after login: ${currentUrl}`)
+          } catch {
+            logger.warn('[account] Could not get URL (browser may have closed)')
+          }
+        } else {
+          logger.warn('[account] Browser closed before cookie stabilization, will try to save existing cookies')
         }
 
-        // Try to trigger API calls that set cookies
+        // Save cookies — wrapped in try-catch because browser may have closed
         try {
-          await page.evaluate(() => {
-            // Trigger a fetch to the auth endpoint to set cookies
-            return fetch('/cgi-bin/mmfinderassistant-bin/auth/auth_data', {
-              credentials: 'include'
-            }).catch(() => {})
-          })
-          await new Promise(resolve => setTimeout(resolve, 2000))
+          const cookies = await context.cookies()
+          const domains = [...new Set(cookies.map(c => c.domain))]
+          const cookieNames = cookies.map(c => c.name)
+          logger.info(`[account] Cookies in context: ${cookies.length}, domains: ${domains.join(', ')}`)
+          logger.info(`[account] Cookie names: ${cookieNames.join(', ')}`)
+
+          if (cookies.length > 0) {
+            await cookieStore.saveCookies(accountId!, context)
+            repo.updateSession(accountId!, 'logged_in', undefined, result.displayName)
+            saveDatabase()
+            logger.info('[account] Cookies saved successfully')
+          } else {
+            logger.warn('[account] No cookies found — login session may not persist')
+            repo.updateSession(accountId!, 'logged_in', undefined, result.displayName)
+            saveDatabase()
+          }
         } catch (e) {
-          logger.warn('[account] Cookie trigger failed:', e)
+          logger.warn('[account] Cookie save failed (browser may have closed):', e)
+          repo.updateSession(accountId!, 'logged_in', undefined, result.displayName)
+          saveDatabase()
         }
-
-        // Log current URL and page state
-        const currentUrl = page.url()
-        logger.info(`[account] Current URL after login: ${currentUrl}`)
-
-        // Get cookies before saving
-        const cookies = await context.cookies()
-        const domains = [...new Set(cookies.map(c => c.domain))]
-        const cookieNames = cookies.map(c => c.name)
-        logger.info(`[account] Cookies in context: ${cookies.length}, domains: ${domains.join(', ')}`)
-        logger.info(`[account] Cookie names: ${cookieNames.join(', ')}`)
-
-        await cookieStore.saveCookies(accountId!, context)
-        repo.updateSession(accountId!, 'logged_in', undefined, result.displayName)
-        saveDatabase()
-
-        logger.info('[account] Cookies saved successfully')
       }
 
       await browserManager.close()

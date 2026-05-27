@@ -4,7 +4,8 @@ import { useAccountStore } from '@/stores/accountStore'
 interface QrCodeData {
   accountId: string
   platformId: string
-  qrDataUrl: string
+  qrDataUrl: string | null
+  fallbackMessage?: string
 }
 
 export function useQrCodeListener() {
@@ -15,7 +16,7 @@ export function useQrCodeListener() {
       'account:qr-code',
       (...args: unknown[]) => {
         const data = args[0] as QrCodeData
-        setQrDataUrl(data.platformId, data.qrDataUrl)
+        setQrDataUrl(data.platformId, data.qrDataUrl, data.fallbackMessage)
       }
     )
     return unsubscribe

@@ -6,7 +6,12 @@ export const STEALTH_ARGS = [
   '--disable-extensions',
   '--disable-component-extensions-with-background-pages',
   '--disable-default-apps',
+  // GPU rendering — use SwiftShader software rendering to avoid GPU process failures
+  // that block page.screenshot() and page.evaluate() CDP calls
   '--disable-gpu',
+  '--disable-gpu-compositing',
+  '--disable-software-rasterizer',
+  '--use-gl=swiftshader',
   '--disable-dev-shm-usage',
   '--disable-setuid-sandbox',
   '--no-sandbox',

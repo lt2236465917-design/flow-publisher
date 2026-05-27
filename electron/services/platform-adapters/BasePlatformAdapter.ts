@@ -13,6 +13,9 @@ export abstract class BasePlatformAdapter implements IPlatformAdapter {
 
   async startLogin(context: BrowserContext): Promise<Page> {
     const page = await context.newPage()
+    // Set a default timeout for all Playwright operations to prevent infinite hangs
+    page.setDefaultTimeout(15000)
+    page.setDefaultNavigationTimeout(30000)
     await page.goto(this.loginUrl, { waitUntil: 'domcontentloaded' })
     logger.info(`[${this.platformId}] Navigated to login page: ${this.loginUrl}`)
     return page

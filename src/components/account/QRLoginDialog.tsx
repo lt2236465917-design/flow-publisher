@@ -24,6 +24,7 @@ export default function QRLoginDialog({ platformId, open, onClose }: Props) {
 
   const status = loginProgress?.status ?? 'idle'
   const qrDataUrl = loginProgress?.qrDataUrl
+  const fallbackMessage = loginProgress?.fallbackMessage
   const error = loginProgress?.error
 
   return (
@@ -92,7 +93,19 @@ export default function QRLoginDialog({ platformId, open, onClose }: Props) {
 
         {status === 'waiting_qr' && !qrDataUrl && (
           <div style={{ padding: '32px 0' }}>
-            <Spin size="large" />
+            {fallbackMessage ? (
+              <div>
+                <div style={{ fontSize: 24, marginBottom: 12 }}> </div>
+                <div style={{ fontSize: 14, color: '#666', lineHeight: 1.6 }}>
+                  {fallbackMessage}
+                </div>
+                <div style={{ fontSize: 12, color: '#999', marginTop: 8 }}>
+                  扫码后请回到此窗口
+                </div>
+              </div>
+            ) : (
+              <Spin size="large" />
+            )}
           </div>
         )}
 

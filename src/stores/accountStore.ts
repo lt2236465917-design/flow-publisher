@@ -7,6 +7,7 @@ interface LoginProgress {
   platformId: string
   status: 'idle' | 'launching' | 'waiting_qr' | 'scanning' | 'verifying' | 'success' | 'error'
   qrDataUrl?: string
+  fallbackMessage?: string
   error?: string
 }
 
@@ -19,7 +20,7 @@ interface AccountState {
   startLogin: (platformId: string) => Promise<boolean>
   checkSession: (accountId: string) => Promise<void>
   logout: (accountId: string) => Promise<void>
-  setQrDataUrl: (platformId: string, qrDataUrl: string) => void
+  setQrDataUrl: (platformId: string, qrDataUrl: string | null, fallbackMessage?: string) => void
   setLoginStatus: (platformId: string, status: LoginProgress['status'], error?: string) => void
 }
 
@@ -81,11 +82,17 @@ export const useAccountStore = create<AccountState>((set, get) => ({
     }
   },
 
-  setQrDataUrl: (platformId, qrDataUrl) => {
+  setQrDataUrl: (platformId, qrDataUrl, fallbackMessage) => {
     set((s) => ({
       loginProgress: {
         ...s.loginProgress,
-        [platformId]: { ...s.loginProgress[platformId], platformId, qrDataUrl, status: 'waiting_qr' }
+        [platformId]: {
+          ...s.loginProgress[platformId],
+          platformId,
+          qrDataUrl: qrDataUrl || undefined,
+          fallbackMessage,
+          status: 'waiting_qr'
+        }
       }
     }))
   },
