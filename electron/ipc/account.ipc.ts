@@ -13,6 +13,7 @@ import { WcApiAdapter } from '../services/platform-adapters/wechat-channels/WcAp
 import { KsApiAdapter } from '../services/platform-adapters/kuaishou/KsApiAdapter'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import type { LoginResult } from '../services/platform-adapters/IPlatformAdapter'
+import { HttpClient } from '../services/http/HttpClient'
 import { logger } from '../utils/logger'
 
 const browserManager = new BrowserManager()
@@ -72,100 +73,83 @@ export function registerAccountIpcHandlers(): void {
         saveDatabase()
       }
 
-      // Reuse existing browser if alive; only clear cookies for a fresh login
+      // Close existing browser and delete profile for a truly clean login
+      await browserManager.close()
+      browserManager.setCleanLaunch()
       const context = await browserManager.getContext(platformId)
       try {
-        await context.clearCookies()
-        logger.info('[account] Cleared cookies for fresh login')
+        await browserManager.clearAllCookies()
       } catch {
         // Context may have been recreated
       }
       const page = await adapter.startLogin(context)
 
-      // Send QR code to renderer
-      logger.info('[account] Waiting for QR code...')
-      const qrDataUrl = await adapter.waitForQRCode(page)
-      if (qrDataUrl) {
-        logger.info('[account] QR code captured, sending to renderer')
-        const mainWindow = BrowserWindow.getAllWindows()[0]
-        mainWindow?.webContents.send('account:qr-code', { accountId, platformId, qrDataUrl })
-      } else {
-        logger.warn('[account] QR code not captured (CDP may be broken). Login will proceed with URL-based detection.')
-        // Notify the user that they need to scan QR in the browser window
-        const mainWindow = BrowserWindow.getAllWindows()[0]
-        mainWindow?.webContents.send('account:qr-code', {
-          accountId, platformId,
-          qrDataUrl: null,
-          fallbackMessage: '无法截取二维码，请在弹出的浏览器窗口中扫码登录'
-        })
-      }
+      // Notify renderer: user should scan QR in the browser window
+      logger.info('[account] Browser opened, waiting for user to scan QR in browser...')
+      const mainWindow = BrowserWindow.getAllWindows()[0]
+      mainWindow?.webContents.send('account:qr-code', {
+        accountId, platformId,
+        qrDataUrl: null,
+        fallbackMessage: '请在弹出的浏览器窗口中扫码登录'
+      })
 
-      // Wait for login result
+      // Wait for login result (detects QR disappearance in browser)
       logger.info('[account] Waiting for login result...')
       const result: LoginResult = await adapter.waitForLoginResult(page)
 
       if (result.success) {
-        logger.info('[account] Login successful, waiting for cookies to stabilize...')
+        logger.info('[account] Login successful, saving cookies via CDP')
 
-        // Wait for JavaScript to set additional cookies
-        await new Promise(resolve => setTimeout(resolve, 500))
-
-        // Check if browser is still open before trying to interact
-        const isStillOpen = browserManager.isOpen()
-
-        if (isStillOpen) {
-          // Navigate to different pages to trigger more cookie setting
-          logger.info('[account] Navigating to trigger more cookies...')
-          try {
-            await page.goto('https://channels.weixin.qq.com/platform/post/list', { waitUntil: 'domcontentloaded', timeout: 8000 })
-            await new Promise(resolve => setTimeout(resolve, 300))
-          } catch (e) {
-            logger.warn('[account] Navigation failed:', e)
-          }
-
-          // Try to trigger API calls that set cookies
-          try {
-            await page.evaluate(() => {
-              return fetch('/cgi-bin/mmfinderassistant-bin/auth/auth_data', {
-                credentials: 'include'
-              }).catch(() => {})
-            })
-            await new Promise(resolve => setTimeout(resolve, 300))
-          } catch (e) {
-            logger.warn('[account] Cookie trigger failed:', e)
-          }
-
-          // Log current URL and page state
-          try {
-            const currentUrl = page.url()
-            logger.info(`[account] Current URL after login: ${currentUrl}`)
-          } catch {
-            logger.warn('[account] Could not get URL (browser may have closed)')
-          }
-        } else {
-          logger.warn('[account] Browser closed before cookie stabilization, will try to save existing cookies')
-        }
-
-        // Save cookies — wrapped in try-catch because browser may have closed
         try {
-          const cookies = await context.cookies()
-          const domains = [...new Set(cookies.map(c => c.domain))]
-          const cookieNames = cookies.map(c => c.name)
-          logger.info(`[account] Cookies in context: ${cookies.length}, domains: ${domains.join(', ')}`)
-          logger.info(`[account] Cookie names: ${cookieNames.join(', ')}`)
+          // Navigate to trigger more cookie setting
+          try {
+            await page.goto('https://channels.weixin.qq.com/platform/post/list', { waitUntil: 'domcontentloaded', timeout: 5000 })
+          } catch {}
 
-          if (cookies.length > 0) {
-            await cookieStore.saveCookies(accountId!, context)
-            repo.updateSession(accountId!, 'logged_in', undefined, result.displayName)
+          // Use CDP to get all cookies (Playwright's context.cookies() returns 0 for persistent contexts)
+          const cdpCookies = await browserManager.getAllCookiesViaCDP(page)
+          logger.info(`[account] CDP cookies: ${cdpCookies.length} | names: ${cdpCookies.map(c => c.name).join(', ')}`)
+
+          if (cdpCookies.length > 0) {
+            // Convert CDP cookies to Playwright format and save
+            const pwCookies = cdpCookies.map(c => ({
+              name: c.name,
+              value: c.value,
+              domain: c.domain,
+              path: c.path,
+              expires: -1,
+              httpOnly: false,
+              secure: false,
+              sameSite: 'Lax' as const
+            }))
+            const cookieJson = JSON.stringify(pwCookies)
+            repo.updateSession(accountId!, 'logged_in', cookieJson, result.displayName)
             saveDatabase()
-            logger.info('[account] Cookies saved successfully')
+            logger.info(`[account] Cookies saved: ${cdpCookies.length} cookies`)
+
+            // Try to get real account name via API
+            try {
+              // Convert cookie JSON to name=value format for HTTP headers
+              const parsedCookies = JSON.parse(cookieJson)
+              const cookieStr = parsedCookies.map((c: any) => `${c.name}=${c.value}`).join('; ')
+              const apiClient = new HttpClient({ cookies: cookieStr, platform: platformId, accountId: accountId! })
+              const apiInfo = await (adapter as WcApiAdapter).getAccountInfoAPI(apiClient)
+              if (apiInfo?.displayName) {
+                repo.updateSession(accountId!, 'logged_in', cookieJson, apiInfo.displayName)
+                saveDatabase()
+                logger.info(`[account] Account name updated via API: ${apiInfo.displayName}`)
+                result.displayName = apiInfo.displayName
+              }
+            } catch (e) {
+              logger.warn('[account] Failed to get account name via API:', e)
+            }
           } else {
-            logger.warn('[account] No cookies found — login session may not persist')
+            logger.warn('[account] No cookies found via CDP')
             repo.updateSession(accountId!, 'logged_in', undefined, result.displayName)
             saveDatabase()
           }
         } catch (e) {
-          logger.warn('[account] Cookie save failed (browser may have closed):', e)
+          logger.warn('[account] Cookie save failed:', e)
           repo.updateSession(accountId!, 'logged_in', undefined, result.displayName)
           saveDatabase()
         }

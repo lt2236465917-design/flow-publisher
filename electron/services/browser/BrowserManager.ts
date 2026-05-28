@@ -17,6 +17,12 @@ const REALISTIC_UA =
 export class BrowserManager {
   private context: BrowserContext | null = null
   private launchPromise: Promise<BrowserContext> | null = null
+  private _cleanLaunch = false
+
+  /** Next launch will delete the profile directory for a fresh start */
+  setCleanLaunch(): void {
+    this._cleanLaunch = true
+  }
 
   async getContext(platformId: string): Promise<BrowserContext> {
     // Reuse existing context if browser is still alive
@@ -58,6 +64,20 @@ export class BrowserManager {
     if (!existsSync(profileDir)) {
       mkdirSync(profileDir, { recursive: true })
     }
+
+    // Delete the profile directory to ensure a clean state (no persistent cookies)
+    // Only for login flows — for normal operation, reuse existing profile
+    if (this._cleanLaunch) {
+      try {
+        const { rmSync } = require('fs')
+        rmSync(profileDir, { recursive: true, force: true })
+        mkdirSync(profileDir, { recursive: true })
+        logger.info(`Deleted profile directory for clean login: ${profileDir}`)
+      } catch (e) {
+        logger.warn('Failed to delete profile directory:', e)
+      }
+      this._cleanLaunch = false
+    }
     logger.info(`Launching browser for ${platformId}, profile: ${profileDir}`)
 
     this.context = await chromium.launchPersistentContext(profileDir, {
@@ -74,6 +94,44 @@ export class BrowserManager {
     await this.context.addInitScript(STEALTH_SCRIPTS)
     logger.info('Browser launched successfully')
     return this.context
+  }
+
+  /** Clear all cookies at browser level (including persistent profile cookies) */
+  async clearAllCookies(): Promise<void> {
+    if (!this.context) return
+    try {
+      const pages = this.context.pages()
+      if (pages.length > 0) {
+        const client = await this.context.newCDPSession(pages[0])
+        // Clear browser cookies
+        await client.send('Network.clearBrowserCookies')
+        // Also clear browser storage (localStorage, sessionStorage, etc.)
+        await client.send('Storage.clearDataForOrigin', {
+          origin: 'https://channels.weixin.qq.com',
+          storageTypes: 'all'
+        })
+        await client.detach()
+        logger.info('All browser cookies and storage cleared via CDP')
+      }
+    } catch (e) {
+      logger.warn('Failed to clear browser cookies via CDP:', e)
+    }
+  }
+
+  /** Get all cookies via CDP (includes profile cookies not visible to Playwright) */
+  async getAllCookiesViaCDP(page?: import('playwright-core').Page): Promise<Array<{ name: string; value: string; domain: string; path: string }>> {
+    if (!this.context) return []
+    try {
+      const targetPage = page || this.context.pages()[0]
+      if (!targetPage) return []
+      const client = await this.context.newCDPSession(targetPage)
+      const result = await client.send('Network.getAllCookies')
+      await client.detach()
+      return result.cookies || []
+    } catch (e) {
+      logger.warn('Failed to get cookies via CDP:', e)
+      return []
+    }
   }
 
   async close(): Promise<void> {

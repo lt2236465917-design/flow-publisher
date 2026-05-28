@@ -31,23 +31,18 @@ export abstract class BasePlatformAdapter implements IPlatformAdapter {
       try {
         const isLoggedIn = await this.detectLoginSuccess(page)
         if (isLoggedIn) {
-          // Brief wait for page to settle
-          logger.info(`[${this.platformId}] Login detected, waiting for session to stabilize...`)
-          await delay(500)
+          logger.info(`[${this.platformId}] Login detected, extracting account info...`)
 
-          // Extract account info
+          // Extract account info immediately
           const info = await this.extractAccountInfo(page)
           logger.info(`[${this.platformId}] Login successful: ${info.displayName}`)
-
-          // Brief wait for cookies
-          await delay(300)
 
           return { success: true, ...info }
         }
       } catch {
         // Page might navigate, ignore
       }
-      await delay(800)
+      await delay(500)
     }
 
     throw new LoginTimeoutError(this.platformId, timeoutMs)

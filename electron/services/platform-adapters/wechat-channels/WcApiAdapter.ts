@@ -78,38 +78,158 @@ export class WcApiAdapter extends BasePlatformAdapter {
 
   // --- Browser mode (legacy) ---
 
+  async startLogin(context: BrowserContext): Promise<Page> {
+    this.loginCheckCount = 0
+    return super.startLogin(context)
+  }
+
   async waitForQRCode(page: Page): Promise<string | null> {
     logger.info('[wechat-channels] Waiting for QR code...')
-    for (let i = 0; i < 30; i++) {
+
+    // Wait for page to settle
+    await delay(500)
+
+    // Try QR element selector first (fast path)
+    for (let i = 0; i < 5; i++) {
       try {
         const qrEl = await page.$(WC_SELECTORS.qrCode)
         if (qrEl) {
           const screenshot = await qrEl.screenshot()
-          logger.info('[wechat-channels] QR code captured')
+          logger.info('[wechat-channels] QR code element captured')
           return `data:image/png;base64,${screenshot.toString('base64')}`
         }
       } catch {}
-      await delay(1000)
+      await delay(500)
     }
-    return null
+
+    // Fallback: full page screenshot (QR might be rendered differently)
+    logger.info('[wechat-channels] QR element not found, taking page screenshot')
+    try {
+      const screenshot = await page.screenshot({ clip: { x: 0, y: 0, width: 1366, height: 768 } })
+      return `data:image/png;base64,${screenshot.toString('base64')}`
+    } catch (e) {
+      logger.error('[wechat-channels] Screenshot failed:', e)
+      return null
+    }
   }
 
+  private loginCheckCount = 0
+
   protected async detectLoginSuccess(page: Page): Promise<boolean> {
-    const url = page.url()
-    if (url.includes('channels.weixin.qq.com/platform/post')) {
-      return true
+    try {
+      const url = page.url()
+      this.loginCheckCount++
+
+      // Need at least 10 checks (~5s) before detecting login — user needs time to scan QR
+      if (this.loginCheckCount < 10) return false
+
+      // Check cookies via CDP first — finder_id is REQUIRED for API calls
+      let hasFinderId = false
+      let foundAuthCount = 0
+      let wcCookies: any[] = []
+      try {
+        const client = await page.context().newCDPSession(page)
+        const { cookies } = await client.send('Network.getAllCookies')
+        await client.detach()
+
+        wcCookies = cookies.filter((c: any) =>
+          c.domain.includes('weixin') || c.domain.includes('wechat') || c.domain.includes('qq.com')
+        )
+        const authNames = ['finder_id', 'sessionid', 'slave_sid', 'wxuin', 'pass_ticket', 'skey']
+        const foundAuth = wcCookies.filter((c: any) => authNames.includes(c.name) && c.value)
+        foundAuthCount = foundAuth.length
+        hasFinderId = foundAuth.some((c: any) => c.name === 'finder_id')
+
+        if (this.loginCheckCount % 10 === 0) {
+          logger.info(`[wechat-channels] CDP all cookies: ${cookies.length} total, ${wcCookies.length} wc | names: ${wcCookies.map((c: any) => c.name).join(', ')} | url: ${url}`)
+        }
+      } catch (e) {
+        if (this.loginCheckCount % 20 === 0) {
+          logger.warn('[wechat-channels] CDP cookie check failed:', e)
+        }
+      }
+
+      // URL-based detection: page navigates from /login.html to /platform after QR scan
+      // BUT we must also have finder_id — without it, post_create will fail (errCode=300801)
+      const urlChanged = url.includes('/platform/post/list') || url.includes('/cgi-bin/') ||
+          (url.includes('/platform') && !url.includes('/login'))
+
+      if (urlChanged && hasFinderId) {
+        logger.info(`[wechat-channels] Login detected (URL+finder_id: ${url}, cookies: ${wcCookies.map((c: any) => c.name).join(', ')})`)
+        return true
+      }
+
+      // Cookie-only detection: finder_id present (even if URL hasn't fully navigated yet)
+      if (hasFinderId) {
+        logger.info(`[wechat-channels] Login detected (CDP cookies: ${wcCookies.map((c: any) => c.name).join(', ')})`)
+        return true
+      }
+
+      // Fallback: URL changed + at least 3 auth cookies (in case finder_id is named differently)
+      if (urlChanged && foundAuthCount >= 3) {
+        logger.info(`[wechat-channels] Login detected (URL+${foundAuthCount} cookies: ${wcCookies.map((c: any) => c.name).join(', ')})`)
+        return true
+      }
+
+      return false
+    } catch (_e) {
+      return false
     }
-    const avatar = await page.$(WC_SELECTORS.loginSuccess)
-    return avatar !== null
+  }
+
+  /** Check if session is still valid (for checkSession) */
+  private async isPageLoggedIn(page: Page): Promise<boolean> {
+    try {
+      const context = page.context()
+      const cookies = await context.cookies('https://channels.weixin.qq.com')
+      return cookies.some(c => c.name === 'finder_id' && c.value)
+    } catch {
+      return false
+    }
   }
 
   protected async extractAccountInfo(page: Page): Promise<{ displayName?: string; avatarUrl?: string }> {
     try {
-      const avatarEl = await page.$(WC_SELECTORS.avatarImg)
-      const avatarUrl = avatarEl ? await avatarEl.getAttribute('src') ?? undefined : undefined
-      const nameEl = await page.$(WC_SELECTORS.userName)
-      const displayName = nameEl ? await nameEl.textContent() ?? undefined : undefined
-      return { displayName: displayName || '视频号用户', avatarUrl }
+      // Use page.$() (CDP-based, no page.evaluate timeout issues)
+      const extractFromPage = async (): Promise<{ displayName?: string; avatarUrl?: string }> => {
+        let avatarUrl: string | undefined
+        const avatarEl = await page.$('img[class*="avatar"], div[class*="avatar"] img, img[src*="avatar"]')
+        if (avatarEl) {
+          avatarUrl = await avatarEl.getAttribute('src') || undefined
+          if (avatarUrl?.includes('default')) avatarUrl = undefined
+        }
+
+        let displayName: string | undefined
+        const nameSelectors = ['span[class*="name"]', 'div[class*="nickname"]', 'span[class*="nickname"]', 'div[class*="account-name"]']
+        for (const sel of nameSelectors) {
+          const el = await page.$(sel)
+          if (el) {
+            const text = await el.textContent()
+            const trimmed = text?.trim()
+            if (trimmed && trimmed.length >= 2 && trimmed.length <= 20 &&
+                !['首页', '发布', '数据', '管理', '创作', '视频'].includes(trimmed)) {
+              displayName = trimmed
+              break
+            }
+          }
+        }
+        return { displayName, avatarUrl }
+      }
+
+      // Try current page first
+      let info = await extractFromPage()
+
+      // If no name found, navigate to post/list and retry
+      if (!info.displayName) {
+        try {
+          await page.goto(WC_URLS.home, { waitUntil: 'domcontentloaded', timeout: 5000 })
+          info = await extractFromPage()
+        } catch {
+          // Navigation failed, use what we have
+        }
+      }
+
+      return { displayName: info.displayName || '视频号用户', avatarUrl: info.avatarUrl }
     } catch {
       return { displayName: '视频号用户' }
     }
@@ -118,9 +238,8 @@ export class WcApiAdapter extends BasePlatformAdapter {
   async checkSession(context: BrowserContext): Promise<boolean> {
     try {
       const page = await context.newPage()
-      await page.goto(WC_URLS.home, { waitUntil: 'domcontentloaded', timeout: 15000 })
-      await delay(1500)
-      const isLoggedIn = await this.detectLoginSuccess(page)
+      await page.goto(WC_URLS.home, { waitUntil: 'domcontentloaded', timeout: 10000 })
+      const isLoggedIn = await this.isPageLoggedIn(page)
       await page.close()
       return isLoggedIn
     } catch {
@@ -864,8 +983,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
           urlCdnTaskId: draftId,
           videoPlayLen: videoDuration,
           width: videoWidth
-        }],
-        shortTitle: []
+        }]
       },
       report: {
         _log_finder_id: finderUsername || '',
