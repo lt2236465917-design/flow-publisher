@@ -1,5 +1,6 @@
-import axios, { type AxiosInstance, type AxiosRequestConfig, type AxiosResponse } from 'axios'
+import axios, { type AxiosRequestConfig, type AxiosResponse } from 'axios'
 import { logger } from '../../utils/logger'
+import { Agent as HttpsAgent } from 'https'
 
 const DEFAULT_TIMEOUT = 30_000
 const UPLOAD_TIMEOUT = 300_000
@@ -29,7 +30,24 @@ export interface ApiResponse<T = unknown> {
 }
 
 const REALISTIC_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36 Edg/116.0.1938.69'
+
+// Browser-like headers matching yixiaoer's createHttpInstance
+const BROWSER_HEADERS: Record<string, string> = {
+  'User-Agent': REALISTIC_UA,
+  Accept: 'application/json, text/plain, */*',
+  'Accept-Encoding': 'gzip,deflate,br',
+  'Accept-Language': 'zh-CN,zh;q=0.9',
+  Connection: 'keep-alive',
+  'sec-ch-ua': '"Microsoft Edge";v="117", "Not;A=Brand";v="8", "Chromium";v="117"',
+  'sec-ch-ua-mobile': '?0',
+  'sec-ch-ua-platform': '"Windows"',
+  'Sec-Fetch-Site': 'same-origin',
+  'Sec-Fetch-Mode': 'cors',
+  'Sec-Fetch-Dest': 'empty'
+}
+
+const HTTPS_AGENT = new HttpsAgent({ rejectUnauthorized: false })
 
 export class HttpClient {
   private context: CookieContext
@@ -48,13 +66,16 @@ export class HttpClient {
       url: options.url,
       data: options.data,
       params: options.params,
+      adapter: 'http',
+      httpsAgent: HTTPS_AGENT,
       headers: {
-        'User-Agent': REALISTIC_UA,
+        ...BROWSER_HEADERS,
         ...(options.noCookie ? {} : { Cookie: this.context.cookies }),
         ...options.headers
       },
       timeout: options.timeout || DEFAULT_TIMEOUT,
       responseType: options.responseType || 'json',
+      validateStatus: (status) => status >= 0 && status < 800,
       onUploadProgress: options.onUploadProgress
         ? (event) => {
             options.onUploadProgress!({
@@ -67,7 +88,16 @@ export class HttpClient {
     }
 
     try {
+      // Log the actual request for debugging
+      logger.info(`[HttpClient] ${options.method} ${options.url}`)
+      logger.info(`[HttpClient] Headers: ${JSON.stringify(config.headers)}`)
+      if (typeof options.data === 'string') {
+        logger.info(`[HttpClient] Body (string, first 500): ${options.data.substring(0, 500)}`)
+      }
+
       const response: AxiosResponse<T> = await axios(config)
+
+      logger.info(`[HttpClient] Response: status=${response.status}, url=${response.request?.res?.responseUrl || response.config?.url || 'unknown'}`)
       return {
         status: response.status,
         data: response.data,

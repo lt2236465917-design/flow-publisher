@@ -16,10 +16,39 @@ const REALISTIC_UA =
 
 export class BrowserManager {
   private context: BrowserContext | null = null
+  private launchPromise: Promise<BrowserContext> | null = null
 
   async getContext(platformId: string): Promise<BrowserContext> {
-    if (this.context) return this.context
+    // Reuse existing context if browser is still alive
+    if (this.context) {
+      try {
+        // Verify browser is still connected
+        const pages = this.context.pages()
+        if (pages.length >= 0) {
+          logger.info(`Reusing existing browser context (${pages.length} pages open)`)
+          return this.context
+        }
+      } catch {
+        logger.warn('Existing browser context is stale, relaunching...')
+        this.context = null
+      }
+    }
 
+    // If a launch is already in progress, wait for it
+    if (this.launchPromise) {
+      return this.launchPromise
+    }
+
+    this.launchPromise = this.doLaunch(platformId)
+    try {
+      const ctx = await this.launchPromise
+      return ctx
+    } finally {
+      this.launchPromise = null
+    }
+  }
+
+  private async doLaunch(platformId: string): Promise<BrowserContext> {
     const executablePath = this.findBrowser()
     if (!executablePath) {
       throw new BrowserLaunchError('未找到 Chrome 或 Edge 浏览器')
@@ -49,7 +78,11 @@ export class BrowserManager {
 
   async close(): Promise<void> {
     if (this.context) {
-      await this.context.close()
+      try {
+        await this.context.close()
+      } catch {
+        // Browser may already be closed
+      }
       this.context = null
       logger.info('Browser closed')
     }
@@ -93,7 +126,7 @@ export class BrowserManager {
         // 从注册表读取默认浏览器
         const result = execSync(
           'reg query "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice" /v ProgId',
-          { encoding: 'utf-8', timeout: 3000 }
+          { encoding: 'utf-8', timeout: 1000 }
         )
         const match = result.match(/ProgId\s+REG_SZ\s+(.+)/)
         if (!match) return null
@@ -101,7 +134,7 @@ export class BrowserManager {
         const progId = match[1].trim()
         const appCmd = execSync(
           `reg query "HKCR\\${progId}\\shell\\open\\command" /ve`,
-          { encoding: 'utf-8', timeout: 3000 }
+          { encoding: 'utf-8', timeout: 1000 }
         )
         const pathMatch = appCmd.match(/REG_SZ\s+"([^"]+)"/)
         if (pathMatch && existsSync(pathMatch[1])) {

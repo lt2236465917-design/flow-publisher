@@ -50,8 +50,8 @@ export class WcAdapter extends BasePlatformAdapter {
   async waitForQRCode(page: Page): Promise<string | null> {
     logger.info('[wechat-channels] Waiting for QR code...')
 
-    // Wait for page to settle
-    await delay(5000)
+    // Short wait for page to settle
+    await delay(500)
 
     // Try to take a screenshot with a hard timeout
     const screenshotWithTimeout = async (timeoutMs: number): Promise<Buffer | null> => {
@@ -61,23 +61,21 @@ export class WcAdapter extends BasePlatformAdapter {
       ])
     }
 
-    const screenshot = await screenshotWithTimeout(8000)
+    const screenshot = await screenshotWithTimeout(3000)
     if (screenshot) {
       logger.info(`[wechat-channels] Page screenshot captured`)
       return `data:image/png;base64,${screenshot.toString('base64')}`
     }
 
-    // First screenshot timed out — CDP might be broken. Try once more after a delay.
+    // First screenshot timed out — retry once
     logger.warn('[wechat-channels] First screenshot timed out, retrying...')
-    await delay(3000)
-    const retry = await screenshotWithTimeout(10000)
+    await delay(300)
+    const retry = await screenshotWithTimeout(3000)
     if (retry) {
       logger.info(`[wechat-channels] Retry screenshot captured`)
       return `data:image/png;base64,${retry.toString('base64')}`
     }
 
-    // CDP is completely broken — return null so the flow continues to waitForLoginResult
-    // The user can scan the QR code in the launched browser; we'll detect login via URL changes
     logger.error('[wechat-channels] Screenshot failed (CDP broken). Returning null — will detect login via URL.')
     return null
   }
@@ -105,7 +103,7 @@ export class WcAdapter extends BasePlatformAdapter {
             // after timeout, assume login (the page wouldn't stay here without auth)
             logger.warn('[wechat-channels] detectLoginSuccess evaluate timeout, using URL fallback')
             resolve(url.includes('channels.weixin.qq.com/platform/post'))
-          }, 8000))
+          }, 5000))
         ])
 
         if (hasUserInfo) {
@@ -130,11 +128,11 @@ export class WcAdapter extends BasePlatformAdapter {
       if (currentUrl.includes('post/create')) {
         logger.info('[wechat-channels] On create page, navigating to post/list')
         await page.goto(WC_URLS.home, { waitUntil: 'domcontentloaded', timeout: 15000 })
-        await delay(3000)
+        await delay(500)
       }
 
       try {
-        await page.waitForSelector('div[class*="account-info"], div[class*="user-info"], img[class*="avatar"]', { timeout: 10000 })
+        await page.waitForSelector('div[class*="account-info"], div[class*="user-info"], img[class*="avatar"]', { timeout: 3000 })
         logger.info('[wechat-channels] Account info element found')
       } catch {
         logger.warn('[wechat-channels] Account info not found within 10s')
@@ -192,7 +190,7 @@ export class WcAdapter extends BasePlatformAdapter {
     try {
       const page = await context.newPage()
       await page.goto(WC_URLS.home, { waitUntil: 'domcontentloaded', timeout: 15000 })
-      await delay(3000)
+      await delay(500)
       const isLoggedIn = await this.detectLoginSuccess(page)
       await page.close()
       return isLoggedIn

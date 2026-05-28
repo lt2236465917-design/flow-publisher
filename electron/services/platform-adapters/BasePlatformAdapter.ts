@@ -14,8 +14,8 @@ export abstract class BasePlatformAdapter implements IPlatformAdapter {
   async startLogin(context: BrowserContext): Promise<Page> {
     const page = await context.newPage()
     // Set a default timeout for all Playwright operations to prevent infinite hangs
-    page.setDefaultTimeout(15000)
-    page.setDefaultNavigationTimeout(30000)
+    page.setDefaultTimeout(10000)
+    page.setDefaultNavigationTimeout(15000)
     await page.goto(this.loginUrl, { waitUntil: 'domcontentloaded' })
     logger.info(`[${this.platformId}] Navigated to login page: ${this.loginUrl}`)
     return page
@@ -31,23 +31,23 @@ export abstract class BasePlatformAdapter implements IPlatformAdapter {
       try {
         const isLoggedIn = await this.detectLoginSuccess(page)
         if (isLoggedIn) {
-          // Wait for page to fully load and cookies to be set
+          // Brief wait for page to settle
           logger.info(`[${this.platformId}] Login detected, waiting for session to stabilize...`)
-          await delay(5000)
+          await delay(500)
 
           // Extract account info
           const info = await this.extractAccountInfo(page)
           logger.info(`[${this.platformId}] Login successful: ${info.displayName}`)
 
-          // Additional wait to ensure all cookies are captured
-          await delay(2000)
+          // Brief wait for cookies
+          await delay(300)
 
           return { success: true, ...info }
         }
       } catch {
         // Page might navigate, ignore
       }
-      await delay(2000)
+      await delay(800)
     }
 
     throw new LoginTimeoutError(this.platformId, timeoutMs)

@@ -23,7 +23,7 @@ export const STEALTH_ARGS = [
   '--disable-client-side-phishing-detection',
   '--disable-component-update',
   '--disable-domain-reliability',
-  '--disable-features=TranslateUI',
+  '--disable-features=TranslateUI,BackForwardCache,MediaRouter',
   '--disable-hang-monitor',
   '--disable-ipc-flooding-protection',
   '--disable-popup-blocking',
@@ -32,7 +32,10 @@ export const STEALTH_ARGS = [
   '--disable-sync',
   '--metrics-recording-only',
   '--no-experiments',
-  '--no-default-browser-check'
+  '--no-default-browser-check',
+  // Speed-focused args for faster launch
+  '--disable-offline-load-stale-cache',
+  '--disable-composited-antialiasing'
 ]
 
 export const STEALTH_SCRIPTS = `

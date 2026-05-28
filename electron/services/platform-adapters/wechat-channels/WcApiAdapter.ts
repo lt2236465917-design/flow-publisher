@@ -119,7 +119,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
     try {
       const page = await context.newPage()
       await page.goto(WC_URLS.home, { waitUntil: 'domcontentloaded', timeout: 15000 })
-      await delay(3000)
+      await delay(1500)
       const isLoggedIn = await this.detectLoginSuccess(page)
       await page.close()
       return isLoggedIn
@@ -363,17 +363,14 @@ export class WcApiAdapter extends BasePlatformAdapter {
     const downloadUrl = await this.uploadVideoChunks(client, filePath, stats.size, uploadData.authKey, uploadId, String(videoFileType), uploadUin, onProgress)
 
     // Store upload result for submitContentAPI
-    // Transform downloadUrl to finder.video.qq.com domain (matching yixiaoer)
-    let transformedUrl = downloadUrl || ''
-    if (transformedUrl.includes('qq.com')) {
-      transformedUrl = 'https://finder.video.qq.com' + transformedUrl.split('qq.com')[1]
-    }
+    // Use the original downloadUrl from completepartuploaddfs without transformation
+    // The server expects the exact URL it returned
 
     // Compute video file MD5 (required by post_create API)
     const md5sum = await this.computeFileMd5(filePath)
 
     this.lastUploadResult = {
-      downloadUrl: transformedUrl,
+      downloadUrl: downloadUrl || '',
       uploadId,
       fileSize: stats.size,
       fileName: require('path').basename(filePath),
@@ -717,9 +714,15 @@ export class WcApiAdapter extends BasePlatformAdapter {
 
     // Use upload result data for media info
     const uploadResult = this.lastUploadResult
-    const downloadUrl = uploadResult?.downloadUrl || ''
+    const rawDownloadUrl = uploadResult?.downloadUrl || ''
     const fileSize = uploadResult?.fileSize || 0
     const md5sum = uploadResult?.md5sum || ''
+
+    // Transform downloadUrl to https://finder.video.qq.com/... format (matching yixiaoer)
+    // yixiaoer: const at = "https://finder.video.qq.com" + Et.DownloadURL.toString().split("qq.com")[1]
+    const downloadUrl = rawDownloadUrl
+      ? 'https://finder.video.qq.com' + rawDownloadUrl.split('qq.com')[1]
+      : rawDownloadUrl
 
     // Step 1: Call post_clip_video (saveTmpPostDraft) to get draftId + clipKey — REQUIRED by the API
     let draftId = uploadResult?.draftId || uploadResult?.uploadId || videoId || ''
@@ -814,6 +817,19 @@ export class WcApiAdapter extends BasePlatformAdapter {
     const isFullPost = (aspectRatio > 0.857 && aspectRatio > 0) ? 0 : 1
     const handleFlag = videoDuration > 60 ? 2 : 1
 
+    // Generate finderTopicInfo XML matching yixiaoer's XMLWriter output
+    // yixiaoer's XMLWriter escapes < and >, then .replace(/&lt;/g,"<").replace(/&gt;/g,">") converts back
+    // So the final output uses actual CDATA: <![CDATA[desc]]>
+    // Topics are wrapped in <topic> child elements
+    const valueCount = 1 + topics.length
+    const atPos = topics.length > 0 ? (topics.length + 2).toString() : '2'
+    let topicXml = `<finder><version>1</version><valuecount>${valueCount}</valuecount><style><at>${atPos}</at></style>`
+    topicXml += `<value0><![CDATA[${desc}]]></value0>`
+    for (let i = 0; i < topics.length; i++) {
+      topicXml += `<value${i + 1}><topic><![CDATA[#${topics[i]}#]]></topic></value${i + 1}>`
+    }
+    topicXml += '</finder>'
+
     const postReq: Record<string, unknown> = {
       longitude: 0,
       latitude: 0,
@@ -831,7 +847,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
         extReading: { link: '', title: '' },
         mediaType: 4,
         location,
-        topic: { finderTopicInfo: '' },
+        topic: { finderTopicInfo: topicXml },
         mentionedUser: [],
         mpTitle: '',
         media: [{
@@ -855,6 +871,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
         _log_finder_id: finderUsername || '',
         clipKey,
         draftId,
+        // yixiaoer swaps these: height=video.width, width=video.height
         height: videoWidth || 1920,
         width: videoHeight || 1280,
         pluginSessionId: null,
@@ -896,33 +913,39 @@ export class WcApiAdapter extends BasePlatformAdapter {
       }
     }
 
-    logger.info(`[wechat-channels] Submit body: ${JSON.stringify(postReq).substring(0, 8000)}`)
+    // Use post_create with flat body (matching yixiaoer's default pubType=1 path)
+    const postBody = JSON.stringify(postReq)
+
+    logger.info(`[wechat-channels] Submit to post_create, body: ${postBody.substring(0, 8000)}`)
     logger.info(`[wechat-channels] Key values — downloadUrl: ${downloadUrl}, finderId: ${finderId}, finderUsername: ${finderUsername}, draftId: ${draftId}, clipKey: ${clipKey}, md5sum: ${md5sum}, coverUrl: ${coverUrl}`)
 
     try {
-      const response = await client.post<{
-        errCode: number
+      // Use HttpClient (axios with full browser-like headers) matching yixiaoer's $http.post
+      const postResp = await client.post<{
+        errCode?: number
         errMsg?: string
-        data?: { feedId: string }
+        data?: { feedId?: string; baseResp?: { errcode?: number; errmsg?: string } }
       }>(
         API.publish,
-        postReq,
-        {
-          referer: 'https://channels.weixin.qq.com/platform/post/create',
-          'Content-type': 'application/json'
-        }
+        postBody,
+        { referer: 'https://channels.weixin.qq.com/platform/post/create', Origin: 'https://channels.weixin.qq.com', 'Content-Type': 'application/json' },
+        { timeout: 30_000, responseType: 'json' }
       )
 
-      logger.info(`[wechat-channels] post_create response: ${JSON.stringify(response.data).substring(0, 500)}`)
+      const respData = postResp.data
+      logger.info(`[wechat-channels] post_create response: ${JSON.stringify(respData).substring(0, 500)}`)
 
-      if (response.data?.errCode !== 0) {
-        const errMsg = response.data?.errMsg || '未知错误'
-        const respStr = JSON.stringify(response.data).substring(0, 500)
-        logger.error(`[wechat-channels] Submit failed: errCode=${response.data?.errCode}, msg=${errMsg}, resp=${respStr}`)
-        throw new Error(`内容提交失败: ${errMsg} | errCode=${response.data?.errCode} | finderId=${finderId} | finderUsername=${finderUsername} | draftId=${draftId} | clipKey=${clipKey} | url=${downloadUrl.substring(0, 80)}`)
+      // yixiaoer checks data.baseResp.errcode for post_create
+      const errCode = respData?.errCode ?? respData?.data?.baseResp?.errcode ?? -1
+      const errMsg = respData?.errMsg || respData?.data?.baseResp?.errmsg || '未知错误'
+
+      if (errCode !== 0) {
+        logger.error(`[wechat-channels] Submit failed: errCode=${errCode}, msg=${errMsg}`)
+        throw new Error(`内容提交失败: ${errMsg} | errCode=${errCode} | finderId=${finderId} | finderUsername=${finderUsername} | draftId=${draftId} | clipKey=${clipKey} | url=${downloadUrl.substring(0, 80)}`)
       }
 
-      logger.info(`[wechat-channels] Content submitted successfully, feedId: ${response.data?.data?.feedId}`)
+      const feedId = respData?.data?.feedId
+      logger.info(`[wechat-channels] Content submitted successfully, feedId: ${feedId}`)
     } catch (err) {
       logger.error('[wechat-channels] submitContentAPI error:', err)
       throw err

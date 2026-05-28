@@ -72,11 +72,14 @@ export function registerAccountIpcHandlers(): void {
         saveDatabase()
       }
 
-      // 清除旧的浏览器配置，确保干净登录
-      await browserManager.close()
-      clearBrowserProfile(platformId)
-
+      // Reuse existing browser if alive; only clear cookies for a fresh login
       const context = await browserManager.getContext(platformId)
+      try {
+        await context.clearCookies()
+        logger.info('[account] Cleared cookies for fresh login')
+      } catch {
+        // Context may have been recreated
+      }
       const page = await adapter.startLogin(context)
 
       // Send QR code to renderer
@@ -105,7 +108,7 @@ export function registerAccountIpcHandlers(): void {
         logger.info('[account] Login successful, waiting for cookies to stabilize...')
 
         // Wait for JavaScript to set additional cookies
-        await new Promise(resolve => setTimeout(resolve, 5000))
+        await new Promise(resolve => setTimeout(resolve, 500))
 
         // Check if browser is still open before trying to interact
         const isStillOpen = browserManager.isOpen()
@@ -114,8 +117,8 @@ export function registerAccountIpcHandlers(): void {
           // Navigate to different pages to trigger more cookie setting
           logger.info('[account] Navigating to trigger more cookies...')
           try {
-            await page.goto('https://channels.weixin.qq.com/platform/post/list', { waitUntil: 'domcontentloaded', timeout: 15000 })
-            await new Promise(resolve => setTimeout(resolve, 3000))
+            await page.goto('https://channels.weixin.qq.com/platform/post/list', { waitUntil: 'domcontentloaded', timeout: 8000 })
+            await new Promise(resolve => setTimeout(resolve, 300))
           } catch (e) {
             logger.warn('[account] Navigation failed:', e)
           }
@@ -127,7 +130,7 @@ export function registerAccountIpcHandlers(): void {
                 credentials: 'include'
               }).catch(() => {})
             })
-            await new Promise(resolve => setTimeout(resolve, 2000))
+            await new Promise(resolve => setTimeout(resolve, 300))
           } catch (e) {
             logger.warn('[account] Cookie trigger failed:', e)
           }
