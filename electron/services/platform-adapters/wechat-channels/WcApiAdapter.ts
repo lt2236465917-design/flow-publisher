@@ -970,16 +970,12 @@ export class WcApiAdapter extends BasePlatformAdapter {
         mentionedUser: [],
         mpTitle: '',
         media: [{
-          coverUrl,
+          ...(coverUrl ? { coverUrl, fullCoverUrl: coverUrl, fullThumbUrl: coverUrl, thumbUrl: coverUrl, shareCoverUrl: '' } : {}),
           fileSize,
-          fullCoverUrl: coverUrl,
-          fullThumbUrl: coverUrl,
           height: videoHeight,
           md5sum,
           mediaType: 4,
-          shareCoverUrl: '',
           url: downloadUrl,
-          thumbUrl: coverUrl,
           urlCdnTaskId: draftId,
           videoPlayLen: videoDuration,
           width: videoWidth
@@ -1018,8 +1014,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
         extReading: { link: '', title: '' },
         feadLocation: { latitude: 0, longitude: 0 },
         media: [{
-          coverUrl,
-          thumbUrl: coverUrl,
+          ...(coverUrl ? { coverUrl, thumbUrl: coverUrl } : {}),
           url: downloadUrl,
           videoPlayLen: videoDuration,
           videoPlayLenMs: videoDuration * 1000,
