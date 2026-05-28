@@ -1,5 +1,6 @@
 export const KS_SELECTORS = {
   // Login
+  loginBtn: 'button:has-text("登录"), a:has-text("登录"), div[class*="login-btn"], span[class*="login"]',
   qrCode: 'img[class*="qrcode"], canvas[class*="qr"], div[class*="login"] img[src*="qrcode"]',
   loginSuccess: 'img[class*="avatar"], div[class*="avatar"], a[href*="publish"]',
   avatarImg: 'img[class*="avatar"]',

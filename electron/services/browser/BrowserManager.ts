@@ -97,21 +97,41 @@ export class BrowserManager {
   }
 
   /** Clear all cookies at browser level (including persistent profile cookies) */
-  async clearAllCookies(): Promise<void> {
+  async clearAllCookies(platformId?: string): Promise<void> {
     if (!this.context) return
     try {
       const pages = this.context.pages()
       if (pages.length > 0) {
         const client = await this.context.newCDPSession(pages[0])
-        // Clear browser cookies
+        // Clear ALL browser cookies across all domains
         await client.send('Network.clearBrowserCookies')
-        // Also clear browser storage (localStorage, sessionStorage, etc.)
-        await client.send('Storage.clearDataForOrigin', {
-          origin: 'https://channels.weixin.qq.com',
-          storageTypes: 'all'
-        })
+
+        // Clear storage for platform-specific origins
+        const origins: string[] = []
+        if (platformId === 'wechat-channels' || !platformId) {
+          origins.push('https://channels.weixin.qq.com')
+        }
+        if (platformId === 'kuaishou' || !platformId) {
+          origins.push('https://cp.kuaishou.com')
+          origins.push('https://www.kuaishou.com')
+        }
+        if (platformId === 'douyin' || !platformId) {
+          origins.push('https://creator.douyin.com')
+        }
+        if (platformId === 'xiaohongshu' || !platformId) {
+          origins.push('https://creator.xiaohongshu.com')
+        }
+
+        for (const origin of origins) {
+          try {
+            await client.send('Storage.clearDataForOrigin', { origin, storageTypes: 'all' })
+          } catch {
+            // Origin may not have storage
+          }
+        }
+
         await client.detach()
-        logger.info('All browser cookies and storage cleared via CDP')
+        logger.info(`All browser cookies and storage cleared via CDP (platform: ${platformId || 'all'})`)
       }
     } catch (e) {
       logger.warn('Failed to clear browser cookies via CDP:', e)

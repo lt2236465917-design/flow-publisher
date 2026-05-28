@@ -78,7 +78,7 @@ export function registerAccountIpcHandlers(): void {
       browserManager.setCleanLaunch()
       const context = await browserManager.getContext(platformId)
       try {
-        await browserManager.clearAllCookies()
+        await browserManager.clearAllCookies(platformId)
       } catch {
         // Context may have been recreated
       }
@@ -133,12 +133,15 @@ export function registerAccountIpcHandlers(): void {
               const parsedCookies = JSON.parse(cookieJson)
               const cookieStr = parsedCookies.map((c: any) => `${c.name}=${c.value}`).join('; ')
               const apiClient = new HttpClient({ cookies: cookieStr, platform: platformId, accountId: accountId! })
-              const apiInfo = await (adapter as WcApiAdapter).getAccountInfoAPI(apiClient)
-              if (apiInfo?.displayName) {
-                repo.updateSession(accountId!, 'logged_in', cookieJson, apiInfo.displayName)
-                saveDatabase()
-                logger.info(`[account] Account name updated via API: ${apiInfo.displayName}`)
-                result.displayName = apiInfo.displayName
+              // getAccountInfoAPI is optional — not all adapters implement it
+              if ('getAccountInfoAPI' in adapter && typeof (adapter as any).getAccountInfoAPI === 'function') {
+                const apiInfo = await (adapter as any).getAccountInfoAPI(apiClient)
+                if (apiInfo?.displayName) {
+                  repo.updateSession(accountId!, 'logged_in', cookieJson, apiInfo.displayName)
+                  saveDatabase()
+                  logger.info(`[account] Account name updated via API: ${apiInfo.displayName}`)
+                  result.displayName = apiInfo.displayName
+                }
               }
             } catch (e) {
               logger.warn('[account] Failed to get account name via API:', e)
