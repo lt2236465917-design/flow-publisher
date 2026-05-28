@@ -1,6 +1,7 @@
 import { chromium, type BrowserContext, type Page } from 'playwright-core'
 import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
+import { execSync } from 'child_process'
 import { logger } from '../../utils/logger'
 
 const SIGN_TIMEOUT = 10_000
@@ -212,12 +213,69 @@ export class SignService {
   }
 
   /**
-   * Kuaishou signature generation.
+   * Kuaishou __NS_sig3 signature generation.
+   *
+   * Uses the same pattern as Douyin: load the creator page in a headless browser,
+   * trigger an API call from the browser context, intercept the outgoing request
+   * to capture the __NS_sig3 parameter that Kuaishou's anti-bot JS adds.
+   *
+   * @param data JSON string with { url, body } — url is the API path (e.g. "/rest/cp/works/v2/video/pc/upload/finish")
    */
   private async getKuaishouSignature(cookie: string, data: string): Promise<string> {
-    // Kuaishou uses a simpler signing mechanism
-    // The API calls don't require complex signatures like Douyin
-    return ''
+    const page = await this.getOrCreatePage('kuaishou', cookie, 'https://cp.kuaishou.com/article/publish/video')
+
+    try {
+      const { url: apiUrl, body } = JSON.parse(data) as { url: string; body?: string }
+      let capturedSig3 = ''
+
+      // Set up route interceptor to capture __NS_sig3 from outgoing requests
+      await page.route('**/cp.kuaishou.com/rest/**', async (route) => {
+        const reqUrl = route.request().url()
+        const match = reqUrl.match(/__NS_sig3=([^&]+)/)
+        if (match && match[1]) {
+          capturedSig3 = match[1]
+          logger.info(`[sign] Kuaishou __NS_sig3 captured: ${capturedSig3.substring(0, 20)}...`)
+        }
+        // Abort — we only needed the signature
+        await route.abort()
+      })
+
+      // Trigger an API call from the browser context.
+      // Kuaishou's anti-bot JS intercepts fetch/XHR and adds __NS_sig3 before sending.
+      await page.evaluate(
+        ({ apiUrl, body }) => {
+          const fullUrl = `https://cp.kuaishou.com${apiUrl}`
+          const fetchOptions: RequestInit = {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+            credentials: 'include'
+          }
+          if (body) {
+            fetchOptions.body = body
+          }
+          fetch(fullUrl, fetchOptions).catch(() => {})
+        },
+        { apiUrl, body: body || '' }
+      )
+
+      // Wait for the route interceptor to fire
+      await page.waitForTimeout(3000)
+
+      // Clean up the route
+      await page.unroute('**/cp.kuaishou.com/rest/**')
+
+      if (capturedSig3) {
+        logger.info(`[sign] Kuaishou __NS_sig3 captured successfully`)
+        return capturedSig3
+      }
+
+      logger.warn('[sign] Kuaishou __NS_sig3 not captured — anti-bot JS may not have intercepted the request')
+      return ''
+    } catch (err) {
+      logger.error('[sign] Kuaishou signature generation failed:', err)
+      this.resetPage('kuaishou')
+      return ''
+    }
   }
 
   /**
@@ -267,8 +325,14 @@ export class SignService {
         mkdirSync(profileDir, { recursive: true })
       }
 
+      const executablePath = this.findBrowser()
+      if (!executablePath) {
+        throw new Error('未找到 Chrome 或 Edge 浏览器')
+      }
+
       const context = await chromium.launchPersistentContext(profileDir, {
         headless: true,
+        executablePath,
         args: [
           '--disable-blink-features=AutomationControlled',
           '--no-sandbox',
@@ -277,8 +341,6 @@ export class SignService {
         ],
         viewport: { width: 1920, height: 1080 },
         locale: 'zh-CN',
-        userAgent:
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
         bypassCSP: true
       })
 
@@ -335,6 +397,37 @@ export class SignService {
       page.close().catch(() => {})
     }
     this.pages.delete(platform)
+  }
+
+  private findBrowser(): string | null {
+    try {
+      if (process.platform === 'win32') {
+        const result = execSync(
+          'reg query "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice" /v ProgId',
+          { encoding: 'utf-8', timeout: 1000 }
+        )
+        const match = result.match(/ProgId\s+REG_SZ\s+(.+)/)
+        if (match) {
+          const progId = match[1].trim()
+          if (progId.includes('Edge')) {
+            const p = 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe'
+            if (existsSync(p)) return p
+          }
+          if (progId.includes('Chrome')) {
+            const p = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+            if (existsSync(p)) return p
+          }
+        }
+      }
+    } catch {}
+    const candidates = [
+      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+    ]
+    for (const p of candidates) {
+      if (existsSync(p)) return p
+    }
+    return null
   }
 
   private getSignDataDir(): string {

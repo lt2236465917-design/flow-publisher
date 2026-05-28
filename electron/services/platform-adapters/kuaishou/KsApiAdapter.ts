@@ -10,6 +10,7 @@ import { delay } from '../../../utils/delays'
 import { existsSync, statSync, readFileSync } from 'fs'
 import { createHash } from 'crypto'
 import { ffmpegService } from '../../ffmpeg/FFmpegService'
+import { getSignService } from '../../sign/SignService'
 
 // Kuaishou Creator API endpoints (reverse-engineered from browser)
 const API = {
@@ -341,7 +342,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
           { referer: REFERER, Origin: ORIGIN, 'Content-Type': 'application/json' }
         )
 
-        logger.info(`[kuaishou] Upload pre response: ${JSON.stringify(preResponse.data).substring(0, 500)}`)
+        logger.info(`[kuaishou] Upload pre response: ${JSON.stringify(preResponse.data)}`)
 
         if (preResponse.data?.result === 1 && preResponse.data?.data?.token) {
           preData = preResponse.data.data
@@ -434,26 +435,118 @@ export class KsApiAdapter extends BasePlatformAdapter {
       }
     }
 
-    agent.destroy()
     logger.info(`[kuaishou] All ${totalChunks} fragments uploaded`)
 
     onProgress?.({ percent: 80, stage: '正在完成上传...' })
 
-    // Step 3: Finish upload
-    const finishBody = JSON.stringify({ token, 'kuaishou.web.cp.api_ph': apiPh })
-    const finishResponse = await client.post<{
-      result: number
-      data?: { fileId?: number; photoId?: string }
-    }>(
-      API.uploadFinish,
-      finishBody,
-      { referer: REFERER, Origin: ORIGIN, 'Content-Type': 'application/json' }
+    // Step 3a: CDN-level complete — tells the upload server to reassemble fragments
+    const completeBody = JSON.stringify({ upload_token: token, fragment_count: totalChunks })
+    logger.info(`[kuaishou] Calling CDN upload/complete (POST) with ${totalChunks} fragments`)
+    try {
+      const completeRes = await new Promise<any>((resolve, reject) => {
+        const req = https.request({
+          hostname: uploadHost,
+          port: 443,
+          path: `/api/upload/complete?upload_token=${encodeURIComponent(token)}&fragment_count=${totalChunks}`,
+          method: 'POST',
+          agent,
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(completeBody),
+            'Referer': REFERER,
+            'Origin': ORIGIN
+          }
+        }, (res: any) => {
+          let data = ''
+          res.on('data', (c: Buffer) => { data += c.toString() })
+          res.on('end', () => {
+            try { resolve(JSON.parse(data)) } catch { resolve({ raw: data }) }
+          })
+        })
+        req.on('error', reject)
+        req.setTimeout(30_000, () => { req.destroy(); reject(new Error('CDN upload/complete timeout')) })
+        req.write(completeBody)
+        req.end()
+      })
+      logger.info(`[kuaishou] CDN upload/complete response: ${JSON.stringify(completeRes).substring(0, 500)}`)
+    } catch (e: any) {
+      logger.warn(`[kuaishou] CDN upload/complete failed (non-fatal): ${e.message}`)
+    }
+
+    agent.destroy()
+
+    // Step 3b: REST API finish — requires __NS_sig3 URL signature
+    const FINISH_INITIAL_DELAY = 5000
+    const FINISH_MAX_RETRIES = 3
+    const FINISH_RETRY_DELAY = 3000
+
+    logger.info(`[kuaishou] Waiting ${FINISH_INITIAL_DELAY / 1000}s before REST upload/finish...`)
+    await delay(FINISH_INITIAL_DELAY)
+
+    const finishBody = JSON.stringify({
+      token,
+      fileName: require('path').basename(filePath),
+      fileType: 'video/mp4',
+      fileLength: stats.size,
+      'kuaishou.web.cp.api_ph': apiPh
+    })
+
+    // Get __NS_sig3 signature from browser's anti-bot JS
+    const signService = getSignService()
+    const finishSigPath = '/rest/cp/works/v2/video/pc/upload/finish'
+    const finishSig3 = await signService.getSignature(
+      'kuaishou',
+      cookie,
+      JSON.stringify({ url: finishSigPath, body: finishBody })
     )
 
-    logger.info(`[kuaishou] Upload finish response: ${JSON.stringify(finishResponse.data).substring(0, 500)}`)
+    let finishUrl = finishSig3
+      ? `${API.uploadFinish}?__NS_sig3=${finishSig3}`
+      : API.uploadFinish
+    logger.info(`[kuaishou] Upload finish URL: ${finishUrl.substring(0, 80)}...`)
 
-    const fileId = finishResponse.data?.data?.fileId
-    const photoId = finishResponse.data?.data?.photoId || ''
+    let finishResponse: { result: number; data?: { fileId?: number; photoId?: string } } | undefined
+    let lastFinishError = ''
+
+    for (let attempt = 0; attempt < FINISH_MAX_RETRIES; attempt++) {
+      const res = await client.post<{
+        result: number
+        data?: { fileId?: number; photoId?: string }
+      }>(
+        finishUrl,
+        finishBody,
+        { referer: REFERER, Origin: ORIGIN, 'Content-Type': 'application/json' }
+      )
+
+      logger.info(`[kuaishou] Upload finish response (attempt ${attempt + 1}): ${JSON.stringify(res.data)}`)
+
+      if (res.data?.result === 1) {
+        finishResponse = res.data
+        break
+      }
+
+      lastFinishError = `result=${res.data?.result}`
+      if (attempt < FINISH_MAX_RETRIES - 1) {
+        logger.info(`[kuaishou] Upload finish failed (${lastFinishError}), retrying...`)
+        // Re-generate signature for retry (it may expire)
+        const retrySig3 = await signService.getSignature(
+          'kuaishou',
+          cookie,
+          JSON.stringify({ url: finishSigPath, body: finishBody })
+        )
+        if (retrySig3) {
+          finishUrl = `${API.uploadFinish}?__NS_sig3=${retrySig3}`
+        }
+        await delay(FINISH_RETRY_DELAY)
+      }
+    }
+
+    if (!finishResponse || finishResponse.result !== 1) {
+      throw new Error(`上传完成确认失败 (${lastFinishError})`)
+    }
+
+    const fileId = finishResponse.data?.fileId
+    const photoId = finishResponse.data?.photoId || ''
 
     // Store for submitContentAPI
     this.lastUploadResult = {
@@ -528,25 +621,57 @@ export class KsApiAdapter extends BasePlatformAdapter {
 
     logger.info(`[kuaishou] Submitting: fileId=${fileId}, caption=${caption.substring(0, 80)}`)
 
-    const response = await client.post<{
-      result: number
-      data?: { photoId?: string }
-      error_msg?: string
-      message?: string
-    }>(
-      API.submit,
-      JSON.stringify(params),
-      { referer: REFERER, Origin: ORIGIN, 'Content-Type': 'application/json' }
+    // Get __NS_sig3 signature for submit
+    const submitBody = JSON.stringify(params)
+    const signService = getSignService()
+    const submitSigPath = '/rest/cp/works/v2/video/pc/submit'
+    const submitSig3 = await signService.getSignature(
+      'kuaishou',
+      cookie,
+      JSON.stringify({ url: submitSigPath, body: submitBody })
     )
 
-    logger.info(`[kuaishou] Submit response: ${JSON.stringify(response.data).substring(0, 500)}`)
+    let submitUrl = submitSig3
+      ? `${API.submit}?__NS_sig3=${submitSig3}`
+      : API.submit
 
-    if (response.data?.result !== 1) {
-      const errMsg = response.data?.error_msg || response.data?.message || '未知错误'
-      throw new Error(`内容提交失败: ${errMsg} (result=${response.data?.result})`)
+    const SUBMIT_MAX_RETRIES = 2
+    const SUBMIT_RETRY_DELAY = 3000
+    let lastSubmitError = ''
+
+    for (let attempt = 0; attempt < SUBMIT_MAX_RETRIES; attempt++) {
+      const response = await client.post<{
+        result: number
+        data?: { photoId?: string }
+        error_msg?: string
+        message?: string
+      }>(
+        submitUrl,
+        submitBody,
+        { referer: REFERER, Origin: ORIGIN, 'Content-Type': 'application/json' }
+      )
+
+      logger.info(`[kuaishou] Submit response (attempt ${attempt + 1}): ${JSON.stringify(response.data).substring(0, 500)}`)
+
+      if (response.data?.result === 1) {
+        logger.info(`[kuaishou] Content submitted successfully`)
+        return
+      }
+
+      lastSubmitError = response.data?.error_msg || response.data?.message || `result=${response.data?.result}`
+
+      // Don't retry on client errors (likely missing __NS_sig3 or other auth issues)
+      if (response.data?.result === 500002 || response.data?.result === 300801) {
+        if (attempt < SUBMIT_MAX_RETRIES - 1) {
+          logger.info(`[kuaishou] Submit failed (${lastSubmitError}), retrying in ${SUBMIT_RETRY_DELAY / 1000}s...`)
+          await delay(SUBMIT_RETRY_DELAY)
+        }
+      } else {
+        break
+      }
     }
 
-    logger.info(`[kuaishou] Content submitted successfully`)
+    throw new Error(`内容提交失败: ${lastSubmitError}`)
   }
 
   private extractApiPh(cookie: string): string {
