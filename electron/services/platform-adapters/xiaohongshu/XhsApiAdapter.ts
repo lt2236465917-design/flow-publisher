@@ -147,12 +147,14 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
     onProgress?.({ percent: 5, stage: '正在获取上传凭证...' })
 
-    // Step 1: Get upload permit
+    // Step 1: Get upload permit (response uses uploadTempPermits array)
     const permitResponse = await client.get<{
       data?: {
-        uploadAddr?: string
-        fileIds?: string[]
-        token?: string
+        uploadTempPermits?: Array<{
+          uploadAddr?: string
+          fileIds?: string[]
+          token?: string
+        }>
       }
     }>(
       `${API.uploadPermit}?biz_name=spectrum&scene=video&file_count=1&version=1&source=web`,
@@ -163,44 +165,98 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       }
     )
 
-    const permit = permitResponse.data?.data
+    const permit = permitResponse.data?.data?.uploadTempPermits?.[0]
     if (!permit?.uploadAddr || !permit?.fileIds?.length) {
       throw new Error('获取上传凭证失败')
     }
 
-    logger.info(`[xiaohongshu] Upload permit: host=${permit.uploadAddr}, fileId=${permit.fileIds[0]}`)
+    const fileId = permit.fileIds[0]
+    const uploadAddr = permit.uploadAddr
+    const token = permit.token || ''
+
+    logger.info(`[xiaohongshu] Upload permit: host=${uploadAddr}, fileId=${fileId}`)
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
-    // Step 2: Upload video to XHS storage
-    const uploadUrl = `https://${permit.uploadAddr}/${permit.fileIds[0]}`
+    // Step 2: Multipart upload (matching yixiaoer's PUT-based COS flow)
     const fileBuffer = readFileSync(filePath)
-
-    try {
-      await client.request({
-        method: 'POST',
-        url: uploadUrl,
-        data: fileBuffer,
-        headers: {
-          'Content-Type': 'application/octet-stream',
-          'x-cos-security-token': permit.token || '',
-          referer: 'https://creator.xiaohongshu.com/'
-        },
-        timeout: 300_000,
-        onUploadProgress: (progress) => {
-          const percent = 10 + Math.round(progress.percent * 0.7)
-          onProgress?.({ percent, stage: `上传中 ${progress.percent}%` })
-        }
-      })
-
-      logger.info(`[xiaohongshu] Video uploaded to storage`)
-      onProgress?.({ percent: 80, stage: '视频上传完成' })
-    } catch (err) {
-      logger.error('[xiaohongshu] Upload error:', err)
-      throw new Error(`视频上传失败: ${err}`)
+    const baseUploadUrl = `https://${uploadAddr}/${fileId}`
+    const commonHeaders: Record<string, string> = {
+      'x-cos-security-token': token,
+      referer: 'https://creator.xiaohongshu.com/'
     }
 
-    return permit.fileIds[0]
+    // Step 2a: Init multipart upload — GET ?uploads to get uploadId
+    const initResponse = await client.request<{ uploadId?: string }>({
+      method: 'GET',
+      url: `${baseUploadUrl}?uploads`,
+      headers: { ...commonHeaders, 'Content-Type': 'video/mp4' },
+      noCookie: true
+    })
+    const uploadId = initResponse.data?.uploadId
+    if (!uploadId) {
+      throw new Error('初始化分片上传失败')
+    }
+    logger.info(`[xiaohongshu] Multipart upload initiated, uploadId: ${uploadId}`)
+
+    // Step 2b: Upload parts (5MB each)
+    const PART_SIZE = 5 * 1024 * 1024
+    const totalParts = Math.ceil(stats.size / PART_SIZE)
+    const etags: string[] = []
+
+    for (let i = 0; i < totalParts; i++) {
+      const start = i * PART_SIZE
+      const end = Math.min(start + PART_SIZE, stats.size)
+      const part = fileBuffer.subarray(start, end)
+      const partNumber = i + 1
+
+      const partResponse = await client.request<{ ETag?: string }>({
+        method: 'PUT',
+        url: `${baseUploadUrl}?partNumber=${partNumber}&uploadId=${uploadId}`,
+        data: part,
+        headers: { ...commonHeaders, 'Content-Type': 'application/octet-stream' },
+        noCookie: true,
+        timeout: 120_000
+      })
+
+      const etag = partResponse.headers?.etag || partResponse.data?.ETag || ''
+      etags.push(etag)
+      const percent = 10 + Math.round((partNumber / totalParts) * 65)
+      onProgress?.({ percent, stage: `上传中 ${partNumber}/${totalParts}` })
+    }
+
+    logger.info(`[xiaohongshu] All ${totalParts} parts uploaded`)
+
+    // Step 2c: Verify upload — GET ?uploadId to list parts
+    await client.request({
+      method: 'GET',
+      url: `${baseUploadUrl}?uploadId=${uploadId}`,
+      headers: commonHeaders,
+      noCookie: true
+    })
+
+    // Step 2d: Complete multipart upload — POST with XML body
+    const partsXml = etags
+      .map((etag, i) => `<Part><PartNumber>${i + 1}</PartNumber><ETag>${etag}</ETag></Part>`)
+      .join('')
+    const completeXml = `<CompleteMultipartUpload>${partsXml}</CompleteMultipartUpload>`
+
+    await client.request({
+      method: 'POST',
+      url: `${baseUploadUrl}?uploadId=${uploadId}`,
+      data: completeXml,
+      headers: {
+        ...commonHeaders,
+        'Content-Type': 'application/xml',
+        'Content-MD5': createHash('md5').update(completeXml).digest('base64')
+      },
+      noCookie: true
+    })
+
+    logger.info(`[xiaohongshu] Multipart upload completed`)
+    onProgress?.({ percent: 80, stage: '视频上传完成' })
+
+    return fileId
   }
 
   async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {

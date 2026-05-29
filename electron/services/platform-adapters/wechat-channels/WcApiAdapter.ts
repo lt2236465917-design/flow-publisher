@@ -117,18 +117,38 @@ export class WcApiAdapter extends BasePlatformAdapter {
 
   protected async detectLoginSuccess(page: Page): Promise<boolean> {
     try {
-      const url = page.url()
       this.loginCheckCount++
 
       // Need at least 10 checks (~5s) before detecting login — user needs time to scan QR
       if (this.loginCheckCount < 10) return false
 
-      // Check cookies via CDP first — finder_id is REQUIRED for API calls
+      const context = page.context()
+
+      // After QR scan, the original page may close or navigate.
+      // Find a live page in the context to use for CDP session.
+      let livePage: Page | null = null
+      for (const p of context.pages()) {
+        if (!p.isClosed()) {
+          livePage = p
+          break
+        }
+      }
+      if (!livePage) {
+        // All pages closed — can't check cookies yet
+        if (this.loginCheckCount % 20 === 0) {
+          logger.info(`[wechat-channels] All pages closed, waiting...`)
+        }
+        return false
+      }
+
+      const url = livePage.url()
+
+      // Check cookies via CDP — finder_id is REQUIRED for API calls
       let hasFinderId = false
       let foundAuthCount = 0
       let wcCookies: any[] = []
       try {
-        const client = await page.context().newCDPSession(page)
+        const client = await context.newCDPSession(livePage)
         const { cookies } = await client.send('Network.getAllCookies')
         await client.detach()
 
@@ -141,33 +161,44 @@ export class WcApiAdapter extends BasePlatformAdapter {
         hasFinderId = foundAuth.some((c: any) => c.name === 'finder_id')
 
         if (this.loginCheckCount % 10 === 0) {
-          logger.info(`[wechat-channels] CDP all cookies: ${cookies.length} total, ${wcCookies.length} wc | names: ${wcCookies.map((c: any) => c.name).join(', ')} | url: ${url}`)
+          const allNames = cookies.map((c: any) => `${c.name}@${c.domain}`).join(', ')
+          logger.info(`[wechat-channels] ALL cookies (${cookies.length}): ${allNames}`)
         }
       } catch (e) {
-        if (this.loginCheckCount % 20 === 0) {
-          logger.warn('[wechat-channels] CDP cookie check failed:', e)
+        // CDP failed — page might be mid-navigation, try context.cookies fallback
+        try {
+          const allCookies = await context.cookies()
+          wcCookies = allCookies.filter((c: any) =>
+            c.domain.includes('weixin') || c.domain.includes('wechat') || c.domain.includes('qq.com')
+          )
+          const authNames = ['finder_id', 'sessionid', 'slave_sid', 'wxuin', 'pass_ticket', 'skey']
+          const foundAuth = wcCookies.filter((c: any) => authNames.includes(c.name) && c.value)
+          foundAuthCount = foundAuth.length
+          hasFinderId = foundAuth.some((c: any) => c.name === 'finder_id')
+
+          if (this.loginCheckCount % 20 === 0) {
+            logger.info(`[wechat-channels] CDP failed, used context.cookies: ${wcCookies.length} wc | names: ${wcCookies.map((c: any) => c.name).join(', ')}`)
+          }
+        } catch {
+          if (this.loginCheckCount % 20 === 0) {
+            logger.warn('[wechat-channels] Both CDP and context.cookies failed')
+          }
         }
       }
 
-      // URL-based detection: page navigates from /login.html to /platform after QR scan
-      // BUT we must also have finder_id — without it, post_create will fail (errCode=300801)
-      const urlChanged = url.includes('/platform/post/list') || url.includes('/cgi-bin/') ||
-          (url.includes('/platform') && !url.includes('/login'))
+      // Login detection: sessionid + wxuin means WeChat auth succeeded.
+      // finder_id is NOT a cookie — it comes from auth_data API (called by getAccountInfoAPI after login).
+      const hasWechatAuth = wcCookies.some((c: any) => c.name === 'sessionid' && c.value) &&
+          wcCookies.some((c: any) => c.name === 'wxuin' && c.value)
 
-      if (urlChanged && hasFinderId) {
-        logger.info(`[wechat-channels] Login detected (URL+finder_id: ${url}, cookies: ${wcCookies.map((c: any) => c.name).join(', ')})`)
+      if (hasWechatAuth) {
+        logger.info(`[wechat-channels] Login detected (sessionid+wxuin found)`)
         return true
       }
 
-      // Cookie-only detection: finder_id present (even if URL hasn't fully navigated yet)
+      // Fallback: finder_id cookie (legacy, in case it's set in some environments)
       if (hasFinderId) {
-        logger.info(`[wechat-channels] Login detected (CDP cookies: ${wcCookies.map((c: any) => c.name).join(', ')})`)
-        return true
-      }
-
-      // Fallback: URL changed + at least 3 auth cookies (in case finder_id is named differently)
-      if (urlChanged && foundAuthCount >= 3) {
-        logger.info(`[wechat-channels] Login detected (URL+${foundAuthCount} cookies: ${wcCookies.map((c: any) => c.name).join(', ')})`)
+        logger.info(`[wechat-channels] Login detected (finder_id cookie found)`)
         return true
       }
 

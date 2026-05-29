@@ -9,7 +9,8 @@ import { DOUYIN_SELECTORS } from './douyin-selectors'
 import { logger } from '../../../utils/logger'
 import { delay } from '../../../utils/delays'
 import { existsSync, statSync, createReadStream, readFileSync } from 'fs'
-import { createHash, createPrivateKey, createSign, randomBytes } from 'crypto'
+import { createHash, createPrivateKey, createSign, randomBytes, createHmac } from 'crypto'
+import aws4 from 'aws4'
 
 // Douyin Creator API endpoints (reverse-engineered from yixiaoer)
 const API = {
@@ -320,7 +321,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     const stsAuth = await this.getUploadAuth(client)
     logger.info(`[douyin] STS credentials obtained, AccessKeyID: ${stsAuth.AccessKeyID.substring(0, 10)}...`)
 
-    // Step 2: Call ApplyUploadInner to get upload address (plain HTTP, no AWS4 signing)
+    // Step 2: Call ApplyUploadInner with AWS4 signing
     const userId = await this.getCreatorUserId(client)
     const sessionToken = randomBytes(16).toString('hex')
 
@@ -331,6 +332,35 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     }> = []
 
     try {
+      // Build AWS4-signed request for VOD API
+      const vodParams = {
+        Action: 'ApplyUploadInner',
+        Version: '2020-11-19',
+        SpaceName: 'pgc',
+        FileType: 'video',
+        IsInner: '1',
+        FileSize: stats.size.toString(),
+        app_id: '3062',
+        user_id: userId,
+        s: sessionToken
+      }
+      const qs = new URLSearchParams(vodParams).toString()
+      const signOpts = {
+        host: 'vod.bytedanceapi.com',
+        path: `/?${qs}`,
+        method: 'GET',
+        service: 'vod',
+        region: 'cn-north-1',
+        headers: { Referer: 'https://studio.ixigua.com/' },
+        signQuery: true
+      }
+      aws4.sign(signOpts, {
+        accessKeyId: stsAuth.AccessKeyID,
+        secretAccessKey: stsAuth.SecretAccessKey,
+        sessionToken: stsAuth.SessionToken
+      })
+
+      const signedUrl = `https://vod.bytedanceapi.com${signOpts.path}`
       const vodResponse = await client.get<{
         Result?: {
           InnerUploadAddress?: {
@@ -341,24 +371,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
             }>
           }
         }
-        status_code?: number
-        status_msg?: string
+        ResponseMetadata?: { Error?: { Code?: string; Message?: string } }
       }>(
-        'https://vod.bytedanceapi.com',
-        {
-          Action: 'ApplyUploadInner',
-          Version: '2020-11-19',
-          SpaceName: 'pgc',
-          FileType: 'video',
-          IsInner: 1,
-          FileSize: stats.size.toString(),
-          app_id: '3062',
-          user_id: userId,
-          s: sessionToken
-        },
-        {
-          Referer: 'https://studio.ixigua.com/'
-        },
+        signedUrl,
+        undefined,
+        { Referer: 'https://studio.ixigua.com/' },
         true // noCookie: VOD API rejects requests with douyin.com cookies
       )
 
@@ -417,32 +434,50 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       throw new Error(`视频上传失败: ${err}`)
     }
 
-    // Step 4: Commit the upload (plain HTTP with X-Amz-Content-Sha256)
+    // Step 4: Commit the upload with AWS4 signing
     try {
       const commitParams = {
         SessionKey: node.SessionKey || '',
         Functions: []
       }
+      const commitBody = JSON.stringify(commitParams)
 
-      const commitResponse = await client.request<{
-        Result?: { Results?: Array<{ Vid: string }> }
-        status_code?: number
-      }>({
+      const commitQs = new URLSearchParams({
+        Action: 'CommitUploadInner',
+        Version: '2020-11-19',
+        SpaceName: 'pgc',
+        app_id: '3062',
+        user_id: userId
+      }).toString()
+      const commitSignOpts = {
+        host: 'vod.bytedanceapi.com',
+        path: `/?${commitQs}`,
         method: 'POST',
-        url: 'https://vod.bytedanceapi.com',
-        data: commitParams,
-        params: {
-          Action: 'CommitUploadInner',
-          Version: '2020-11-19',
-          SpaceName: 'pgc',
-          app_id: '3062',
-          user_id: userId
-        },
+        service: 'vod',
+        region: 'cn-north-1',
         headers: {
           'Content-Type': 'application/json',
-          Referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page',
-          Origin: 'https://creator.douyin.com',
-          'X-Amz-Content-Sha256': createHash('sha256').update(JSON.stringify(commitParams)).digest('hex')
+          'X-Amz-Content-Sha256': createHash('sha256').update(commitBody).digest('hex')
+        },
+        body: commitBody
+      }
+      aws4.sign(commitSignOpts, {
+        accessKeyId: stsAuth.AccessKeyID,
+        secretAccessKey: stsAuth.SecretAccessKey,
+        sessionToken: stsAuth.SessionToken
+      })
+
+      const commitUrl = `https://vod.bytedanceapi.com${commitSignOpts.path}`
+      const commitResponse = await client.request<{
+        Result?: { Results?: Array<{ Vid: string }> }
+        ResponseMetadata?: { Error?: { Code?: string; Message?: string } }
+      }>({
+        method: 'POST',
+        url: commitUrl,
+        data: commitBody,
+        headers: {
+          ...commitSignOpts.headers as Record<string, string>,
+          Referer: 'https://studio.ixigua.com/'
         },
         noCookie: true
       })
