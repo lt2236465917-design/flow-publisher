@@ -139,7 +139,17 @@ export class BrowserManager {
   }
 
   /** Get all cookies via CDP (includes profile cookies not visible to Playwright) */
-  async getAllCookiesViaCDP(page?: import('playwright-core').Page): Promise<Array<{ name: string; value: string; domain: string; path: string }>> {
+  async getAllCookiesViaCDP(page?: import('playwright-core').Page): Promise<Array<{
+    name: string
+    value: string
+    domain: string
+    path: string
+    expires: number
+    httpOnly: boolean
+    secure: boolean
+    sameSite?: string
+    session?: boolean
+  }>> {
     if (!this.context) return []
     try {
       const targetPage = page || this.context.pages()[0]

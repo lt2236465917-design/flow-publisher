@@ -73,9 +73,8 @@ export function registerAccountIpcHandlers(): void {
         saveDatabase()
       }
 
-      // Close existing browser and delete profile for a truly clean login
+      // Close existing browser, but keep profile directory to preserve persistent cookies
       await browserManager.close()
-      browserManager.setCleanLaunch()
       const context = await browserManager.getContext(platformId)
       try {
         await browserManager.clearAllCookies(platformId)
@@ -106,17 +105,28 @@ export function registerAccountIpcHandlers(): void {
           logger.info(`[account] CDP cookies: ${cdpCookies.length} | names: ${cdpCookies.map(c => c.name).join(', ')}`)
 
           if (cdpCookies.length > 0) {
-            // Convert CDP cookies to Playwright format and save
-            const pwCookies = cdpCookies.map(c => ({
-              name: c.name,
-              value: c.value,
-              domain: c.domain,
-              path: c.path,
-              expires: -1,
-              httpOnly: false,
-              secure: false,
-              sameSite: 'Lax' as const
-            }))
+            // Convert CDP cookies to Playwright format, preserving real attributes
+            const pwCookies = cdpCookies.map(c => {
+              // CDP returns expires as Unix timestamp (seconds). -1 or 0 means session cookie.
+              // For persistent cookies, use the real expiry. For session cookies, set far future.
+              let expires = c.expires
+              if (!c.session && expires > 0) {
+                // Keep real expiry (CDP uses seconds, Playwright uses seconds too)
+              } else {
+                // Session cookie — set to 1 year from now so it persists across restarts
+                expires = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
+              }
+              return {
+                name: c.name,
+                value: c.value,
+                domain: c.domain,
+                path: c.path,
+                expires,
+                httpOnly: c.httpOnly ?? false,
+                secure: c.secure ?? true,
+                sameSite: (c.sameSite === 'None' || c.sameSite === 'Strict') ? c.sameSite : 'Lax' as const
+              }
+            })
             const cookieJson = JSON.stringify(pwCookies)
             repo.updateSession(accountId!, 'logged_in', cookieJson, result.displayName)
             saveDatabase()
@@ -166,7 +176,7 @@ export function registerAccountIpcHandlers(): void {
     }
   })
 
-  // Check session status
+  // Check session status — API-first (fast, no browser), fallback to browser
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_CHECK_SESSION, async (_event, accountId: string): Promise<IpcResponse> => {
     try {
       const repo = getAccountRepository()
@@ -176,15 +186,39 @@ export function registerAccountIpcHandlers(): void {
       const adapter = getAdapter(account.platform)
       if (!adapter) return { success: false, error: `不支持的平台: ${account.platform}` }
 
-      const context = await browserManager.getContext(account.platform)
-      await cookieStore.loadCookies(context, accountId)
-      const isValid = await adapter.checkSession(context)
+      let isValid = false
+
+      // Try API-based session check first (fast, no browser needed)
+      if (adapter.checkSessionAPI) {
+        const cookieStr = cookieStore.getCookieString(accountId)
+        if (cookieStr) {
+          try {
+            const apiClient = new HttpClient({ cookies: cookieStr, platform: account.platform, accountId })
+            isValid = await adapter.checkSessionAPI(apiClient)
+            logger.info(`[account] API session check for ${account.platform}: ${isValid ? 'valid' : 'expired'}`)
+          } catch (e) {
+            logger.warn(`[account] API session check failed, falling back to browser:`, e)
+          }
+        }
+      }
+
+      // Fallback: browser-based session check
+      if (!isValid) {
+        try {
+          const context = await browserManager.getContext(account.platform)
+          await cookieStore.loadCookies(context, accountId)
+          isValid = await adapter.checkSession(context)
+          await browserManager.close()
+        } catch (e) {
+          logger.warn(`[account] Browser session check failed:`, e)
+          isValid = false
+        }
+      }
 
       const newStatus = isValid ? 'logged_in' : 'expired'
       repo.updateSession(accountId, newStatus)
       saveDatabase()
 
-      await browserManager.close()
       return { success: true, data: { sessionStatus: newStatus } }
     } catch (err) {
       logger.error('ACCOUNT_CHECK_SESSION error:', err)

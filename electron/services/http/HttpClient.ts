@@ -1,6 +1,7 @@
 import axios, { type AxiosRequestConfig, type AxiosResponse } from 'axios'
 import { logger } from '../../utils/logger'
 import { Agent as HttpsAgent } from 'https'
+import { getAccountRepository, saveDatabase } from '../database'
 
 const DEFAULT_TIMEOUT = 30_000
 const UPLOAD_TIMEOUT = 300_000
@@ -102,6 +103,10 @@ export class HttpClient {
       const response: AxiosResponse<T> = await axios(config)
 
       logger.info(`[HttpClient] Response: status=${response.status}, url=${response.request?.res?.responseUrl || response.config?.url || 'unknown'}`)
+
+      // Refresh cookies from Set-Cookie response headers
+      this.refreshCookiesFromResponse(response)
+
       return {
         status: response.status,
         data: response.data,
@@ -115,6 +120,113 @@ export class HttpClient {
         throw new Error(`HTTP ${options.method} ${options.url} failed: ${status} ${JSON.stringify(data)}`)
       }
       throw err
+    }
+  }
+
+  /**
+   * Extract Set-Cookie headers from response and update cookies in database.
+   * This keeps cookies fresh across API calls without re-login.
+   */
+  private refreshCookiesFromResponse(response: AxiosResponse): void {
+    try {
+      const setCookies = response.headers['set-cookie']
+      if (!setCookies || setCookies.length === 0) return
+
+      // Parse current cookies into a map
+      const cookieMap = new Map<string, string>()
+      for (const part of this.context.cookies.split(';')) {
+        const [name, ...rest] = part.trim().split('=')
+        if (name && rest.length > 0) {
+          cookieMap.set(name.trim(), rest.join('='))
+        }
+      }
+
+      // Merge new cookies from Set-Cookie headers
+      let updated = false
+      for (const sc of setCookies) {
+        const [nameValue] = sc.split(';')
+        const [name, ...rest] = nameValue.split('=')
+        if (name && rest.length > 0) {
+          const cookieName = name.trim()
+          const cookieValue = rest.join('=')
+          // Skip expired cookies
+          if (cookieValue === '' || cookieValue === 'deleted') {
+            if (cookieMap.has(cookieName)) {
+              cookieMap.delete(cookieName)
+              updated = true
+            }
+          } else {
+            cookieMap.set(cookieName, cookieValue)
+            updated = true
+          }
+        }
+      }
+
+      if (!updated) return
+
+      // Rebuild cookie string
+      const newCookieStr = Array.from(cookieMap.entries())
+        .map(([k, v]) => `${k}=${v}`)
+        .join('; ')
+      this.context.cookies = newCookieStr
+
+      // Save to database
+      if (this.context.accountId) {
+        const repo = getAccountRepository()
+        const account = repo.getById(this.context.accountId)
+        if (account) {
+          // Update the stored cookie JSON with new values
+          let storedCookies: Array<{ name: string; value: string; domain: string; path: string; expires: number; httpOnly: boolean; secure: boolean; sameSite: string }> = []
+          try {
+            storedCookies = JSON.parse(account.cookies || '[]')
+          } catch { /* ignore */ }
+
+          // Merge new cookies into stored cookies
+          for (const sc of setCookies) {
+            const parts = sc.split(';').map(s => s.trim())
+            const [nameValue] = parts
+            const [name, ...rest] = nameValue.split('=')
+            if (!name || rest.length === 0) continue
+
+            const cookieName = name.trim()
+            const cookieValue = rest.join('=')
+
+            // Parse cookie attributes from Set-Cookie
+            const attrs: Record<string, string> = {}
+            for (let i = 1; i < parts.length; i++) {
+              const [attrName, ...attrRest] = parts[i].split('=')
+              attrs[attrName.toLowerCase()] = attrRest.join('=') || 'true'
+            }
+
+            const existingIdx = storedCookies.findIndex(c => c.name === cookieName)
+            const cookieObj = {
+              name: cookieName,
+              value: cookieValue,
+              domain: attrs.domain || response.request?.host || '',
+              path: attrs.path || '/',
+              expires: attrs.expires ? Math.floor(new Date(attrs.expires).getTime() / 1000) : Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60,
+              httpOnly: attrs.httponly === 'true',
+              secure: attrs.secure === 'true',
+              sameSite: (attrs.samesite as string) || 'Lax'
+            }
+
+            if (cookieValue === '' || cookieValue === 'deleted') {
+              if (existingIdx >= 0) storedCookies.splice(existingIdx, 1)
+            } else if (existingIdx >= 0) {
+              storedCookies[existingIdx] = cookieObj
+            } else {
+              storedCookies.push(cookieObj)
+            }
+          }
+
+          repo.updateSession(this.context.accountId, 'logged_in', JSON.stringify(storedCookies))
+          saveDatabase()
+          logger.info(`[HttpClient] Cookies refreshed from Set-Cookie: ${setCookies.length} headers, total: ${storedCookies.length} cookies`)
+        }
+      }
+    } catch (e) {
+      // Cookie refresh is non-fatal
+      logger.warn('[HttpClient] Failed to refresh cookies from response:', e)
     }
   }
 
