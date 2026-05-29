@@ -41,12 +41,30 @@ export class SignService {
 
   /**
    * Get the signature for a given request.
-   * Tries local Playwright-based signing first, falls back to external service.
+   *
+   * Priority: external yixiaoer service first (signatures generated in real browser
+   * environment on their servers, indistinguishable from real users), then local
+   * Playwright-based signing as fallback.
+   *
    * @param body Request body string — used by kuaishou external service (MD5 of body)
    */
   async getSignature(platform: string, cookie: string, data: string, body?: string): Promise<string> {
     try {
+      // Priority 1: External yixiaoer signing service (real browser environment)
       let signature = ''
+
+      // For douyin, the data parameter IS the full URL to sign
+      const urlToSign = platform === 'douyin' ? data : ''
+
+      signature = await this.getExternalSignature(platform, cookie, body, urlToSign)
+
+      if (signature) {
+        logger.info(`[sign] ${platform} signature from external service`)
+        return signature
+      }
+
+      // Priority 2: Local Playwright-based signing (fallback)
+      logger.info(`[sign] External service unavailable for ${platform}, trying local signing...`)
 
       switch (platform) {
         case 'douyin':
@@ -63,17 +81,10 @@ export class SignService {
           return ''
       }
 
-      // Fallback to external signature server if local signing failed
-      if (!signature) {
-        logger.info(`[sign] Local signing failed for ${platform}, trying external service...`)
-        signature = await this.getExternalSignature(platform, cookie, body)
-      }
-
       return signature
     } catch (err) {
       logger.error(`[sign] Failed to get signature for ${platform}:`, err)
-      // Last resort: try external service
-      return await this.getExternalSignature(platform, cookie, body)
+      return ''
     }
   }
 
