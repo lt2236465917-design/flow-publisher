@@ -101,11 +101,6 @@ export function registerAccountIpcHandlers(): void {
         logger.info('[account] Login successful, saving cookies via CDP')
 
         try {
-          // Navigate to trigger more cookie setting
-          try {
-            await page.goto('https://channels.weixin.qq.com/platform/post/list', { waitUntil: 'domcontentloaded', timeout: 5000 })
-          } catch {}
-
           // Use CDP to get all cookies (Playwright's context.cookies() returns 0 for persistent contexts)
           const cdpCookies = await browserManager.getAllCookiesViaCDP(page)
           logger.info(`[account] CDP cookies: ${cdpCookies.length} | names: ${cdpCookies.map(c => c.name).join(', ')}`)

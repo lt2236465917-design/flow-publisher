@@ -44,6 +44,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
     videoHeight: number
     videoDuration: number
     md5sum: string
+    mediaId: string
+    coverMediaId: string
+    coverKey: string
+    videoFrameRate: number
   } | null = null
 
   private loginCheckCount = 0
@@ -476,36 +480,52 @@ export class KsApiAdapter extends BasePlatformAdapter {
     agent.destroy()
 
     // Step 3b: REST API finish — requires __NS_sig3 URL signature
-    const FINISH_INITIAL_DELAY = 5000
-    const FINISH_MAX_RETRIES = 3
-    const FINISH_RETRY_DELAY = 3000
+    const FINISH_INITIAL_DELAY = 8000
+    const FINISH_MAX_RETRIES = 5
+    const FINISH_RETRY_DELAY = 5000
 
     logger.info(`[kuaishou] Waiting ${FINISH_INITIAL_DELAY / 1000}s before REST upload/finish...`)
     await delay(FINISH_INITIAL_DELAY)
 
+    // Note: yixiaoer uses "fileTyp" (no 'e') — this is what the server expects
     const finishBody = JSON.stringify({
       token,
       fileName: require('path').basename(filePath),
-      fileType: 'video/mp4',
+      fileTyp: 'video/mp4',
       fileLength: stats.size,
       'kuaishou.web.cp.api_ph': apiPh
     })
 
-    // Get __NS_sig3 signature from browser's anti-bot JS
     const signService = getSignService()
     const finishSigPath = '/rest/cp/works/v2/video/pc/upload/finish'
-    const finishSig3 = await signService.getSignature(
+    let finishSig3 = await signService.getSignature(
       'kuaishou',
       cookie,
-      JSON.stringify({ url: finishSigPath, body: finishBody })
+      JSON.stringify({ url: finishSigPath, body: finishBody }),
+      finishBody
     )
 
     let finishUrl = finishSig3
       ? `${API.uploadFinish}?__NS_sig3=${finishSig3}`
       : API.uploadFinish
-    logger.info(`[kuaishou] Upload finish URL: ${finishUrl.substring(0, 80)}...`)
+    logger.info(`[kuaishou] Upload finish URL: ${finishUrl.substring(0, 100)}...`)
 
-    let finishResponse: { result: number; data?: { fileId?: number; photoId?: string } } | undefined
+    let finishResponse: {
+      result: number
+      data?: {
+        fileId?: number
+        photoId?: string
+        photoIdStr?: string
+        mediaId?: string
+        coverMediaId?: string
+        coverKey?: string
+        duration?: number
+        width?: number
+        height?: number
+        videoFrameRate?: number
+        videoDuration?: number
+      }
+    } | undefined
     let lastFinishError = ''
 
     for (let attempt = 0; attempt < FINISH_MAX_RETRIES; attempt++) {
@@ -527,17 +547,19 @@ export class KsApiAdapter extends BasePlatformAdapter {
 
       lastFinishError = `result=${res.data?.result}`
       if (attempt < FINISH_MAX_RETRIES - 1) {
-        logger.info(`[kuaishou] Upload finish failed (${lastFinishError}), retrying...`)
-        // Re-generate signature for retry (it may expire)
-        const retrySig3 = await signService.getSignature(
+        const backoff = FINISH_RETRY_DELAY * (attempt + 1)
+        logger.info(`[kuaishou] Upload finish failed (${lastFinishError}), retrying in ${backoff / 1000}s...`)
+        // Re-generate signature for retry
+        finishSig3 = await signService.getSignature(
           'kuaishou',
           cookie,
-          JSON.stringify({ url: finishSigPath, body: finishBody })
+          JSON.stringify({ url: finishSigPath, body: finishBody }),
+          finishBody
         )
-        if (retrySig3) {
-          finishUrl = `${API.uploadFinish}?__NS_sig3=${retrySig3}`
+        if (finishSig3) {
+          finishUrl = `${API.uploadFinish}?__NS_sig3=${finishSig3}`
         }
-        await delay(FINISH_RETRY_DELAY)
+        await delay(backoff)
       }
     }
 
@@ -546,7 +568,8 @@ export class KsApiAdapter extends BasePlatformAdapter {
     }
 
     const fileId = finishResponse.data?.fileId
-    const photoId = finishResponse.data?.photoId || ''
+    const photoId = finishResponse.data?.photoIdStr || finishResponse.data?.photoId || ''
+    const d = finishResponse.data
 
     // Store for submitContentAPI
     this.lastUploadResult = {
@@ -554,10 +577,14 @@ export class KsApiAdapter extends BasePlatformAdapter {
       fileId: fileId || 0,
       token,
       fileSize: stats.size,
-      videoWidth,
-      videoHeight,
-      videoDuration,
-      md5sum
+      videoWidth: d?.width || videoWidth,
+      videoHeight: d?.height || videoHeight,
+      videoDuration: d?.videoDuration || videoDuration,
+      md5sum,
+      mediaId: d?.mediaId || '',
+      coverMediaId: d?.coverMediaId || '',
+      coverKey: d?.coverKey || '',
+      videoFrameRate: d?.videoFrameRate || 0
     }
 
     logger.info(`[kuaishou] Video uploaded, fileId: ${fileId}, photoId: ${photoId}`)
@@ -600,7 +627,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
 
     const params: Record<string, unknown> = {
       fileId,
-      coverKey: '',
+      coverKey: uploadResult?.coverKey || '',
       coverTimeStamp: 0,
       caption: caption.trim(),
       photoStatus: 1,
@@ -616,27 +643,31 @@ export class KsApiAdapter extends BasePlatformAdapter {
       domain: '',
       secondDomain: '',
       coverUrl: '',
-      'kuaishou.web.cp.api_ph': apiPh
+      'kuaishou.web.cp.api_ph': apiPh,
+      mediaId: uploadResult?.mediaId || '',
+      coverMediaId: uploadResult?.coverMediaId || '',
+      declareInfo: { source: 0, platform: 0, time: 0, location: '', sourceId: 0, sourceName: '' }
     }
 
     logger.info(`[kuaishou] Submitting: fileId=${fileId}, caption=${caption.substring(0, 80)}`)
 
-    // Get __NS_sig3 signature for submit
+    // Submit via HttpClient + SignService with __NS_sig3
     const submitBody = JSON.stringify(params)
     const signService = getSignService()
     const submitSigPath = '/rest/cp/works/v2/video/pc/submit'
-    const submitSig3 = await signService.getSignature(
+    let submitSig3 = await signService.getSignature(
       'kuaishou',
       cookie,
-      JSON.stringify({ url: submitSigPath, body: submitBody })
+      JSON.stringify({ url: submitSigPath, body: submitBody }),
+      submitBody
     )
 
     let submitUrl = submitSig3
       ? `${API.submit}?__NS_sig3=${submitSig3}`
       : API.submit
 
-    const SUBMIT_MAX_RETRIES = 2
-    const SUBMIT_RETRY_DELAY = 3000
+    const SUBMIT_MAX_RETRIES = 3
+    const SUBMIT_RETRY_DELAY = 5000
     let lastSubmitError = ''
 
     for (let attempt = 0; attempt < SUBMIT_MAX_RETRIES; attempt++) {
@@ -660,11 +691,20 @@ export class KsApiAdapter extends BasePlatformAdapter {
 
       lastSubmitError = response.data?.error_msg || response.data?.message || `result=${response.data?.result}`
 
-      // Don't retry on client errors (likely missing __NS_sig3 or other auth issues)
       if (response.data?.result === 500002 || response.data?.result === 300801) {
         if (attempt < SUBMIT_MAX_RETRIES - 1) {
-          logger.info(`[kuaishou] Submit failed (${lastSubmitError}), retrying in ${SUBMIT_RETRY_DELAY / 1000}s...`)
-          await delay(SUBMIT_RETRY_DELAY)
+          const backoff = SUBMIT_RETRY_DELAY * (attempt + 1)
+          logger.info(`[kuaishou] Submit failed (${lastSubmitError}), retrying in ${backoff / 1000}s...`)
+          submitSig3 = await signService.getSignature(
+            'kuaishou',
+            cookie,
+            JSON.stringify({ url: submitSigPath, body: submitBody }),
+            submitBody
+          )
+          if (submitSig3) {
+            submitUrl = `${API.submit}?__NS_sig3=${submitSig3}`
+          }
+          await delay(backoff)
         }
       } else {
         break

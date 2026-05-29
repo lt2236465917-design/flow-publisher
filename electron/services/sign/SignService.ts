@@ -2,6 +2,7 @@ import { chromium, type BrowserContext, type Page } from 'playwright-core'
 import { join } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { execSync } from 'child_process'
+import { createHash } from 'crypto'
 import { logger } from '../../utils/logger'
 
 const SIGN_TIMEOUT = 10_000
@@ -40,8 +41,9 @@ export class SignService {
   /**
    * Get the signature for a given request.
    * Tries local Playwright-based signing first, falls back to external service.
+   * @param body Request body string — used by kuaishou external service (MD5 of body)
    */
-  async getSignature(platform: string, cookie: string, data: string): Promise<string> {
+  async getSignature(platform: string, cookie: string, data: string, body?: string): Promise<string> {
     try {
       let signature = ''
 
@@ -63,14 +65,14 @@ export class SignService {
       // Fallback to external signature server if local signing failed
       if (!signature) {
         logger.info(`[sign] Local signing failed for ${platform}, trying external service...`)
-        signature = await this.getExternalSignature(platform, cookie)
+        signature = await this.getExternalSignature(platform, cookie, body)
       }
 
       return signature
     } catch (err) {
       logger.error(`[sign] Failed to get signature for ${platform}:`, err)
       // Last resort: try external service
-      return await this.getExternalSignature(platform, cookie)
+      return await this.getExternalSignature(platform, cookie, body)
     }
   }
 
@@ -139,10 +141,17 @@ export class SignService {
   /**
    * Try to get signature from yixiaoer's external signature server (fallback).
    * Returns empty string if unavailable.
+   *
+   * For kuaishou: the `cookie` param must be MD5(requestBody), matching yixiaoer's getSign$5.
    */
-  private async getExternalSignature(platform: string, cookie: string): Promise<string> {
+  private async getExternalSignature(platform: string, cookie: string, body?: string): Promise<string> {
     const ports = YIXIAOER_SIGN_PORTS[platform]
     if (!ports) return ''
+
+    // Kuaishou's signing service expects MD5(body) as the cookie parameter (yixiaoer's approach)
+    const signCookie = (platform === 'kuaishou' && body)
+      ? createHash('md5').update(body).digest('hex')
+      : cookie
 
     for (const port of ports) {
       try {
@@ -155,7 +164,7 @@ export class SignService {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             url: '',
-            cookie,
+            cookie: signCookie,
             signType: 'browser',
             signCommand: platform
           }),

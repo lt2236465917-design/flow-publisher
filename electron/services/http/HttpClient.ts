@@ -60,6 +60,10 @@ export class HttpClient {
     return this.context.cookies
   }
 
+  getAccountId(): string {
+    return this.context.accountId
+  }
+
   async request<T = unknown>(options: HttpRequestOptions): Promise<ApiResponse<T>> {
     const config: AxiosRequestConfig = {
       method: options.method,
