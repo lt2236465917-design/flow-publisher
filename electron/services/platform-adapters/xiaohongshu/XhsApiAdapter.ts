@@ -1,4 +1,5 @@
 import type { BrowserContext, Page } from 'playwright-core'
+import axios from 'axios'
 import { BasePlatformAdapter } from '../BasePlatformAdapter'
 import type { UploadProgress, SubmitContentPayload, VideoConstraints } from '../IPlatformAdapter'
 import type { PlatformFieldDefinition } from '../../../shared/types/platform-fields'
@@ -327,33 +328,58 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     }
 
     try {
-      const cookie = client.getCookieString()
+      let cookie = client.getCookieString()
       const bodyStr = JSON.stringify(body)
       const urlPath = '/web_api/sns/v2/note'
-      const signResult = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
+      const { headers: signHeaders, a1 } = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
 
-      const response = await client.post<{
+      // Replace a1 cookie if signing returned a new one (matching yixiaoer)
+      if (a1) {
+        cookie = cookie.replace('a1=', 'a1old=')
+        cookie = `${cookie};a1=${a1}`
+      }
+
+      logger.info(`[xiaohongshu] Submit headers: X-s=${signHeaders['X-s'] ? 'yes' : 'no'}, X-t=${signHeaders['X-t'] ? 'yes' : 'no'}, X-S-Common=${signHeaders['X-S-Common'] ? 'yes' : 'no'}, a1_replaced=${!!a1}`)
+
+      // Use axios directly — bypass HttpClient's default BROWSER_HEADERS
+      // (sec-ch-ua, Sec-Fetch-*, etc. may cause XHS to reject the request)
+      const response = await axios.post<{
         success: boolean
         data?: { note_id: string }
         msg?: string
+        code?: number
       }>(
         API.noteCreate,
         body,
         {
-          referer: 'https://creator.xiaohongshu.com/',
-          Origin: 'https://creator.xiaohongshu.com',
-          Authorization: '',
-          'Content-Type': 'application/json;charset=UTF-8',
-          ...signResult
+          headers: {
+            cookie,
+            referer: 'https://creator.xiaohongshu.com/',
+            Origin: 'https://creator.xiaohongshu.com',
+            Authorization: '',
+            'Content-Type': 'application/json;charset=UTF-8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/110.0.0.0',
+            ...signHeaders
+          },
+          timeout: 30_000,
+          responseType: 'json'
         }
       )
 
+      logger.info(`[xiaohongshu] Submit response: ${JSON.stringify(response.data).substring(0, 500)}`)
+
       if (!response.data.success) {
-        throw new Error(`内容提交失败: ${response.data.msg || '未知错误'}`)
+        throw new Error(`内容提交失败: ${response.data.msg || JSON.stringify(response.data).substring(0, 200)}`)
       }
 
       logger.info(`[xiaohongshu] Content submitted, note_id: ${response.data.data?.note_id}`)
-    } catch (err) {
+    } catch (err: any) {
+      if (axios.isAxiosError(err)) {
+        const status = err.response?.status
+        const data = err.response?.data
+        logger.error(`[xiaohongshu] Submit HTTP error: ${status}`, JSON.stringify(data).substring(0, 500))
+        throw new Error(`内容提交失败: HTTP ${status} ${JSON.stringify(data).substring(0, 200)}`)
+      }
       logger.error('[xiaohongshu] submitContentAPI error:', err)
       throw err
     }
@@ -371,41 +397,93 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
   /**
    * Generate XHS request signature headers.
-   * Uses SignService which tries: _webmsxyw → new external → old external → local.
-   * Returns X-s, X-t, and optionally X-S-Common headers.
+   *
+   * Primary: yixiaoer external signing service (ports 5061-5063, newxiaohongshu).
+   * Returns X-s, X-t, X-S-Common, and optionally a1 cookie.
+   *
+   * Fallback: local MD5 signing (no X-S-Common).
    */
   private async getXhsSignHeaders(
     urlPath: string,
     cookie: string,
     body?: string
-  ): Promise<Record<string, string>> {
-    try {
-      const signService = getSignService()
-      // Pass urlPath and body so SignService can use newxiaohongshu external signing
-      const signData = JSON.stringify({ url: urlPath, body: body || '' })
-      const raw = await signService.getSignature('xiaohongshu', cookie, signData, body)
+  ): Promise<{ headers: Record<string, string>; a1?: string }> {
+    // Primary: try yixiaoer external signing service (returns X-S-Common)
+    const signPorts = ['5061', '5062', '5063']
+    const signBase = 'http://qianming.yixiaoer.cn'
 
-      if (raw) {
-        const parsed = JSON.parse(raw) as { 'X-s'?: string; 'X-t'?: number; 'X-S-Common'?: string }
-        if (parsed['X-s'] && parsed['X-t']) {
-          const headers: Record<string, string> = {
-            'X-s': parsed['X-s'],
-            'X-t': String(parsed['X-t'])
-          }
-          if (parsed['X-S-Common']) {
-            headers['X-S-Common'] = parsed['X-S-Common']
-          }
-          logger.info(`[xiaohongshu] Signing succeeded (X-S-Common: ${parsed['X-S-Common'] ? 'yes' : 'no'})`)
-          return headers
+    for (let i = 0; i < 3; i++) {
+      try {
+        const port = signPorts[i]
+        const url = `${signBase}:${port}/Sign/GetSign`
+        const cookieArr: string[] = [urlPath]
+        if (body) {
+          cookieArr.push(encodeURIComponent(body))
         }
+        const payload = {
+          url: '',
+          cookie: JSON.stringify(cookieArr),
+          signType: 'browser',
+          signCommand: 'newxiaohongshu'
+        }
+
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 10_000)
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        })
+        clearTimeout(timeout)
+
+        const result = (await resp.json()) as { signature?: string }
+        let signature = result.signature?.toString().replace(/\\/g, '"')
+
+        // Retry once if first attempt returned empty
+        if (!signature) {
+          await delay(1000)
+          const retryController = new AbortController()
+          const retryTimeout = setTimeout(() => retryController.abort(), 10_000)
+          const retryResp = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: retryController.signal
+          })
+          clearTimeout(retryTimeout)
+          const retryResult = (await retryResp.json()) as { signature?: string }
+          signature = retryResult.signature?.toString().replace(/\\/g, '"')
+        }
+
+        if (signature) {
+          const parsed = JSON.parse(signature) as {
+            'X-s'?: string
+            'X-t'?: string
+            'X-S-Common'?: string
+            a1?: string
+          }
+          if (parsed['X-s'] && parsed['X-t']) {
+            const headers: Record<string, string> = {
+              'X-s': parsed['X-s'],
+              'X-t': String(parsed['X-t'])
+            }
+            if (parsed['X-S-Common']) {
+              headers['X-S-Common'] = parsed['X-S-Common']
+            }
+            logger.info(`[xiaohongshu] Sign from port ${port}, X-S-Common: ${parsed['X-S-Common'] ? 'yes' : 'no'}, has a1: ${!!parsed.a1}`)
+            return { headers, a1: parsed.a1 }
+          }
+        }
+        await delay(1000)
+      } catch (err) {
+        logger.warn(`[xiaohongshu] Sign attempt ${i + 1} failed:`, err)
       }
-    } catch (err) {
-      logger.warn('[xiaohongshu] SignService signing failed:', err)
     }
 
-    // Last resort: local MD5 + custom base64 signing (no X-S-Common)
-    logger.warn('[xiaohongshu] All signing methods failed, using local algorithm (no X-S-Common)')
-    return this.localXhsSign(urlPath, body)
+    // Fallback: local MD5 signing (no X-S-Common)
+    logger.warn('[xiaohongshu] External signing failed, using local algorithm (no X-S-Common)')
+    return { headers: this.localXhsSign(urlPath, body) }
   }
 
   /**

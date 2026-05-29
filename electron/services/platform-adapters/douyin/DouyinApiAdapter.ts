@@ -273,16 +273,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
   }> {
     const url = `${API.uploadAuth}?type=video&isLandscape=true`
 
-    const response = await client.get<{
-      data?: {
-        uploadToken?: {
-          AccessKeyID?: string
-          AccessKeyId?: string
-          SecretAccessKey?: string
-          SessionToken?: string
-        }
-      }
-    }>(
+    const response = await client.get<Record<string, unknown>>(
       url,
       undefined,
       {
@@ -292,19 +283,38 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       }
     )
 
-    const token = response.data?.data?.uploadToken
-    logger.info(`[douyin] uploadAuth response keys: ${Object.keys(response.data?.data || {}).join(', ')}`)
+    const resData = response.data
+    logger.info(`[douyin] uploadAuth response keys: ${Object.keys(resData || {}).join(', ')}`)
 
-    if (!token?.AccessKeyID && !token?.AccessKeyId) {
-      logger.error('[douyin] uploadAuth missing credentials:', JSON.stringify(response.data).substring(0, 300))
-      throw new Error('获取上传凭证失败：服务器未返回认证信息')
+    // Try format 1: nested { data: { uploadToken: { AccessKeyID, SecretAccessKey, SessionToken } } }
+    const nestedToken = (resData as any)?.data?.uploadToken
+    if (nestedToken?.AccessKeyID || nestedToken?.AccessKeyId) {
+      return {
+        AccessKeyID: nestedToken.AccessKeyID || nestedToken.AccessKeyId || '',
+        SecretAccessKey: nestedToken.SecretAccessKey || '',
+        SessionToken: nestedToken.SessionToken || ''
+      }
     }
 
-    return {
-      AccessKeyID: token.AccessKeyID || token.AccessKeyId || '',
-      SecretAccessKey: token.SecretAccessKey || '',
-      SessionToken: token.SessionToken || ''
+    // Try format 2: flat { ak, auth } where auth is JSON string with STS credentials
+    const ak = (resData as any)?.ak
+    const authRaw = (resData as any)?.auth
+    if (ak && authRaw) {
+      try {
+        const authObj = typeof authRaw === 'string' ? JSON.parse(authRaw) : authRaw
+        const accessKeyId = authObj.AccessKeyID || authObj.AccessKeyId || ak
+        const secretAccessKey = authObj.SecretAccessKey || ''
+        const sessionToken = authObj.SessionToken || ''
+        logger.info(`[douyin] Parsed flat auth format, AccessKeyID: ${accessKeyId.substring(0, 10)}...`)
+        return { AccessKeyID: accessKeyId, SecretAccessKey: secretAccessKey, SessionToken: sessionToken }
+      } catch (e) {
+        logger.warn('[douyin] Failed to parse auth JSON, using ak directly')
+        return { AccessKeyID: ak, SecretAccessKey: '', SessionToken: '' }
+      }
     }
+
+    logger.error('[douyin] uploadAuth missing credentials:', JSON.stringify(resData).substring(0, 300))
+    throw new Error('获取上传凭证失败：服务器未返回认证信息')
   }
 
   async uploadVideoAPI(

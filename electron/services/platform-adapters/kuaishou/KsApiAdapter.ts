@@ -365,8 +365,8 @@ export class KsApiAdapter extends BasePlatformAdapter {
       throw new Error('获取上传凭证失败，请检查登录状态')
     }
 
-    const { token } = preData
-    logger.info(`[kuaishou] Upload token obtained: ${token.substring(0, 30)}...`)
+    const { token, photoId: prePhotoId } = preData
+    logger.info(`[kuaishou] Upload token obtained: ${token.substring(0, 30)}..., photoId: ${prePhotoId || 'N/A'}`)
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
@@ -444,37 +444,59 @@ export class KsApiAdapter extends BasePlatformAdapter {
     onProgress?.({ percent: 80, stage: '正在完成上传...' })
 
     // Step 3a: CDN-level complete — tells the upload server to reassemble fragments
+    // This MUST succeed before upload/finish can work — make it fatal with retries
     const completeBody = JSON.stringify({ upload_token: token, fragment_count: totalChunks })
     logger.info(`[kuaishou] Calling CDN upload/complete (POST) with ${totalChunks} fragments`)
-    try {
-      const completeRes = await new Promise<any>((resolve, reject) => {
-        const req = https.request({
-          hostname: uploadHost,
-          port: 443,
-          path: `/api/upload/complete?upload_token=${encodeURIComponent(token)}&fragment_count=${totalChunks}`,
-          method: 'POST',
-          agent,
-          headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(completeBody),
-            'Referer': REFERER,
-            'Origin': ORIGIN
-          }
-        }, (res: any) => {
-          let data = ''
-          res.on('data', (c: Buffer) => { data += c.toString() })
-          res.on('end', () => {
-            try { resolve(JSON.parse(data)) } catch { resolve({ raw: data }) }
+
+    let cdnCompleteOk = false
+    for (let cdnAttempt = 0; cdnAttempt < 3; cdnAttempt++) {
+      try {
+        const completeRes = await new Promise<any>((resolve, reject) => {
+          const req = https.request({
+            hostname: uploadHost,
+            port: 443,
+            path: `/api/upload/complete?upload_token=${encodeURIComponent(token)}&fragment_count=${totalChunks}`,
+            method: 'POST',
+            agent,
+            headers: {
+              'Content-Type': 'application/json',
+              'Content-Length': Buffer.byteLength(completeBody),
+              'Referer': REFERER,
+              'Origin': ORIGIN
+            }
+          }, (res: any) => {
+            let data = ''
+            res.on('data', (c: Buffer) => { data += c.toString() })
+            res.on('end', () => {
+              try { resolve(JSON.parse(data)) } catch { resolve({ raw: data }) }
+            })
           })
+          req.on('error', reject)
+          req.setTimeout(60_000, () => { req.destroy(); reject(new Error('CDN upload/complete timeout')) })
+          req.write(completeBody)
+          req.end()
         })
-        req.on('error', reject)
-        req.setTimeout(30_000, () => { req.destroy(); reject(new Error('CDN upload/complete timeout')) })
-        req.write(completeBody)
-        req.end()
-      })
-      logger.info(`[kuaishou] CDN upload/complete response: ${JSON.stringify(completeRes).substring(0, 500)}`)
-    } catch (e: any) {
-      logger.warn(`[kuaishou] CDN upload/complete failed (non-fatal): ${e.message}`)
+        logger.info(`[kuaishou] CDN upload/complete response (attempt ${cdnAttempt + 1}): ${JSON.stringify(completeRes).substring(0, 500)}`)
+
+        // Check for success — result=1 or HTTP-level acknowledgment
+        if (completeRes?.result === 1 || completeRes?.status === 'ok' || completeRes?.success) {
+          cdnCompleteOk = true
+          break
+        }
+        // Some CDN endpoints return 200 with no explicit result field — treat as success
+        if (completeRes && !completeRes.error && !completeRes.errMsg) {
+          cdnCompleteOk = true
+          break
+        }
+        logger.warn(`[kuaishou] CDN upload/complete returned non-success: ${JSON.stringify(completeRes).substring(0, 200)}`)
+      } catch (e: any) {
+        logger.warn(`[kuaishou] CDN upload/complete attempt ${cdnAttempt + 1} error: ${e.message}`)
+      }
+      if (cdnAttempt < 2) await delay(2000 * (cdnAttempt + 1))
+    }
+
+    if (!cdnCompleteOk) {
+      logger.warn('[kuaishou] CDN upload/complete failed after all retries — upload/finish may fail')
     }
 
     agent.destroy()
@@ -488,13 +510,18 @@ export class KsApiAdapter extends BasePlatformAdapter {
     await delay(FINISH_INITIAL_DELAY)
 
     // Note: yixiaoer uses "fileTyp" (no 'e') — this is what the server expects
-    const finishBody = JSON.stringify({
+    const finishBodyObj: Record<string, unknown> = {
       token,
       fileName: require('path').basename(filePath),
       fileTyp: 'video/mp4',
       fileLength: stats.size,
       'kuaishou.web.cp.api_ph': apiPh
-    })
+    }
+    // Include photoId from upload/pre if available — the browser sends this
+    if (prePhotoId) {
+      finishBodyObj.photoId = prePhotoId
+    }
+    const finishBody = JSON.stringify(finishBodyObj)
 
     const signService = getSignService()
     const finishSigPath = '/rest/cp/works/v2/video/pc/upload/finish'
@@ -546,6 +573,12 @@ export class KsApiAdapter extends BasePlatformAdapter {
       }
 
       lastFinishError = `result=${res.data?.result}`
+
+      // 500002 = "请稍后重试" — server still processing fragments, need to wait longer
+      if (res.data?.result === 500002) {
+        logger.info(`[kuaishou] Upload finish returned 500002 (server still processing fragments)`)
+      }
+
       if (attempt < FINISH_MAX_RETRIES - 1) {
         const backoff = FINISH_RETRY_DELAY * (attempt + 1)
         logger.info(`[kuaishou] Upload finish failed (${lastFinishError}), retrying in ${backoff / 1000}s...`)
@@ -634,6 +667,9 @@ export class KsApiAdapter extends BasePlatformAdapter {
       coverType: 1,
       coverTitle: '',
       photoType: 0,
+      privacyType,
+      width: videoWidth,
+      height: videoHeight,
       collectionId: '',
       publishTime: 0,
       longitude: '',
@@ -646,6 +682,8 @@ export class KsApiAdapter extends BasePlatformAdapter {
       'kuaishou.web.cp.api_ph': apiPh,
       mediaId: uploadResult?.mediaId || '',
       coverMediaId: uploadResult?.coverMediaId || '',
+      videoDuration: videoDuration,
+      videoFrameRate: uploadResult?.videoFrameRate || 0,
       declareInfo: { source: 0, platform: 0, time: 0, location: '', sourceId: 0, sourceName: '' }
     }
 

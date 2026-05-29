@@ -222,6 +222,7 @@ export class SignService {
     const page = await this.getOrCreatePage('xiaohongshu', cookie, 'https://creator.xiaohongshu.com/publish/publish')
 
     try {
+      // Step 1: Get X-s and X-t from _webmsxyw
       const signature = await page.evaluate(
         ({ data }) => {
           return new Promise<string>((resolve) => {
@@ -240,7 +241,96 @@ export class SignService {
         { data }
       )
 
-      if (signature) return signature
+      // Log what _webmsxyw returned for debugging
+      if (signature) {
+        try {
+          const sigObj = JSON.parse(signature)
+          logger.info(`[sign] XHS _webmsxyw returned keys: ${Object.keys(sigObj).join(', ')}`)
+        } catch { /* ignore */ }
+      }
+
+      // Step 2: Capture X-S-Common via route interceptor
+      // X-S-Common is added by anti-bot JS's XHR/fetch interceptor when making same-origin requests.
+      // We trigger a same-origin fetch (creator.xiaohongshu.com) so the anti-bot JS intercepts it.
+      let capturedXSCommon = ''
+      const routePattern = '**/edith.xiaohongshu.com/**'
+      const routeHandler = async (route: any) => {
+        const headers = route.request().headers()
+        const xsCommon = headers['x-s-common']
+        if (xsCommon) {
+          capturedXSCommon = xsCommon
+          logger.info(`[sign] XHS X-S-Common captured: ${capturedXSCommon.substring(0, 30)}...`)
+        }
+        // Also log all custom headers for debugging
+        const customHeaders = Object.keys(headers).filter(h => h.startsWith('x-'))
+        if (customHeaders.length > 0) {
+          logger.info(`[sign] XHS intercepted request x-headers: ${customHeaders.join(', ')}`)
+        }
+        await route.abort()
+      }
+
+      try {
+        await page.route(routePattern, routeHandler)
+
+        // Parse the URL path and body from data
+        const parsed = JSON.parse(data) as { url?: string; body?: string }
+        const urlPath = parsed.url || '/web_api/sns/v2/note'
+        const bodyStr = parsed.body || ''
+
+        // Try triggering an XHR to the same edith endpoint — XHR may be hooked differently than fetch
+        await page.evaluate(
+          ({ urlPath, bodyStr }) => {
+            // Use XHR instead of fetch — anti-bot may hook XHR differently
+            try {
+              const xhr = new XMLHttpRequest()
+              xhr.open('POST', `https://edith.xiaohongshu.com${urlPath}`, true)
+              xhr.setRequestHeader('Content-Type', 'application/json;charset=UTF-8')
+              xhr.withCredentials = true
+              xhr.send(bodyStr || null)
+            } catch {}
+          },
+          { urlPath, bodyStr }
+        )
+
+        // Wait for the route interceptor to fire
+        await page.waitForTimeout(3000)
+
+        // If XHR didn't work, try fetch as fallback
+        if (!capturedXSCommon) {
+          await page.evaluate(
+            ({ urlPath, bodyStr }) => {
+              const fullUrl = `https://edith.xiaohongshu.com${urlPath}`
+              const opts: RequestInit = {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json;charset=UTF-8' },
+                credentials: 'include'
+              }
+              if (bodyStr) opts.body = bodyStr
+              fetch(fullUrl, opts).catch(() => {})
+            },
+            { urlPath, bodyStr }
+          )
+          await page.waitForTimeout(3000)
+        }
+      } catch (interceptErr) {
+        logger.warn('[sign] XHS X-S-Common interception failed:', interceptErr)
+      } finally {
+        try { await page.unroute(routePattern, routeHandler) } catch {}
+      }
+
+      // Step 3: Combine X-s, X-t, and X-S-Common
+      if (signature) {
+        const parsed = JSON.parse(signature) as Record<string, unknown>
+        if (capturedXSCommon) {
+          parsed['X-S-Common'] = capturedXSCommon
+        }
+        return JSON.stringify(parsed)
+      }
+
+      // If _webmsxyw failed but we got X-S-Common, still return it
+      if (capturedXSCommon) {
+        logger.info('[sign] XHS: _webmsxyw failed but X-S-Common captured')
+      }
     } catch (err) {
       logger.warn('[sign] XHS Playwright signing failed:', err)
       this.resetPage('xiaohongshu')
@@ -304,12 +394,15 @@ export class SignService {
   private async getKuaishouSignature(cookie: string, data: string): Promise<string> {
     const page = await this.getOrCreatePage('kuaishou', cookie, 'https://cp.kuaishou.com/article/publish/video')
 
+    const routePattern = '**/cp.kuaishou.com/rest/**'
+    let capturedSig3 = ''
+    let routeHandler: ((route: any) => Promise<void>) | null = null
+
     try {
       const { url: apiUrl, body } = JSON.parse(data) as { url: string; body?: string }
-      let capturedSig3 = ''
 
       // Set up route interceptor to capture __NS_sig3 from outgoing requests
-      await page.route('**/cp.kuaishou.com/rest/**', async (route) => {
+      routeHandler = async (route: any) => {
         const reqUrl = route.request().url()
         const match = reqUrl.match(/__NS_sig3=([^&]+)/)
         if (match && match[1]) {
@@ -318,7 +411,8 @@ export class SignService {
         }
         // Abort — we only needed the signature
         await route.abort()
-      })
+      }
+      await page.route(routePattern, routeHandler)
 
       // Trigger an API call from the browser context.
       // Kuaishou's anti-bot JS intercepts fetch/XHR and adds __NS_sig3 before sending.
@@ -341,9 +435,6 @@ export class SignService {
       // Wait for the route interceptor to fire
       await page.waitForTimeout(3000)
 
-      // Clean up the route
-      await page.unroute('**/cp.kuaishou.com/rest/**')
-
       if (capturedSig3) {
         logger.info(`[sign] Kuaishou __NS_sig3 captured successfully`)
         return capturedSig3
@@ -355,6 +446,17 @@ export class SignService {
       logger.error('[sign] Kuaishou signature generation failed:', err)
       this.resetPage('kuaishou')
       return ''
+    } finally {
+      // Always clean up the route to prevent leaks on retry
+      try {
+        if (routeHandler) {
+          await page.unroute(routePattern, routeHandler)
+        } else {
+          await page.unroute(routePattern)
+        }
+      } catch {
+        // Ignore cleanup errors — page may already be closed
+      }
     }
   }
 
