@@ -9,6 +9,7 @@ import { logger } from '../../../utils/logger'
 import { delay } from '../../../utils/delays'
 import { existsSync, statSync, createReadStream, readFileSync } from 'fs'
 import { createHash } from 'crypto'
+import { getSignService } from '../../sign/SignService'
 
 // Xiaohongshu Creator API endpoints (reverse-engineered from yixiaoer)
 const API = {
@@ -178,24 +179,32 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
-    // Step 2: Multipart upload (matching yixiaoer's PUT-based COS flow)
+    // Step 2: Multipart upload (matching yixiaoer's Tencent COS flow)
     const fileBuffer = readFileSync(filePath)
     const baseUploadUrl = `https://${uploadAddr}/${fileId}`
     const commonHeaders: Record<string, string> = {
       'x-cos-security-token': token,
-      referer: 'https://creator.xiaohongshu.com/'
+      referer: 'https://creator.xiaohongshu.com/',
+      Origin: 'https://creator.xiaohongshu.com',
+      Authorization: ''
     }
 
-    // Step 2a: Init multipart upload — GET ?uploads to get uploadId
-    const initResponse = await client.request<{ uploadId?: string }>({
-      method: 'GET',
+    // Step 2a: Init multipart upload — POST ?uploads with empty body to get uploadId
+    // Response is XML containing <UploadId>...</UploadId>
+    const initResponse = await client.request<string>({
+      method: 'POST',
       url: `${baseUploadUrl}?uploads`,
+      data: '',
       headers: { ...commonHeaders, 'Content-Type': 'video/mp4' },
-      noCookie: true
+      noCookie: true,
+      responseType: 'text'
     })
-    const uploadId = initResponse.data?.uploadId
+    const initXml = typeof initResponse.data === 'string' ? initResponse.data : String(initResponse.data)
+    const uploadIdMatch = initXml.match(/<UploadId>(.*?)<\/UploadId>/)
+    const uploadId = uploadIdMatch?.[1]
     if (!uploadId) {
-      throw new Error('初始化分片上传失败')
+      logger.error(`[xiaohongshu] Multipart init response: ${initXml.substring(0, 500)}`)
+      throw new Error('初始化分片上传失败：未获取到 uploadId')
     }
     logger.info(`[xiaohongshu] Multipart upload initiated, uploadId: ${uploadId}`)
 
@@ -210,13 +219,14 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       const part = fileBuffer.subarray(start, end)
       const partNumber = i + 1
 
-      const partResponse = await client.request<{ ETag?: string }>({
+      const partResponse = await client.request<string>({
         method: 'PUT',
         url: `${baseUploadUrl}?partNumber=${partNumber}&uploadId=${uploadId}`,
         data: part,
         headers: { ...commonHeaders, 'Content-Type': 'application/octet-stream' },
         noCookie: true,
-        timeout: 120_000
+        timeout: 120_000,
+        responseType: 'text'
       })
 
       const etag = partResponse.headers?.etag || partResponse.data?.ETag || ''
@@ -232,7 +242,8 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       method: 'GET',
       url: `${baseUploadUrl}?uploadId=${uploadId}`,
       headers: commonHeaders,
-      noCookie: true
+      noCookie: true,
+      responseType: 'text'
     })
 
     // Step 2d: Complete multipart upload — POST with XML body
@@ -250,7 +261,8 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         'Content-Type': 'application/xml',
         'Content-MD5': createHash('md5').update(completeXml).digest('base64')
       },
-      noCookie: true
+      noCookie: true,
+      responseType: 'text'
     })
 
     logger.info(`[xiaohongshu] Multipart upload completed`)
@@ -260,44 +272,79 @@ export class XhsApiAdapter extends BasePlatformAdapter {
   }
 
   async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {
-    const params: Record<string, unknown> = {
-      title: payload.title,
-      desc: payload.description || '',
-      note_type: 'video',
-      at_user_list: [],
-      topic_tag_list: payload.hashtags.map((tag) => ({ name: tag })),
-      post_time: '',
-      private_type: 0,
-      video_id: videoId || ''
+    // Build body matching yixiaoer's common/video_info structure
+    const body: Record<string, unknown> = {
+      common: {
+        type: 'video',
+        title: payload.title || '',
+        note_id: '',
+        desc: payload.description || '',
+        source: JSON.stringify({ type: 'web', ids: '', extraInfo: JSON.stringify({ systemId: 'web' }) }),
+        business_binds: JSON.stringify({ version: 1, noteId: 0, bizType: 13 }),
+        ats: [],
+        biz_relations: [],
+        hash_tag: payload.hashtags.map((tag) => ({
+          id: '',
+          name: tag,
+          link: '',
+          type: 'topic'
+        })),
+        privacy_info: { op_type: 1, type: 0 }
+      },
+      image_info: null,
+      video_info: {
+        file_id: videoId || '',
+        fileid: videoId || '',
+        format_width: 720,
+        format_height: 1280,
+        composite_metadata: {
+          video: {
+            bitrate: 0,
+            colour_primaries: 'BT.709',
+            duration: 0,
+            format: 'AVC',
+            frame_rate: 30,
+            height: 1280,
+            matrix_coefficients: 'BT.709',
+            rotation: 0,
+            transfer_characteristics: 'BT.709',
+            width: 720
+          },
+          audio: { bitrate: 0, channels: 1, duration: 0, format: 'AAC', sampling_rate: 0 }
+        },
+        timelines: [],
+        cover: { height: 1280, file_id: '', fileid: '', width: 720, frame: { ts: 0, is_user_select: false, is_upload: false } },
+        chapters: [],
+        chapter_sync_text: false,
+        segments: { count: 1, need_slice: false, items: [] },
+        entrance: 'web'
+      }
     }
 
-    // Add cover if provided
-    if (payload.coverPath && existsSync(payload.coverPath)) {
-      params.cover_image_path = payload.coverPath
-    }
-
-    // Add platform-specific fields
-    if (payload.platformFields) {
-      if (payload.platformFields.noteType) {
-        params.note_type = payload.platformFields.noteType
-      }
-      if (payload.platformFields.location) {
-        params.poi_info = { name: payload.platformFields.location }
-      }
+    // Add location if provided
+    if (payload.platformFields?.location) {
+      (body.common as Record<string, unknown>).post_loc = { poi_id: '', name: payload.platformFields.location }
     }
 
     try {
+      const cookie = client.getCookieString()
+      const bodyStr = JSON.stringify(body)
+      const urlPath = '/web_api/sns/v2/note'
+      const signResult = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
+
       const response = await client.post<{
         success: boolean
         data?: { note_id: string }
         msg?: string
       }>(
         API.noteCreate,
-        params,
+        body,
         {
-          referer: 'https://creator.xiaohongshu.com/publish/publish',
+          referer: 'https://creator.xiaohongshu.com/',
           Origin: 'https://creator.xiaohongshu.com',
-          'Content-Type': 'application/json'
+          Authorization: '',
+          'Content-Type': 'application/json;charset=UTF-8',
+          ...signResult
         }
       )
 
@@ -320,5 +367,77 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       stream.on('end', () => resolve(hash.digest('hex')))
       stream.on('error', reject)
     })
+  }
+
+  /**
+   * Generate XHS request signature headers.
+   * Uses SignService which tries: _webmsxyw → new external → old external → local.
+   * Returns X-s, X-t, and optionally X-S-Common headers.
+   */
+  private async getXhsSignHeaders(
+    urlPath: string,
+    cookie: string,
+    body?: string
+  ): Promise<Record<string, string>> {
+    try {
+      const signService = getSignService()
+      // Pass urlPath and body so SignService can use newxiaohongshu external signing
+      const signData = JSON.stringify({ url: urlPath, body: body || '' })
+      const raw = await signService.getSignature('xiaohongshu', cookie, signData, body)
+
+      if (raw) {
+        const parsed = JSON.parse(raw) as { 'X-s'?: string; 'X-t'?: number; 'X-S-Common'?: string }
+        if (parsed['X-s'] && parsed['X-t']) {
+          const headers: Record<string, string> = {
+            'X-s': parsed['X-s'],
+            'X-t': String(parsed['X-t'])
+          }
+          if (parsed['X-S-Common']) {
+            headers['X-S-Common'] = parsed['X-S-Common']
+          }
+          logger.info(`[xiaohongshu] Signing succeeded (X-S-Common: ${parsed['X-S-Common'] ? 'yes' : 'no'})`)
+          return headers
+        }
+      }
+    } catch (err) {
+      logger.warn('[xiaohongshu] SignService signing failed:', err)
+    }
+
+    // Last resort: local MD5 + custom base64 signing (no X-S-Common)
+    logger.warn('[xiaohongshu] All signing methods failed, using local algorithm (no X-S-Common)')
+    return this.localXhsSign(urlPath, body)
+  }
+
+  /**
+   * Local XHS signing: X-s = customBase64(MD5(timestamp + "iamspam" + urlPath + bodyStr))
+   * Matches yixiaoer's getSign / getSign$6 implementation.
+   */
+  private localXhsSign(urlPath: string, body?: string): Record<string, string> {
+    const XHS_SIGN_SALT = 'iamspam'
+    const CUSTOM_B64_ALPHABET = 'A4NjFqYu5wPHsO0XTdDgMa2r1ZQocVte9UJBvk6/7=yRnhISGKblCWi+LpfE8xzm3'
+
+    const timestamp = Date.now()
+    const bodyStr = body || ''
+    const data = `${timestamp}${XHS_SIGN_SALT}${urlPath}${bodyStr}`
+    const md5Hex = createHash('md5').update(data).digest('hex')
+
+    // Custom base64 encode the MD5 hex string
+    const inputBytes = Buffer.from(md5Hex, 'utf-8')
+    let result = ''
+    for (let i = 0; i < inputBytes.length; i += 3) {
+      const b0 = inputBytes[i]
+      const b1 = i + 1 < inputBytes.length ? inputBytes[i + 1] : 0
+      const b2 = i + 2 < inputBytes.length ? inputBytes[i + 2] : 0
+      result += CUSTOM_B64_ALPHABET[(b0 >> 2) & 0x3f]
+      result += CUSTOM_B64_ALPHABET[((b0 << 4) | (b1 >> 4)) & 0x3f]
+      result += i + 1 < inputBytes.length ? CUSTOM_B64_ALPHABET[((b1 << 2) | (b2 >> 6)) & 0x3f] : '='
+      result += i + 2 < inputBytes.length ? CUSTOM_B64_ALPHABET[b2 & 0x3f] : '='
+    }
+
+    logger.info(`[xiaohongshu] Local signing: X-s=${result.substring(0, 10)}..., X-t=${timestamp}`)
+    return {
+      'X-s': result,
+      'X-t': String(timestamp)
+    }
   }
 }

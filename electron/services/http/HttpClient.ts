@@ -12,7 +12,7 @@ export interface CookieContext {
 }
 
 export interface HttpRequestOptions {
-  method: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'HEAD'
   url: string
   data?: unknown
   params?: Record<string, unknown>
@@ -125,6 +125,14 @@ export class HttpClient {
     noCookie?: boolean
   ): Promise<ApiResponse<T>> {
     return this.request<T>({ method: 'GET', url, params, headers, noCookie })
+  }
+
+  async head<T = unknown>(
+    url: string,
+    headers?: Record<string, string>,
+    noCookie?: boolean
+  ): Promise<ApiResponse<T>> {
+    return this.request<T>({ method: 'HEAD', url, headers, noCookie })
   }
 
   async post<T = unknown>(

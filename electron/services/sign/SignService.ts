@@ -11,7 +11,8 @@ const SIGN_TIMEOUT = 10_000
 const YIXIAOER_SIGN_PORTS: Record<string, string[]> = {
   douyin: ['5041', '5042'],
   kuaishou: ['5008', '5009', '5010', '5011'],
-  xiaohongshu: ['5096']
+  xiaohongshu: ['5096'],
+  newxiaohongshu: ['5061', '5062', '5063']
 }
 const YIXIAOER_SIGN_BASE = 'http://qianming.yixiaoer.cn'
 
@@ -84,7 +85,7 @@ export class SignService {
    * adds the a_bogus parameter to the URL. We intercept the request, extract
    * the signature, and abort the request before it's actually sent.
    */
-  private async getDouyinSignature(cookie: string, data: string): Promise<string> {
+  private async getDouyinSignature(cookie: string, data: string, body?: string): Promise<string> {
     const page = await this.getOrCreatePage('douyin', cookie, 'https://creator.douyin.com/creator-micro/home')
 
     try {
@@ -94,42 +95,66 @@ export class SignService {
       let capturedSignature = ''
 
       // Set up route interceptor to capture a_bogus from outgoing requests
-      await page.route('**/aweme/v1/**', async (route) => {
+      // Match both aweme/v1 and web/api paths — anti-bot may rewrite to either
+      const routeHandler = async (route: { request(): { url(): string }; abort(): Promise<void> }) => {
         const url = route.request().url()
         const match = url.match(/a_bogus=([^&]+)/)
         if (match && match[1]) {
           capturedSignature = match[1]
         }
-        // Abort the request — we only needed the signature
         await route.abort()
-      })
+      }
 
-      // Trigger a lightweight API call from the browser context.
-      // Douyin's anti-bot JS intercepts XHR/fetch and adds a_bogus before sending.
+      await page.route('**/*a_bogus*', routeHandler)
+      await page.route('**/aweme/v1/**', routeHandler)
+
+      // Wait longer for anti-bot JS to fully initialize (it may load lazily)
+      await page.waitForTimeout(3000)
+
+      // Try both XHR and fetch — anti-bot may hook either one
       await page.evaluate(
         ({ msToken }) => {
-          const xhr = new XMLHttpRequest()
-          xhr.open(
-            'GET',
-            `https://creator.douyin.com/aweme/v1/creator/user/info/?msToken=${msToken}&a_bogus=`
-          )
-          xhr.send()
+          // First try XHR
+          try {
+            const xhr = new XMLHttpRequest()
+            xhr.open(
+              'GET',
+              `https://creator.douyin.com/aweme/v1/creator/user/info/?msToken=${msToken}&a_bogus=`
+            )
+            xhr.send()
+          } catch {}
+
+          // Also try fetch as fallback
+          try {
+            fetch(
+              `https://creator.douyin.com/aweme/v1/creator/user/info/?msToken=${msToken}&a_bogus=`,
+              { method: 'GET', credentials: 'include' }
+            ).catch(() => {})
+          } catch {}
         },
         { msToken }
       )
 
-      // Wait briefly for the route interceptor to fire
-      await page.waitForTimeout(2000)
+      // Wait for the route interceptor to fire
+      await page.waitForTimeout(3000)
 
-      // Clean up the route
-      await page.unroute('**/aweme/v1/**')
+      // Clean up routes
+      await page.unroute('**/*a_bogus*', routeHandler)
+      await page.unroute('**/aweme/v1/**', routeHandler)
 
       if (capturedSignature) {
         logger.info('[sign] Douyin a_bogus captured successfully')
         return capturedSignature
       }
 
-      logger.warn('[sign] Douyin a_bogus not captured — anti-bot JS may not have intercepted the request')
+      logger.warn('[sign] Douyin a_bogus not captured — trying external service')
+
+      // Try external service with the full URL to sign
+      const urlToSign = data || ''
+      if (urlToSign) {
+        return await this.getExternalSignature('douyin', cookie, body, urlToSign)
+      }
+
       return ''
     } catch (err) {
       logger.error('[sign] Douyin signature generation failed:', err)
@@ -143,8 +168,9 @@ export class SignService {
    * Returns empty string if unavailable.
    *
    * For kuaishou: the `cookie` param must be MD5(requestBody), matching yixiaoer's getSign$5.
+   * @param urlToSign The full URL to sign (used by douyin external service)
    */
-  private async getExternalSignature(platform: string, cookie: string, body?: string): Promise<string> {
+  private async getExternalSignature(platform: string, cookie: string, body?: string, urlToSign?: string): Promise<string> {
     const ports = YIXIAOER_SIGN_PORTS[platform]
     if (!ports) return ''
 
@@ -163,7 +189,7 @@ export class SignService {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            url: '',
+            url: urlToSign || '',
             cookie: signCookie,
             signType: 'browser',
             signCommand: platform
@@ -186,6 +212,11 @@ export class SignService {
 
   /**
    * Xiaohongshu X-s / X-t signature generation.
+   *
+   * Tries:
+   * 1. Local Playwright-based signing via _webmsxyw function on the XHS page
+   * 2. New external signing service (ports 5061-5063, signCommand: "newxiaohongshu")
+   * 3. Old external signing service (port 5096, signCommand: "xiaohongshu")
    */
   private async getXhsSignature(cookie: string, data: string): Promise<string> {
     const page = await this.getOrCreatePage('xiaohongshu', cookie, 'https://creator.xiaohongshu.com/publish/publish')
@@ -194,16 +225,12 @@ export class SignService {
       const signature = await page.evaluate(
         ({ data }) => {
           return new Promise<string>((resolve) => {
-            // XHS uses X-s and X-t headers for signature
-            // These are generated by their anti-bot JS
             const win = window as Record<string, unknown>
 
-            // Try to find XHS signature function
             if (typeof win._webmsxyw === 'function') {
               const result = win._webmsxyw(data)
               resolve(JSON.stringify(result))
             } else {
-              // Fallback: make a test request and intercept headers
               resolve('')
             }
 
@@ -213,12 +240,56 @@ export class SignService {
         { data }
       )
 
-      return signature || ''
+      if (signature) return signature
     } catch (err) {
-      logger.error('[sign] XHS signature generation failed:', err)
+      logger.warn('[sign] XHS Playwright signing failed:', err)
       this.resetPage('xiaohongshu')
-      return ''
     }
+
+    // Try new external signing service (yixiaoer's "newxiaohongshu" format)
+    try {
+      const parsed = JSON.parse(data) as { url?: string; body?: string }
+      const urlPath = parsed.url || '/web_api/sns/v2/note'
+      const bodyStr = parsed.body || ''
+
+      const newSignPorts = YIXIAOER_SIGN_PORTS['newxiaohongshu']
+      for (const port of newSignPorts) {
+        try {
+          const url = `${YIXIAOER_SIGN_BASE}:${port}/Sign/GetSign`
+          const controller = new AbortController()
+          const timeout = setTimeout(() => controller.abort(), 8000)
+
+          const cookieValue = bodyStr
+            ? JSON.stringify([urlPath, encodeURIComponent(bodyStr)])
+            : JSON.stringify([urlPath])
+
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              url: '',
+              cookie: cookieValue,
+              signType: 'browser',
+              signCommand: 'newxiaohongshu'
+            }),
+            signal: controller.signal
+          })
+          clearTimeout(timeout)
+
+          const result = (await response.json()) as { signature?: string }
+          if (result.signature && result.signature !== 'null') {
+            logger.info(`[sign] XHS new external signature obtained via port ${port}`)
+            return result.signature
+          }
+        } catch {
+          // Try next port
+        }
+      }
+    } catch {
+      // Ignore parse errors
+    }
+
+    return ''
   }
 
   /**
@@ -446,6 +517,23 @@ export class SignService {
       mkdirSync(dir, { recursive: true })
     }
     return dir
+  }
+
+  /**
+   * Get a specific cookie value from the loaded page for a platform.
+   * Useful for extracting cookies set by the platform's JS (e.g., msToken for Douyin).
+   */
+  async getCookieFromPage(platform: string, cookieName: string): Promise<string> {
+    const page = this.pages.get(platform)
+    if (!page || page.isClosed()) return ''
+
+    try {
+      const cookies = await page.context().cookies()
+      const match = cookies.find((c) => c.name === cookieName)
+      return match?.value || ''
+    } catch {
+      return ''
+    }
   }
 
   /**

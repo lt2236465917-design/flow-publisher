@@ -17,7 +17,7 @@ const API = {
   userInfo: 'https://creator.douyin.com/aweme/v1/creator/user/info/',
   pcUserInfo: 'https://creator.douyin.com/aweme/v1/creator/pc/user/info/',
   csrfToken: 'https://creator.douyin.com/web/api/media/aweme/create/',
-  uploadAuth: 'https://studio.ixigua.com/api/upload/getAuthKey/',
+  uploadAuth: 'https://creator.douyin.com/web/api/media/upload/auth/v5/',
   awemeCreate: 'https://creator.douyin.com/web/api/media/aweme/create_v2/',
   collections: 'https://creator.douyin.com/aweme/v1/collection/list/',
   poiSearch: 'https://creator.douyin.com/aweme/v1/poi/recommend/',
@@ -33,6 +33,7 @@ const COMMON_PARAMS = {
   browser_language: 'zh-CN',
   browser_platform: 'Win32',
   browser_name: 'Mozilla',
+  browser_version: '5.0+(Windows+NT+10.0;+Win64;+x64)+AppleWebKit/537.36+(KHTML,+like+Gecko)+Chrome/140.0.0.0+Safari/537.36',
   browser_online: 'true',
   timezone_name: 'Asia/Shanghai'
 }
@@ -64,11 +65,12 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
   /**
    * Add a_bogus signature to a Douyin API URL.
    * Uses the local SignService to generate the signature.
+   * Passes the URL as data so the external signing service can use it.
    */
   private async signUrl(url: string, cookie: string, body?: string): Promise<string> {
     try {
       const signService = getSignService()
-      const signature = await signService.getSignature('douyin', cookie, body || '')
+      const signature = await signService.getSignature('douyin', cookie, url, body)
       if (!signature) return url
 
       const separator = url.includes('?') ? '&' : '?'
@@ -226,24 +228,31 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
 
   /**
    * Get CSRF token required for upload operations.
-   * Sends a HEAD request to the aweme/create endpoint with CSRF headers.
+   * Uses HEAD request with CSRF headers, rotating through 3 URLs on retry.
+   * Matches yixiaoer's getSdkToken$2 implementation.
    */
-  private async getCsrfToken(client: HttpClient): Promise<string> {
+  private async getCsrfToken(client: HttpClient, retryIndex: number = 0): Promise<string> {
+    const csrfUrls = [
+      'https://creator.douyin.com/web/api/media/anchor/search',
+      'https://creator.douyin.com/web/api/media/aweme/create/',
+      'https://creator.douyin.com/aweme/v1/creator/homepage/module/'
+    ]
+    const url = csrfUrls[retryIndex % csrfUrls.length]
+
     try {
-      // Use GET with special headers to trigger CSRF token response
-      const response = await client.get<unknown>(
-        API.csrfToken,
-        undefined,
+      const response = await client.head<unknown>(
+        url,
         {
+          Accept: 'application/json, text/plain, */*',
           referer: 'https://creator.douyin.com/content/upload',
           'x-secsdk-csrf-request': '1',
           'x-secsdk-csrf-version': '1.2.7'
         }
       )
-      // Extract token from x-ware-csrf-token header
-      const tokenHeader = response.headers?.['x-ware-csrf-token'] || ''
+      // Extract token from x-ware-csrf-token header — format: "something,<token>"
+      const tokenHeader = (response.headers?.['x-ware-csrf-token'] as string) || ''
       const token = tokenHeader.split(',')[1] || tokenHeader || ''
-      logger.info(`[douyin] CSRF token obtained: ${token ? 'yes' : 'no'}`)
+      logger.info(`[douyin] CSRF token obtained (url index ${retryIndex}): ${token ? 'yes' : 'no'}`)
       return token
     } catch (err) {
       logger.warn('[douyin] getCsrfToken error:', err)
@@ -262,8 +271,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     SecretAccessKey: string
     SessionToken: string
   }> {
-    const params = encodeURIComponent(JSON.stringify({ type: 'video', isLandscape: true }))
-    const url = `${API.uploadAuth}?params=${params}`
+    const url = `${API.uploadAuth}?type=video&isLandscape=true`
 
     const response = await client.get<{
       data?: {
@@ -279,7 +287,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       undefined,
       {
         Accept: 'application/json, text/plain, */*',
-        referer: 'https://studio.ixigua.com/upload?from=post_article',
+        referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page',
         'x-secsdk-csrf-token': 'DOWNGRADE'
       }
     )
@@ -336,11 +344,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       const vodParams = {
         Action: 'ApplyUploadInner',
         Version: '2020-11-19',
-        SpaceName: 'pgc',
+        SpaceName: 'aweme',
         FileType: 'video',
         IsInner: '1',
         FileSize: stats.size.toString(),
-        app_id: '3062',
+        app_id: '2906',
         user_id: userId,
         s: sessionToken
       }
@@ -445,8 +453,8 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       const commitQs = new URLSearchParams({
         Action: 'CommitUploadInner',
         Version: '2020-11-19',
-        SpaceName: 'pgc',
-        app_id: '3062',
+        SpaceName: 'aweme',
+        app_id: '2906',
         user_id: userId
       }).toString()
       const commitSignOpts = {
@@ -496,23 +504,43 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
   async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {
     const cookie = client.getCookieString()
 
+    // Build hashtags text_extra array and full text with inline hashtags
+    const textExtra: Array<Record<string, unknown>> = []
+    let fullText = `${payload.title || ''} ${payload.description || ''}`
+    let offset = (payload.title?.length || 0) + 1
+    for (const tag of payload.hashtags) {
+      const tagText = `#${tag} `
+      textExtra.push({
+        start: offset,
+        type: 1,
+        user_id: '',
+        hashtag_id: 0,
+        end: offset + tagText.length - 1,
+        hashtag_name: tag,
+        caption_start: 0,
+        caption_end: tagText.length
+      })
+      fullText += tagText
+      offset += tagText.length
+    }
+
     // Build the create_v2 request body (matching yixiaoer's buildPostData_v2 structure)
     const postData: Record<string, unknown> = {
       item: {
         common: {
-          text: payload.description || '',
+          text: fullText,
           caption: payload.description || '',
           item_title: payload.title || '',
           activity: '[]',
           text_extra: '',
-          challenges: '',
-          mentions: '',
+          challenges: '[]',
+          mentions: '[]',
           hashtag_source: '',
           hot_sentence: '',
           visibility_type: 0,
           download: 1,
           timing: 0,
-          creation_id: `flow_${Date.now()}`,
+          creation_id: `jdhajhsh${Date.now()}`,
           media_type: 4,
           video_id: videoId || '',
           music_source: 0,
@@ -562,27 +590,6 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       }
     }
 
-    // Build hashtags (text_extra)
-    const textExtra: Array<Record<string, unknown>> = []
-    let offset = (payload.title?.length || 0) + 1
-    for (const tag of payload.hashtags) {
-      const tagText = `#${tag} `
-      textExtra.push({
-        start: offset,
-        type: 1,
-        user_id: '',
-        hashtag_id: 0,
-        end: offset + tagText.length - 1,
-        hashtag_name: tag,
-        caption_start: 0,
-        caption_end: tagText.length
-      })
-      offset += tagText.length
-    }
-    if (textExtra.length > 0) {
-      ;(postData.item as Record<string, unknown>).text_extra = textExtra
-    }
-
     // Add platform-specific fields
     if (payload.platformFields) {
       if (payload.platformFields.collection) {
@@ -605,9 +612,35 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       // Extract bd_ticket_guard data from cookie
       const bdTicketKey = this.extractBdTicketGuardKey(cookie)
       const clientData = this.clientSign(cookie)
+      const guardVersion = this.getTicketGuardVersion(cookie)
 
-      // Sign the create URL
-      const msToken = this.extractMsToken(cookie)
+      // Pre-check: call publishlimit endpoint (required by yixiaoer's flow)
+      try {
+        const limitParams = new URLSearchParams({
+          device_platform: 'pc',
+          ...COMMON_PARAMS,
+          aid: '1128',
+          msToken: '',
+          a_bogus: ''
+        })
+        const limitUrl = `https://creator.douyin.com/aweme/v1/open/publish/limit_app_groups/?${limitParams.toString()}`
+        await client.post(limitUrl, '', {
+          referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page',
+          Origin: 'https://creator.douyin.com',
+          'x-secsdk-csrf-token': csrfToken
+        })
+        logger.info('[douyin] publishlimit check passed')
+      } catch (limitErr) {
+        logger.warn('[douyin] publishlimit check failed (non-fatal):', limitErr)
+      }
+
+      // Get msToken from sign service page (set by Douyin's JS) or extract from cookie
+      const signService = getSignService()
+      let msToken = await signService.getCookieFromPage('douyin', 'msToken')
+      if (!msToken) {
+        msToken = this.extractMsToken(cookie)
+      }
+      logger.info(`[douyin] Using msToken: ${msToken.substring(0, 15)}...`)
       const queryParams = new URLSearchParams({
         read_aid: '2906',
         ...COMMON_PARAMS,
@@ -627,6 +660,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         {
           'Content-Type': 'application/json',
           'x-secsdk-csrf-token': csrfToken,
+          'bd-ticket-guard-web-version': guardVersion,
           'bd-ticket-guard-version': '2',
           'bd-ticket-guard-iteration-version': '1',
           'bd-ticket-guard-web-sign-type': '0',
@@ -697,6 +731,23 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
    */
   private sha256Hex(data: string): string {
     return createHash('sha256').update(data).digest('hex')
+  }
+
+  /**
+   * Determine bd-ticket-guard-web-version from cookie's ticket format.
+   * Returns "2" if ticket starts with "hash", otherwise "1".
+   */
+  private getTicketGuardVersion(cookie: string): string {
+    try {
+      const match = cookie.match(/security-sdk\/s_sdk_sign_data_key\/web_protect=([^;]+)/)
+      if (match) {
+        const decoded = JSON.parse(JSON.parse(decodeURIComponent(match[1])).data)
+        return decoded.ticket?.startsWith('hash') ? '2' : '1'
+      }
+    } catch {
+      // Ignore parse errors
+    }
+    return '1'
   }
 
   /**
