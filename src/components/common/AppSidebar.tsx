@@ -93,14 +93,14 @@ export default function AppSidebar() {
                   justifyContent: 'center',
                   gap: 4,
                   cursor: 'pointer',
-                  background: isActive ? 'rgba(255, 255, 255, 0.1)' : 'transparent',
+                  background: isActive ? 'rgba(0, 0, 0, 0.06)' : 'transparent',
                   transition: 'all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
                   position: 'relative',
                   margin: '0 auto',
                 }}
                 onMouseEnter={(e) => {
                   if (!isActive) {
-                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.06)'
+                    e.currentTarget.style.background = 'rgba(0, 0, 0, 0.04)'
                   }
                 }}
                 onMouseLeave={(e) => {
@@ -109,25 +109,26 @@ export default function AppSidebar() {
                   }
                 }}
               >
-                {/* Active indicator */}
+                {/* Active indicator — Fluorescent green dot with glow */}
                 {isActive && (
                   <div
                     style={{
                       position: 'absolute',
-                      left: -10,
+                      left: -6,
                       top: '50%',
                       transform: 'translateY(-50%)',
-                      width: 3,
-                      height: 20,
-                      borderRadius: '0 3px 3px 0',
-                      background: '#2997ff',
+                      width: 5,
+                      height: 5,
+                      borderRadius: '50%',
+                      background: '#34c759',
+                      boxShadow: '0 0 8px rgba(52, 199, 89, 0.6), 0 0 16px rgba(52, 199, 89, 0.3)',
                     }}
                   />
                 )}
                 <span
                   style={{
                     fontSize: 20,
-                    color: isActive ? '#ffffff' : 'rgba(255, 255, 255, 0.55)',
+                    color: isActive ? '#1d1d1f' : '#86868b',
                     transition: 'color 0.2s ease',
                     lineHeight: 1,
                   }}
@@ -138,7 +139,7 @@ export default function AppSidebar() {
                   style={{
                     fontSize: 10,
                     fontWeight: isActive ? 600 : 400,
-                    color: isActive ? '#ffffff' : 'rgba(255, 255, 255, 0.45)',
+                    color: isActive ? '#1d1d1f' : '#aeaeb2',
                     letterSpacing: '0.02em',
                     transition: 'color 0.2s ease',
                     lineHeight: 1,
@@ -183,7 +184,7 @@ export default function AppSidebar() {
           <span
             style={{
               fontSize: 9,
-              color: 'rgba(255, 255, 255, 0.2)',
+              color: '#aeaeb2',
               letterSpacing: '0.05em',
               fontFamily: "'DM Sans', sans-serif",
             }}
