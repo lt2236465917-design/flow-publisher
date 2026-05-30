@@ -7,7 +7,6 @@ export interface PlatformInfo {
   displayName: string
   color: string
   icon: string
-  iconUrl?: string
 }
 
 export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
@@ -15,29 +14,25 @@ export const PLATFORMS: Record<PlatformId, PlatformInfo> = {
     id: 'douyin',
     displayName: '抖音',
     color: '#000000',
-    icon: '🎵',
-    iconUrl: new URL('@/assets/platforms/douyin.png', import.meta.url).href
+    icon: '🎵'
   },
   xiaohongshu: {
     id: 'xiaohongshu',
     displayName: '小红书',
     color: '#ff2442',
-    icon: '📕',
-    iconUrl: new URL('@/assets/platforms/xhs.png', import.meta.url).href
+    icon: '📕'
   },
   'wechat-channels': {
     id: 'wechat-channels',
     displayName: '视频号',
     color: '#07c160',
-    icon: '🟢',
-    iconUrl: new URL('@/assets/platforms/wc.png', import.meta.url).href
+    icon: '🟢'
   },
   kuaishou: {
     id: 'kuaishou',
     displayName: '快手',
     color: '#ff6600',
-    icon: '🟠',
-    iconUrl: new URL('@/assets/platforms/ks.png', import.meta.url).href
+    icon: '🟠'
   }
 }
 
