@@ -53,7 +53,9 @@ export default function PlatformCard({ platformId, account, onLogin, onLogout, o
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
+            overflow: 'hidden',
           }}
+          src={platform.iconUrl}
         >
           {platform.icon}
         </Avatar>

@@ -60,7 +60,16 @@ export default function PlatformCustomizer({ platforms, overrides, onChange }: P
 
     return {
       key: platformId,
-      label: `${info.icon} ${info.displayName}`,
+      label: (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          {info.iconUrl ? (
+            <img src={info.iconUrl} alt={info.displayName} style={{ width: 14, height: 14, borderRadius: 3 }} />
+          ) : (
+            info.icon
+          )}
+          {info.displayName}
+        </span>
+      ),
       children: (
         <div style={{ padding: '8px 0' }}>
           {isLoading ? (

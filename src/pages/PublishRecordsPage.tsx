@@ -51,7 +51,13 @@ export default function PublishRecordsPage() {
           {platforms.map((p) => {
             const info = PLATFORMS[p as PlatformId]
             return info ? (
-              <span key={p} title={info.displayName} style={{ fontSize: 16 }}>{info.icon}</span>
+              <span key={p} title={info.displayName} style={{ fontSize: 16 }}>
+                {info.iconUrl ? (
+                  <img src={info.iconUrl} alt={info.displayName} style={{ width: 16, height: 16, borderRadius: 3 }} />
+                ) : (
+                  info.icon
+                )}
+              </span>
             ) : (
               <span key={p}>{p}</span>
             )

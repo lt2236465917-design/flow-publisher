@@ -42,6 +42,8 @@ function getPlatformName(platform: string): string {
   return info ? `${info.icon} ${info.displayName}` : platform
 }
 
+// Note: For image icons, use getPlatformIcon component instead
+
 export default function AnalyticsPage() {
   const { overview, compareResult, timeRange, loading, setTimeRange, fetchOverview, fetchCompare } = useAnalyticsStore()
 

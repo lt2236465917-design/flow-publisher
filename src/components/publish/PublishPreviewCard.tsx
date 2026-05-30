@@ -32,7 +32,11 @@ export default function PublishPreviewCard({ platform, title, description, cover
           gap: 8,
         }}
       >
-        <span style={{ fontSize: 16 }}>{info.icon}</span>
+        {info.iconUrl ? (
+          <img src={info.iconUrl} alt={info.displayName} style={{ width: 16, height: 16, borderRadius: 3 }} />
+        ) : (
+          <span style={{ fontSize: 16 }}>{info.icon}</span>
+        )}
         <span
           style={{
             fontFamily: "'Sora', sans-serif",

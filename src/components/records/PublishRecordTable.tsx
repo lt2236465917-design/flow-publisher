@@ -42,7 +42,13 @@ export default function PublishRecordTable({ records, loading, onRefresh }: Prop
         const info = PLATFORMS[platform as PlatformId]
         return info ? (
           <span style={{ fontSize: 13 }}>
-            <span style={{ marginRight: 6 }}>{info.icon}</span>
+            <span style={{ marginRight: 6, display: 'inline-flex', alignItems: 'center' }}>
+              {info.iconUrl ? (
+                <img src={info.iconUrl} alt={info.displayName} style={{ width: 13, height: 13, borderRadius: 2 }} />
+              ) : (
+                info.icon
+              )}
+            </span>
             {info.displayName}
           </span>
         ) : platform

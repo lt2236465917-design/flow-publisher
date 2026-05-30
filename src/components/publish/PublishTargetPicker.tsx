@@ -67,7 +67,9 @@ export default function PublishTargetPicker({ value, onChange }: Props) {
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
+                        overflow: 'hidden',
                       }}
+                      src={info.iconUrl}
                     >
                       {info.icon}
                     </Avatar>
