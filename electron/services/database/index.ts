@@ -15,11 +15,23 @@ const DB_FILENAME = 'videosync.db'
 const BACKUP_DIR = 'db-backups'
 const MAX_BACKUPS = 5
 
-let dbInstance: Database | null = null
-let accountRepoInstance: AccountRepository | null = null
-let publishRecordRepoInstance: PublishRecordRepository | null = null
-let scheduledTaskRepoInstance: ScheduledTaskRepository | null = null
-let analyticsRepoInstance: AnalyticsRepository | null = null
+// Use global to persist across HMR reloads in development
+const globalDb = globalThis as any
+if (!globalDb.__dbInstances) {
+  globalDb.__dbInstances = {
+    db: null,
+    accountRepo: null,
+    publishRecordRepo: null,
+    scheduledTaskRepo: null,
+    analyticsRepo: null
+  }
+}
+
+let dbInstance: Database | null = globalDb.__dbInstances.db
+let accountRepoInstance: AccountRepository | null = globalDb.__dbInstances.accountRepo
+let publishRecordRepoInstance: PublishRecordRepository | null = globalDb.__dbInstances.publishRecordRepo
+let scheduledTaskRepoInstance: ScheduledTaskRepository | null = globalDb.__dbInstances.scheduledTaskRepo
+let analyticsRepoInstance: AnalyticsRepository | null = globalDb.__dbInstances.analyticsRepo
 
 function getDbPath(): string {
   const { app } = require('electron')
@@ -67,6 +79,16 @@ export async function initDatabase(): Promise<void> {
   publishRecordRepoInstance = new PublishRecordRepository(dbInstance)
   scheduledTaskRepoInstance = new ScheduledTaskRepository(dbInstance)
   analyticsRepoInstance = new AnalyticsRepository(dbInstance)
+
+  // Persist to global for HMR resilience
+  globalDb.__dbInstances = {
+    db: dbInstance,
+    accountRepo: accountRepoInstance,
+    publishRecordRepo: publishRecordRepoInstance,
+    scheduledTaskRepo: scheduledTaskRepoInstance,
+    analyticsRepo: analyticsRepoInstance
+  }
+
   logger.info('Database initialized')
 }
 
@@ -145,6 +167,16 @@ export function closeDatabase(): void {
     publishRecordRepoInstance = null
     scheduledTaskRepoInstance = null
     analyticsRepoInstance = null
+
+    // Clear global instances
+    globalDb.__dbInstances = {
+      db: null,
+      accountRepo: null,
+      publishRecordRepo: null,
+      scheduledTaskRepo: null,
+      analyticsRepo: null
+    }
+
     logger.info('Database closed')
   }
 }

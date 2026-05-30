@@ -30,17 +30,18 @@ export interface ApiResponse<T = unknown> {
   headers: Record<string, string>
 }
 
+// 2026年最新的Edge浏览器版本 - 保持与真实用户一致
 const REALISTIC_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36 Edg/116.0.1938.69'
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14'
 
-// Browser-like headers matching yixiaoer's createHttpInstance
+// Browser-like headers matching real Edge 136 browser
 const BROWSER_HEADERS: Record<string, string> = {
   'User-Agent': REALISTIC_UA,
   Accept: 'application/json, text/plain, */*',
   'Accept-Encoding': 'gzip,deflate,br',
-  'Accept-Language': 'zh-CN,zh;q=0.9',
+  'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
   Connection: 'keep-alive',
-  'sec-ch-ua': '"Microsoft Edge";v="117", "Not;A=Brand";v="8", "Chromium";v="117"',
+  'sec-ch-ua': '"Microsoft Edge";v="136", "Chromium";v="136", "Not_A Brand";v="24"',
   'sec-ch-ua-mobile': '?0',
   'sec-ch-ua-platform': '"Windows"',
   'Sec-Fetch-Site': 'same-origin',

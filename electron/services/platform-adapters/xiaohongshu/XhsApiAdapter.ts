@@ -209,12 +209,14 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     }
     logger.info(`[xiaohongshu] Multipart upload initiated, uploadId: ${uploadId}`)
 
-    // Step 2b: Upload parts (5MB each)
+    // Step 2b: Upload parts with concurrency (5MB each, 3 concurrent)
     const PART_SIZE = 5 * 1024 * 1024
     const totalParts = Math.ceil(stats.size / PART_SIZE)
-    const etags: string[] = []
+    const etags: string[] = new Array(totalParts)
+    const CONCURRENCY = 3
+    let completedParts = 0
 
-    for (let i = 0; i < totalParts; i++) {
+    const uploadPart = async (i: number) => {
       const start = i * PART_SIZE
       const end = Math.min(start + PART_SIZE, stats.size)
       const part = fileBuffer.subarray(start, end)
@@ -231,10 +233,25 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       })
 
       const etag = partResponse.headers?.etag || partResponse.data?.ETag || ''
-      etags.push(etag)
-      const percent = 10 + Math.round((partNumber / totalParts) * 65)
-      onProgress?.({ percent, stage: `上传中 ${partNumber}/${totalParts}` })
+      etags[i] = etag
+      completedParts++
+      const percent = 10 + Math.round((completedParts / totalParts) * 65)
+      onProgress?.({ percent, stage: `上传中 ${completedParts}/${totalParts}` })
     }
+
+    // Concurrent upload with limit
+    const pending: Promise<void>[] = []
+    for (let i = 0; i < totalParts; i++) {
+      const p = uploadPart(i)
+      pending.push(p)
+      if (pending.length >= CONCURRENCY) {
+        await Promise.race(pending)
+        const idx = pending.findIndex(p => p === undefined)
+        if (idx >= 0) pending.splice(idx, 1)
+        else pending.splice(0, 1)
+      }
+    }
+    await Promise.all(pending)
 
     logger.info(`[xiaohongshu] All ${totalParts} parts uploaded`)
 
@@ -341,8 +358,8 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
       logger.info(`[xiaohongshu] Submit headers: X-s=${signHeaders['X-s'] ? 'yes' : 'no'}, X-t=${signHeaders['X-t'] ? 'yes' : 'no'}, X-S-Common=${signHeaders['X-S-Common'] ? 'yes' : 'no'}, a1_replaced=${!!a1}`)
 
-      // Use axios directly — bypass HttpClient's default BROWSER_HEADERS
-      // (sec-ch-ua, Sec-Fetch-*, etc. may cause XHS to reject the request)
+      // Use axios directly with realistic 2026 browser headers
+      // 所有版本号必须与最新真实浏览器一致，避免被检测为自动化工具
       const response = await axios.post<{
         success: boolean
         data?: { note_id: string }
@@ -354,11 +371,20 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         {
           headers: {
             cookie,
-            referer: 'https://creator.xiaohongshu.com/',
+            referer: 'https://creator.xiaohongshu.com/publish/publish',
             Origin: 'https://creator.xiaohongshu.com',
             Authorization: '',
             'Content-Type': 'application/json;charset=UTF-8',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/110.0.0.0',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14',
+            Accept: 'application/json, text/plain, */*',
+            'Accept-Encoding': 'gzip,deflate,br',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
+            'sec-ch-ua': '"Microsoft Edge";v="136", "Chromium";v="136", "Not_A Brand";v="24"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Dest': 'empty',
             ...signHeaders
           },
           timeout: 30_000,

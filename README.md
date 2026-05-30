@@ -9,7 +9,7 @@
 [![Electron](https://img.shields.io/badge/Electron-33-47848F?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black)](https://reactjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/Limit-MIT-blue?style=flat-square)](LICENSE)
 
 </div>
 
@@ -23,14 +23,14 @@
 
 | 平台 | 登录方式 | 发布模式 | 状态 |
 |------|---------|---------|------|
-| 抖音 | 扫码登录 | API 直调 / 浏览器自动化 | ✅ API 模式已通（VOD 上传 + STS 认证） |
-| 小红书 | 扫码登录 | API 直调 / 浏览器自动化 | ✅ API 模式已通（分片上传 + X-S-Common 签名） |
-| 微信视频号 | 扫码登录 | API 直调 / 浏览器自动化 | ✅ API 模式已通（CDN 分块上传 + post_create） |
-| 快手 | 扫码登录 | API 直调 / 浏览器自动化 | ✅ API 模式已通（分片上传 + __NS_sig3 签名） |
+| 抖音 | 扫码登录 | API 直调 | ✅ 已通（VOD 上传 + STS 认证 + a_bogus 签名） |
+| 小红书 | 扫码登录 | API 直调 | ✅ 已通（分片上传 + X-S-Common 签名 + yixiaoer 签名服务） |
+| 微信视频号 | 扫码登录 | API 直调 | ✅ 已通（CDN 分块上传 + post_create） |
+| 快手 | 扫码登录 | API 直调 | ✅ 已通（分片上传 + __NS_sig3 签名） |
 
 ### 核心能力
 
-- **双发布模式** — API 直调（快速）与浏览器自动化（稳定）自动切换
+- **API 直调发布** — 直接调用平台接口，速度快，稳定性高，与真实用户行为一致
 - **智能封面** — 拖拽上传视频，自动提取推荐封面，支持横版 4:3 与竖版 3:4 裁剪
 - **内容定制** — 话题标签、@提及、POI 地点、内容声明，每个平台独立配置
 - **定时发布** — 设置发布时间，到点自动发布，支持定时队列管理
@@ -39,7 +39,7 @@
 
 ### 账号管理
 
-- 扫码登录，会话持久化
+- Electron 内置窗口扫码登录（与 yixiaoer 相同方式，不被平台检测为自动化）
 - 多账号并行，独立管理
 - 会话状态自动检测
 
@@ -60,9 +60,9 @@
 │  │  │ 抖音  │ │ 小红书 │ │ 视频号 │ │ 快手  │        │   │
 │  │  └──────┘ └──────┘ └──────┘ └──────┘        │   │
 │  ├──────────────────────────────────────────────┤   │
-│  │  HttpClient (Cookie 注入 + UA + 重试)          │   │
-│  │  SignService (a_bogus 签名 + fallback)        │   │
-│  │  Playwright (浏览器自动化 fallback)             │   │
+│  │  HttpClient (Cookie 注入 + UA 伪装)           │   │
+│  │  SignService (yixiaoer 外部签名 + 本地签名)    │   │
+│  │  ElectronLoginWindow (内置浏览器扫码登录)      │   │
 │  ├──────────────────────────────────────────────┤   │
 │  │  FFmpeg (视频处理) │ SQLite (本地存储)          │   │
 │  │  node-cron (定时调度) │ 文件对话框              │   │
@@ -75,7 +75,7 @@
 | 桌面框架 | Electron 33 + electron-vite |
 | 前端 | React 18 + TypeScript + Ant Design 5 |
 | 状态管理 | Zustand 5 |
-| 浏览器自动化 | Playwright-core（反检测模式） |
+| 登录方式 | Electron 内置 BrowserWindow（非 Playwright，不被检测） |
 | 视频处理 | FFmpeg（fluent-ffmpeg） |
 | 数据库 | sql.js（SQLite WASM） |
 | 定时任务 | node-cron |
@@ -122,19 +122,19 @@ npm run build:mac
 ├── electron/                    # 主进程
 │   ├── main.ts                  # 入口，窗口创建，调度器初始化
 │   ├── ipc/                     # IPC 处理器
-│   │   ├── account.ipc.ts       # 账号管理
-│   │   ├── publish.ipc.ts       # 发布流程
+│   │   ├── account.ipc.ts       # 账号管理（ElectronLoginWindow 登录）
+│   │   ├── publish.ipc.ts       # 发布流程（API 模式）
 │   │   └── scheduler.ipc.ts     # 定时任务
 │   ├── services/
-│   │   ├── browser/             # Playwright 浏览器管理 + Cookie 存储
+│   │   ├── browser/             # ElectronLoginWindow + Cookie 存储
 │   │   ├── database/            # SQLite 数据库 + 迁移
-│   │   ├── http/                # 统一 HTTP 客户端
-│   │   ├── platform-adapters/   # 平台适配器
-│   │   │   ├── douyin/          # 抖音 API + 浏览器适配
-│   │   │   ├── xiaohongshu/     # 小红书 API + 浏览器适配
-│   │   │   ├── wechat-channels/ # 微信视频号
-│   │   │   └── kuaishou/        # 快手
-│   │   ├── sign/                # 签名服务 (a_bogus)
+│   │   ├── http/                # 统一 HTTP 客户端（2026 最新 UA）
+│   │   ├── platform-adapters/   # 平台适配器（API 模式）
+│   │   │   ├── douyin/          # 抖音 API 适配
+│   │   │   ├── xiaohongshu/     # 小红书 API 适配
+│   │   │   ├── wechat-channels/ # 微信视频号 API 适配
+│   │   │   └── kuaishou/        # 快手 API 适配
+│   │   ├── sign/                # 签名服务（yixiaoer 外部 + 本地）
 │   │   ├── ffmpeg/              # 视频处理
 │   │   └── scheduler/           # 定时发布调度
 │   └── utils/
@@ -168,18 +168,17 @@ Flow 采用 Apple 设计语言：
 
 ### 已完成
 
-- [x] 多平台账号管理（扫码登录 + 会话持久化）
+- [x] 多平台账号管理（Electron 内置窗口扫码登录 + 会话持久化）
 - [x] 视频拖拽上传 + 封面裁剪
 - [x] 内容编辑（标题、描述、话题、声明）
-- [x] 浏览器自动化发布模式
-- [x] **微信视频号 API 直调发布** — CDN 分块上传 + post_create 提交
-- [x] **快手 API 直调发布** — 4MB 分片上传 + CDN complete + upload/finish + __NS_sig3 签名 + submit
-- [x] **抖音 API 直调发布** — STS 认证（支持 ak/auth 扁平格式） + VOD 上传 + aweme/create_v2 提交
-- [x] **小红书 API 直调发布** — 5MB 分片上传 + X-s/X-t/X-S-Common 签名（yixiaoer 外部服务） + a1 cookie 替换
-- [x] API 模式自动 fallback 到浏览器模式
-- [x] 定时发布 + 任务队列
+- [x] **抖音 API 直调发布** — STS 认证 + VOD 上传 + a_bogus 签名
+- [x] **小红书 API 直调发布** — 5MB 分片上传（3 并发） + X-s/X-t/X-S-Common 签名
+- [x] **微信视频号 API 直调发布** — 16MB 分块上传（6 并发） + post_create 提交
+- [x] **快手 API 直调发布** — 分片上传 + __NS_sig3 签名
+- [x] 定时发布 + 任务队列（部分成功状态支持）
 - [x] 发布记录追踪
 - [x] 数据统计与可视化
+- [x] 浏览器版本号保持最新（Chrome 136 / Edge 136）
 
 ### 开发中
 
@@ -188,6 +187,7 @@ Flow 采用 Apple 设计语言：
 ### 已知问题
 
 - 部分平台 API 端点可能随平台更新变化
+- 视频号上传速度受 CDN 服务器响应影响
 
 ## License
 

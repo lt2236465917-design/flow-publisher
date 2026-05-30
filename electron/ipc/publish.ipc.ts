@@ -1,9 +1,8 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
 import { getAccountRepository, getPublishRecordRepository, saveDatabase } from '../services/database'
-import { BrowserManager } from '../services/browser/BrowserManager'
 import { CookieStore } from '../services/browser/CookieStore'
-import { getAdapter, getEffectiveMode, getPublishMode, setPublishMode } from '../services/platform-adapters/PlatformAdapterRegistry'
+import { getAdapter } from '../services/platform-adapters/PlatformAdapterRegistry'
 import { HttpClient } from '../services/http/HttpClient'
 import type { CookieContext } from '../services/http/HttpClient'
 import { ffmpegService } from '../services/ffmpeg/FFmpegService'
@@ -11,7 +10,6 @@ import { validateVideo } from '../services/ffmpeg/VideoValidator'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import { logger } from '../utils/logger'
 
-const browserManager = new BrowserManager()
 const cookieStore = new CookieStore()
 
 export function registerPublishIpcHandlers(): void {
@@ -49,7 +47,7 @@ export function registerPublishIpcHandlers(): void {
     }
   })
 
-  // Upload video to platform
+  // Upload video to platform (API mode only)
   ipcMain.handle(IPC_CHANNELS.PUBLISH_UPLOAD, async (_event, params: {
     accountId: string
     platformId: string
@@ -59,6 +57,10 @@ export function registerPublishIpcHandlers(): void {
       const adapter = getAdapter(params.platformId)
       if (!adapter) {
         return { success: false, error: `不支持的平台: ${params.platformId}` }
+      }
+
+      if (!adapter.uploadVideoAPI) {
+        return { success: false, error: `平台 ${params.platformId} 不支持API上传` }
       }
 
       const accountRepo = getAccountRepository()
@@ -80,80 +82,30 @@ export function registerPublishIpcHandlers(): void {
       saveDatabase()
 
       const mainWindow = BrowserWindow.getAllWindows()[0]
-      const mode = getEffectiveMode(params.platformId)
 
-      logger.info(`[publish] Upload mode for ${params.platformId}: ${mode}`)
+      logger.info(`[publish] Uploading to ${params.platformId} via API`)
 
-      let videoId: string | undefined
-
-      // Try API mode first, fall back to browser mode on failure
-      if (mode === 'api' && adapter.uploadVideoAPI) {
-        const cookieStr = cookieStore.getCookieString(params.accountId)
-        if (!cookieStr) {
-          return { success: false, error: 'Cookie 不存在，请重新登录' }
-        }
-
-        try {
-          const context: CookieContext = {
-            cookies: cookieStr,
-            platform: params.platformId,
-            accountId: params.accountId
-          }
-          const client = new HttpClient(context)
-
-          const result = await adapter.uploadVideoAPI(client, params.filePath, (progress) => {
-            recordRepo.updateStatus(record.id, 'uploading', progress.percent)
-            saveDatabase()
-            mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
-              recordId: record.id,
-              ...progress
-            })
-          })
-          videoId = typeof result === 'string' ? result : undefined
-        } catch (apiErr) {
-          logger.warn(`[publish] API mode failed for ${params.platformId}, falling back to browser mode:`, apiErr)
-
-          // Auto fallback to browser mode
-          if (adapter.uploadVideo) {
-            const progressHandler = (progress: { percent: number; stage: string }) => {
-              recordRepo.updateStatus(record.id, 'uploading', progress.percent)
-              saveDatabase()
-              mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
-                recordId: record.id,
-                ...progress
-              })
-            }
-
-            const ctx = await browserManager.getContext(params.platformId)
-            await cookieStore.loadCookies(ctx, params.accountId)
-            await adapter.uploadVideo(ctx, params.filePath, progressHandler)
-            // Don't close browser here — submitContent needs the same page context
-            // Browser will be closed by PUBLISH_SUBMIT handler
-          } else {
-            throw apiErr
-          }
-        }
-      } else {
-        // Browser mode — Playwright automation
-        if (!adapter.uploadVideo) {
-          return { success: false, error: `平台 ${params.platformId} 暂不支持发布` }
-        }
-
-        const context = await browserManager.getContext(params.platformId)
-        await cookieStore.loadCookies(context, params.accountId)
-
-        await adapter.uploadVideo(context, params.filePath, (progress) => {
-          recordRepo.updateStatus(record.id, 'uploading', progress.percent)
-          saveDatabase()
-          mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
-            recordId: record.id,
-            ...progress
-          })
-        })
-
-        // Don't close browser here — submitContent needs the same page context
-        // Browser will be closed by PUBLISH_SUBMIT handler
+      const cookieStr = cookieStore.getCookieString(params.accountId)
+      if (!cookieStr) {
+        return { success: false, error: 'Cookie 不存在，请重新登录' }
       }
+
+      const context: CookieContext = {
+        cookies: cookieStr,
+        platform: params.platformId,
+        accountId: params.accountId
+      }
+      const client = new HttpClient(context)
+
+      const result = await adapter.uploadVideoAPI(client, params.filePath, (progress) => {
+        recordRepo.updateStatus(record.id, 'uploading', progress.percent)
+        saveDatabase()
+        mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
+          recordId: record.id,
+          ...progress
+        })
+      })
+      const videoId = typeof result === 'string' ? result : undefined
 
       recordRepo.updateStatus(record.id, 'uploaded', 100)
       saveDatabase()
@@ -165,7 +117,7 @@ export function registerPublishIpcHandlers(): void {
     }
   })
 
-  // Submit content (title, description, etc.)
+  // Submit content (API mode only)
   ipcMain.handle(IPC_CHANNELS.PUBLISH_SUBMIT, async (_event, params: {
     recordId: string
     platformId: string
@@ -192,6 +144,10 @@ export function registerPublishIpcHandlers(): void {
         return { success: false, error: `不支持的平台: ${params.platformId}` }
       }
 
+      if (!adapter.submitContentAPI) {
+        return { success: false, error: `平台 ${params.platformId} 不支持API提交` }
+      }
+
       const recordRepo = getPublishRecordRepository()
       const record = recordRepo.getById(params.recordId)
       if (!record) return { success: false, error: '发布记录不存在' }
@@ -200,9 +156,8 @@ export function registerPublishIpcHandlers(): void {
       saveDatabase()
 
       const mainWindow = BrowserWindow.getAllWindows()[0]
-      const mode = getEffectiveMode(params.platformId)
 
-      logger.info(`[publish] Submit mode for ${params.platformId}: ${mode}`)
+      logger.info(`[publish] Submitting to ${params.platformId} via API`)
 
       mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
         recordId: params.recordId,
@@ -210,45 +165,18 @@ export function registerPublishIpcHandlers(): void {
         stage: '正在提交内容...'
       })
 
-      if (mode === 'api' && adapter.submitContentAPI) {
-        const cookieStr = cookieStore.getCookieString(record.account_id)
-        if (!cookieStr) {
-          return { success: false, error: 'Cookie 不存在，请重新登录' }
-        }
-
-        try {
-          const context: CookieContext = {
-            cookies: cookieStr,
-            platform: params.platformId,
-            accountId: record.account_id
-          }
-          const client = new HttpClient(context)
-          await adapter.submitContentAPI(client, params.content, params.videoId)
-        } catch (apiErr) {
-          logger.warn(`[publish] API submit failed for ${params.platformId}, falling back to browser mode:`, apiErr)
-
-          // Auto fallback to browser mode
-          if (adapter.submitContent) {
-            const ctx = await browserManager.getContext(params.platformId)
-            await cookieStore.loadCookies(ctx, record.account_id)
-            await adapter.submitContent(ctx, params.content)
-            await browserManager.close()
-          } else {
-            throw apiErr
-          }
-        }
-      } else {
-        // Browser mode
-        if (!adapter.submitContent) {
-          return { success: false, error: `平台 ${params.platformId} 暂不支持提交内容` }
-        }
-
-        const context = await browserManager.getContext(params.platformId)
-        await cookieStore.loadCookies(context, record.account_id)
-
-        await adapter.submitContent(context, params.content)
-        await browserManager.close()
+      const cookieStr = cookieStore.getCookieString(record.account_id)
+      if (!cookieStr) {
+        return { success: false, error: 'Cookie 不存在，请重新登录' }
       }
+
+      const context: CookieContext = {
+        cookies: cookieStr,
+        platform: params.platformId,
+        accountId: record.account_id
+      }
+      const client = new HttpClient(context)
+      await adapter.submitContentAPI(client, params.content, params.videoId)
 
       recordRepo.updateStatus(params.recordId, 'done', 100)
       const now = new Date().toISOString()
@@ -270,7 +198,6 @@ export function registerPublishIpcHandlers(): void {
       const recordRepo = getPublishRecordRepository()
       recordRepo.updateStatus(params.recordId, 'error', undefined, String(err))
       saveDatabase()
-      await browserManager.close()
       return { success: false, error: String(err) }
     }
   })
@@ -299,19 +226,5 @@ export function registerPublishIpcHandlers(): void {
     }
   })
 
-  // Get/set publish mode
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_GET_MODE, async (): Promise<IpcResponse> => {
-    return { success: true, data: { mode: getPublishMode() } }
-  })
-
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_SET_MODE, async (_event, mode: string): Promise<IpcResponse> => {
-    if (mode !== 'api' && mode !== 'browser') {
-      return { success: false, error: '无效的发布模式' }
-    }
-    setPublishMode(mode)
-    logger.info(`Publish mode set to: ${mode}`)
-    return { success: true, data: { mode } }
-  })
-
-  logger.info('Publish IPC handlers registered')
+  logger.info('Publish IPC handlers registered (API mode only)')
 }

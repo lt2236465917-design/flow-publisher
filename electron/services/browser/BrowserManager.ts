@@ -11,8 +11,9 @@ function getUserDataDir(): string {
   return join(app.getPath('userData'), 'browser-profiles')
 }
 
+// 2026年最新的Chrome浏览器版本
 const REALISTIC_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14'
 
 export class BrowserManager {
   private context: BrowserContext | null = null

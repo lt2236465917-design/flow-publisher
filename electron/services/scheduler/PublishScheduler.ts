@@ -35,14 +35,31 @@ export class PublishScheduler {
   }
 
   async checkDueTasks(): Promise<void> {
-    if (this.taskQueue.isRunning) return
+    if (this.taskQueue.isRunning) {
+      logger.debug('[PublishScheduler] Task queue is running, skipping check')
+      return
+    }
+
+    const pendingTasks = this.scheduledTaskRepo.getPendingTasks()
+    logger.debug(`[PublishScheduler] Total pending tasks: ${pendingTasks.length}`)
+
+    if (pendingTasks.length > 0) {
+      const now = new Date()
+      logger.debug(`[PublishScheduler] Current time (UTC): ${now.toISOString()}`)
+      for (const task of pendingTasks) {
+        logger.debug(`[PublishScheduler] Pending task ${task.id}: scheduled_at=${task.scheduled_at}, status=${task.status}`)
+      }
+    }
 
     const dueTasks = this.scheduledTaskRepo.getDueTasks()
-    if (dueTasks.length === 0) return
+    if (dueTasks.length === 0) {
+      logger.debug('[PublishScheduler] No due tasks found')
+      return
+    }
 
     // Execute the first due task (ordered by scheduled_at ASC)
     const task = dueTasks[0]
-    logger.info('Dispatching scheduled task:', task.id, 'scheduled for', task.scheduled_at)
+    logger.info('[PublishScheduler] Dispatching scheduled task:', task.id, 'scheduled for', task.scheduled_at, 'current status:', task.status)
     await this.taskQueue.execute(task)
   }
 

@@ -1,6 +1,5 @@
-import type { BrowserContext, Page } from 'playwright-core'
 import type { PlatformFieldDefinition } from '../../shared/types/platform-fields'
-import type { HttpClient, CookieContext } from '../http/HttpClient'
+import type { HttpClient } from '../http/HttpClient'
 
 export interface LoginResult {
   success: boolean
@@ -34,21 +33,11 @@ export interface IPlatformAdapter {
   readonly platformName: string
   readonly loginUrl: string
 
-  // Login (browser-based — always needed for QR code scanning)
-  startLogin(context: BrowserContext): Promise<Page>
-  waitForQRCode(page: Page): Promise<string | null>
-  waitForLoginResult(page: Page, timeoutMs?: number): Promise<LoginResult>
-  checkSession(context: BrowserContext): Promise<boolean>
-  logout(context: BrowserContext): Promise<void>
-
-  // Publish — Browser mode (legacy, Playwright-based)
+  // Publish — API mode (HTTP-based, no browser automation)
   getVideoConstraints?(): VideoConstraints
-  uploadVideo?(context: BrowserContext, filePath: string, onProgress?: (p: UploadProgress) => void): Promise<void>
-  submitContent?(context: BrowserContext, payload: SubmitContentPayload): Promise<void>
-  getPlatformFields?(): PlatformFieldDefinition[]
-
-  // Publish — API mode (new, HTTP-based)
   uploadVideoAPI?(client: HttpClient, filePath: string, onProgress?: (p: UploadProgress) => void): Promise<string | void>
   submitContentAPI?(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void>
   checkSessionAPI?(client: HttpClient): Promise<boolean>
+  getPlatformFields?(): PlatformFieldDefinition[]
+  getAccountInfoAPI?(client: HttpClient): Promise<{ displayName?: string; avatarUrl?: string } | null>
 }

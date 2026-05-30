@@ -34,6 +34,18 @@ export class ScheduledTaskRepository {
     return rows
   }
 
+  getPendingTasks(): ScheduledTaskRow[] {
+    const stmt = this.db.prepare(
+      "SELECT * FROM scheduled_tasks WHERE status = 'pending' ORDER BY scheduled_at ASC"
+    )
+    const rows: ScheduledTaskRow[] = []
+    while (stmt.step()) {
+      rows.push(stmt.getAsObject() as unknown as ScheduledTaskRow)
+    }
+    stmt.free()
+    return rows
+  }
+
   getById(id: string): ScheduledTaskRow | null {
     const stmt = this.db.prepare('SELECT * FROM scheduled_tasks WHERE id = ?')
     stmt.bind([id])
@@ -46,8 +58,15 @@ export class ScheduledTaskRepository {
   }
 
   getDueTasks(): ScheduledTaskRow[] {
+    // Use datetime('now') to get current UTC time and compare with stored ISO timestamps
+    // The stored scheduled_at is in ISO format (e.g., "2026-05-30T10:00:00.000Z")
+    // SQLite datetime('now') returns "YYYY-MM-DD HH:MM:SS" format
+    // We need to normalize the comparison
     const stmt = this.db.prepare(
-      "SELECT * FROM scheduled_tasks WHERE scheduled_at <= datetime('now') AND status = 'pending' ORDER BY scheduled_at ASC"
+      `SELECT * FROM scheduled_tasks
+       WHERE status = 'pending'
+       AND datetime(scheduled_at) <= datetime('now')
+       ORDER BY scheduled_at ASC`
     )
     const rows: ScheduledTaskRow[] = []
     while (stmt.step()) {

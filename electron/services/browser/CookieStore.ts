@@ -1,10 +1,20 @@
-import type { BrowserContext, Cookie } from 'playwright-core'
 import { getAccountRepository, saveDatabase } from '../database'
 import { logger } from '../../utils/logger'
 
+// Cookie格式（兼容Playwright和Electron）
+interface CookieData {
+  name: string
+  value: string
+  domain: string
+  path: string
+  expires: number
+  httpOnly: boolean
+  secure: boolean
+  sameSite?: 'Strict' | 'Lax' | 'None'
+}
+
 export class CookieStore {
-  async saveCookies(accountId: string, context: BrowserContext): Promise<void> {
-    const cookies = await context.cookies()
+  async saveCookies(accountId: string, cookies: CookieData[]): Promise<void> {
     const repo = getAccountRepository()
     repo.updateSession(accountId, 'logged_in', JSON.stringify(cookies))
     saveDatabase()
@@ -15,24 +25,6 @@ export class CookieStore {
     logger.info(`Cookies saved for account ${accountId}, count: ${cookies.length}`)
     logger.info(`  domains: ${domains.join(', ')}`)
     logger.info(`  names: ${cookieNames.join(', ')}`)
-  }
-
-  async loadCookies(context: BrowserContext, accountId: string): Promise<boolean> {
-    const repo = getAccountRepository()
-    const account = repo.getById(accountId)
-    if (!account || !account.cookies || account.cookies === '[]') {
-      return false
-    }
-    try {
-      const cookies: Cookie[] = JSON.parse(account.cookies)
-      if (cookies.length === 0) return false
-      await context.addCookies(cookies)
-      logger.info(`Cookies loaded for account ${accountId}, count: ${cookies.length}`)
-      return true
-    } catch (err) {
-      logger.error(`Failed to load cookies for account ${accountId}:`, err)
-      return false
-    }
   }
 
   async clearCookies(accountId: string): Promise<void> {
@@ -54,7 +46,7 @@ export class CookieStore {
       return null
     }
     try {
-      const cookies: Cookie[] = JSON.parse(account.cookies)
+      const cookies: CookieData[] = JSON.parse(account.cookies)
       if (cookies.length === 0) {
         logger.warn(`Empty cookies array for account ${accountId}`)
         return null

@@ -6,3 +6,11 @@ dist/
 Thumbs.db
 .env
 .env.local
+.claude/
+test-*.js
+intercept-*.js
+md-partitioned-sunset.md.md
+TEST-FLOW.md
+electron.vite.config.d.ts
+electron.vite.config.js
+tsconfig.node.tsbuildinfo

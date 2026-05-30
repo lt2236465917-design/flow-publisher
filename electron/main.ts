@@ -1,4 +1,4 @@
-import { app, BrowserWindow, protocol, net } from 'electron'
+import { app, BrowserWindow, ipcMain, protocol, net } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
 import { initDatabase, closeDatabase, backupDatabase } from './services/database'
@@ -82,6 +82,11 @@ app.whenReady().then(async () => {
   registerFileDialogIpcHandlers()
   registerSchedulerIpcHandlers()
   registerAnalyticsIpcHandlers()
+
+  // App-level IPC handlers
+  ipcMain.handle('app:get-version', () => {
+    return { success: true, data: { version: app.getVersion() } }
+  })
 
   // Start scheduled publishing
   const scheduledTaskRepo = getScheduledTaskRepository()

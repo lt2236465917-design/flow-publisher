@@ -600,7 +600,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
           'Content-MD5': 'null',
           'Referer': 'https://channels.weixin.qq.com/',
           'Origin': 'https://channels.weixin.qq.com/',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36 Edg/116.0.1938.69'
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14'
         }
       }, (res: any) => {
         let data = ''
@@ -632,8 +632,8 @@ export class WcApiAdapter extends BasePlatformAdapter {
   }
 
   /**
-   * Upload video file to CDN with 1MB chunks and concurrent uploads.
-   * Tries HTTP/2 first; falls back to HTTP/1.1 with keep-alive if unsupported.
+   * Upload video file to CDN with concurrent uploads.
+   * Optimized for speed with larger chunks and higher concurrency.
    */
   private async uploadVideoChunks(
     client: HttpClient,
@@ -645,14 +645,14 @@ export class WcApiAdapter extends BasePlatformAdapter {
     uin?: string,
     onProgress?: (p: UploadProgress) => void
   ): Promise<string> {
-    const CHUNK_SIZE = 8 * 1024 * 1024 // 8MB — matching yixiaoer
+    const CHUNK_SIZE = 16 * 1024 * 1024 // 16MB — larger chunks for faster upload
     const totalChunks = Math.ceil(fileSize / CHUNK_SIZE)
     const fileBuffer = readFileSync(filePath)
     const weixinnum = uin || (this.cachedFinderUin ? String(this.cachedFinderUin) : '') || ''
     const taskId = Date.now().toString()
     const fileName = require('path').basename(filePath)
     const CDN_HOST = 'finderassistancea.video.qq.com'
-    const CONCURRENCY = 3 // matching yixiaoer
+    const CONCURRENCY = 6 // higher concurrency for faster upload
 
     // PartInfo map — keyed by PartNumber (1-based), used for both verification and complete call
     const partInfoMap = new Map<number, { PartNumber: number; ETag: string }>()

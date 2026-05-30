@@ -33,7 +33,10 @@ export function registerSchedulerIpcHandlers(): void {
       const task = repo.create(params)
       saveDatabase()
 
-      logger.info('Scheduled task created:', task.id, 'for', params.scheduledAt)
+      logger.info('[Scheduler] Scheduled task created:', task.id)
+      logger.info('[Scheduler] Task details - platforms:', params.platforms, 'scheduledAt:', params.scheduledAt)
+      logger.info('[Scheduler] Video path:', params.videoPath)
+      logger.info('[Scheduler] Title:', params.title)
       return { success: true, data: task }
     } catch (err) {
       logger.error('SCHEDULE_CREATE error:', err)
@@ -46,6 +49,7 @@ export function registerSchedulerIpcHandlers(): void {
     try {
       const repo = getScheduledTaskRepository()
       const tasks = repo.getAll()
+      logger.info(`[Scheduler] Listing ${tasks.length} scheduled tasks`)
       return { success: true, data: tasks }
     } catch (err) {
       logger.error('SCHEDULE_LIST error:', err)
@@ -73,13 +77,13 @@ export function registerSchedulerIpcHandlers(): void {
     }
   })
 
-  // Delete a scheduled task (only completed/failed/cancelled)
+  // Delete a scheduled task (only completed/failed/cancelled/partial)
   ipcMain.handle(IPC_CHANNELS.SCHEDULE_DELETE, async (_event, taskId: string): Promise<IpcResponse> => {
     try {
       const repo = getScheduledTaskRepository()
       const task = repo.getById(taskId)
       if (!task) return { success: false, error: '任务不存在' }
-      if (!['done', 'error', 'cancelled'].includes(task.status)) {
+      if (!['done', 'error', 'cancelled', 'partial'].includes(task.status)) {
         return { success: false, error: '只能删除已完成、失败或已取消的任务' }
       }
 

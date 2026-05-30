@@ -1,8 +1,8 @@
 import { ipcMain, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
 import { getAccountRepository, saveDatabase } from '../services/database'
-import { BrowserManager } from '../services/browser/BrowserManager'
 import { CookieStore } from '../services/browser/CookieStore'
+import { ElectronLoginWindow } from '../services/browser/ElectronLoginWindow'
 import { getAdapter } from '../services/platform-adapters/PlatformAdapterRegistry'
 import { registerAdapter } from '../services/platform-adapters/PlatformAdapterRegistry'
 import { existsSync, rmSync } from 'fs'
@@ -12,23 +12,12 @@ import { XhsApiAdapter } from '../services/platform-adapters/xiaohongshu/XhsApiA
 import { WcApiAdapter } from '../services/platform-adapters/wechat-channels/WcApiAdapter'
 import { KsApiAdapter } from '../services/platform-adapters/kuaishou/KsApiAdapter'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
-import type { LoginResult } from '../services/platform-adapters/IPlatformAdapter'
 import { HttpClient } from '../services/http/HttpClient'
 import { logger } from '../utils/logger'
 
-const browserManager = new BrowserManager()
 const cookieStore = new CookieStore()
 
-function clearBrowserProfile(platformId: string): void {
-  const { app } = require('electron')
-  const profileDir = join(app.getPath('userData'), 'browser-profiles', platformId)
-  if (existsSync(profileDir)) {
-    rmSync(profileDir, { recursive: true, force: true })
-    logger.info(`Cleared browser profile: ${profileDir}`)
-  }
-}
-
-// Register all adapters
+// Register all adapters (API mode only)
 registerAdapter(new DouyinApiAdapter())
 registerAdapter(new XhsApiAdapter())
 registerAdapter(new WcApiAdapter())
@@ -56,7 +45,10 @@ export function registerAccountIpcHandlers(): void {
   })
 
   // Start login flow for a platform
+  // 使用Electron内置BrowserWindow进行登录，与yixiaoer相同方式，不会被检测为自动化
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_LOGIN, async (event, platformId: string): Promise<IpcResponse> => {
+    const loginWindow = new ElectronLoginWindow(platformId)
+
     try {
       const adapter = getAdapter(platformId)
       if (!adapter) {
@@ -73,156 +65,111 @@ export function registerAccountIpcHandlers(): void {
         saveDatabase()
       }
 
-      // Close existing browser, but keep profile directory to preserve persistent cookies
-      await browserManager.close()
-      const context = await browserManager.getContext(platformId)
-      try {
-        await browserManager.clearAllCookies(platformId)
-      } catch {
-        // Context may have been recreated
-      }
-      const page = await adapter.startLogin(context)
+      // 使用Electron内置浏览器打开登录页面（与yixiaoer相同方式）
+      logger.info(`[account] Opening login window for ${platformId}...`)
+      await loginWindow.open(adapter.loginUrl)
 
-      // Notify renderer: user should scan QR in the browser window
-      logger.info('[account] Browser opened, waiting for user to scan QR in browser...')
+      // 通知渲染进程
       const mainWindow = BrowserWindow.getAllWindows()[0]
       mainWindow?.webContents.send('account:qr-code', {
         accountId, platformId,
         qrDataUrl: null,
-        fallbackMessage: '请在弹出的浏览器窗口中扫码登录'
+        fallbackMessage: '请在弹出的窗口中扫码登录'
       })
 
-      // Wait for login result (detects QR disappearance in browser)
-      logger.info('[account] Waiting for login result...')
-      const result: LoginResult = await adapter.waitForLoginResult(page)
-
-      if (result.success) {
-        logger.info('[account] Login successful, saving cookies via CDP')
-
-        try {
-          // Use CDP to get all cookies (Playwright's context.cookies() returns 0 for persistent contexts)
-          const cdpCookies = await browserManager.getAllCookiesViaCDP(page)
-          logger.info(`[account] CDP cookies: ${cdpCookies.length} | names: ${cdpCookies.map(c => c.name).join(', ')}`)
-
-          if (cdpCookies.length > 0) {
-            // Convert CDP cookies to Playwright format, preserving real attributes
-            const pwCookies = cdpCookies.map(c => {
-              // CDP returns expires as Unix timestamp (seconds). -1 or 0 means session cookie.
-              // For persistent cookies, use the real expiry. For session cookies, set far future.
-              let expires = c.expires
-              if (!c.session && expires > 0) {
-                // Keep real expiry (CDP uses seconds, Playwright uses seconds too)
-              } else {
-                // Session cookie — set to 1 year from now so it persists across restarts
-                expires = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60
-              }
-              return {
-                name: c.name,
-                value: c.value,
-                domain: c.domain,
-                path: c.path,
-                expires,
-                httpOnly: c.httpOnly ?? false,
-                secure: c.secure ?? true,
-                sameSite: (c.sameSite === 'None' || c.sameSite === 'Strict') ? c.sameSite : 'Lax' as const
-              }
-            })
-            const cookieJson = JSON.stringify(pwCookies)
-            repo.updateSession(accountId!, 'logged_in', cookieJson, result.displayName)
-            saveDatabase()
-            logger.info(`[account] Cookies saved: ${cdpCookies.length} cookies`)
-
-            // Try to get real account name via API
-            try {
-              // Convert cookie JSON to name=value format for HTTP headers
-              const parsedCookies = JSON.parse(cookieJson)
-              const cookieStr = parsedCookies.map((c: any) => `${c.name}=${c.value}`).join('; ')
-              const apiClient = new HttpClient({ cookies: cookieStr, platform: platformId, accountId: accountId! })
-              // getAccountInfoAPI is optional — not all adapters implement it
-              if ('getAccountInfoAPI' in adapter && typeof (adapter as any).getAccountInfoAPI === 'function') {
-                const apiInfo = await (adapter as any).getAccountInfoAPI(apiClient)
-                if (apiInfo?.displayName) {
-                  repo.updateSession(accountId!, 'logged_in', cookieJson, apiInfo.displayName)
-                  saveDatabase()
-                  logger.info(`[account] Account name updated via API: ${apiInfo.displayName}`)
-                  result.displayName = apiInfo.displayName
-                }
-              }
-            } catch (e) {
-              logger.warn('[account] Failed to get account name via API:', e)
-            }
-          } else {
-            logger.warn('[account] No cookies found via CDP')
-            repo.updateSession(accountId!, 'logged_in', undefined, result.displayName)
-            saveDatabase()
-          }
-        } catch (e) {
-          logger.warn('[account] Cookie save failed:', e)
-          repo.updateSession(accountId!, 'logged_in', undefined, result.displayName)
-          saveDatabase()
-        }
+      // 根据平台确定登录成功后应该检查的域名
+      const checkDomains: Record<string, string[]> = {
+        douyin: ['creator.douyin.com/creator-micro'],
+        xiaohongshu: ['creator.xiaohongshu.com/new', 'creator.xiaohongshu.com/publish'],
+        kuaishou: ['cp.kuaishou.com/profile', 'cp.kuaishou.com/article'],
+        'wechat-channels': ['channels.weixin.qq.com/platform']
       }
+      const domains = checkDomains[platformId] || []
 
-      await browserManager.close()
+      // 等待登录成功（cookie变化 + URL轮询 + 导航事件 三重检测）
+      logger.info(`[account] Waiting for login to complete (check domains: ${domains.join(', ')})...`)
+      const loginSuccess = await loginWindow.waitForLogin(domains, 180000) // 3分钟超时
 
-      return {
-        success: result.success,
-        data: { accountId, displayName: result.displayName, avatarUrl: result.avatarUrl }
+      if (loginSuccess) {
+        logger.info('[account] Login successful, getting cookies...')
+
+        // 获取cookies（从Electron的session中获取，不是从Playwright）
+        const cookies = await loginWindow.getCookies()
+        logger.info(`[account] Got ${cookies.length} cookies from Electron session`)
+
+        if (cookies.length > 0) {
+          // 只保存当前平台的cookies，过滤掉其他平台的
+          const platformDomains: Record<string, string[]> = {
+            douyin: ['.douyin.com', 'creator.douyin.com'],
+            xiaohongshu: ['.xiaohongshu.com', 'edith.xiaohongshu.com', 'creator.xiaohongshu.com'],
+            kuaishou: ['.kuaishou.com', 'cp.kuaishou.com'],
+            'wechat-channels': ['weixin.qq.com', 'channels.weixin.qq.com']
+          }
+          const domains = platformDomains[platformId] || []
+          const filteredCookies = cookies.filter(c =>
+            domains.some(d => c.domain.includes(d) || d.includes(c.domain))
+          )
+          logger.info(`[account] Filtered cookies: ${filteredCookies.length}/${cookies.length} for ${platformId}`)
+
+          // 使用CookieStore保存cookies
+          await cookieStore.saveCookies(accountId!, filteredCookies)
+          logger.info(`[account] Cookies saved: ${filteredCookies.length} cookies`)
+
+          // 尝试通过API获取账号信息
+          try {
+            const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ')
+            const apiClient = new HttpClient({ cookies: cookieStr, platform: platformId, accountId: accountId! })
+            if ('getAccountInfoAPI' in adapter && typeof (adapter as any).getAccountInfoAPI === 'function') {
+              const apiInfo = await (adapter as any).getAccountInfoAPI(apiClient)
+              if (apiInfo?.displayName) {
+                repo.updateSession(accountId!, 'logged_in', JSON.stringify(cookies), apiInfo.displayName)
+                saveDatabase()
+                logger.info(`[account] Account name updated via API: ${apiInfo.displayName}`)
+              }
+            }
+          } catch (e) {
+            logger.warn('[account] Failed to get account name via API:', e)
+          }
+
+          loginWindow.close()
+          return {
+            success: true,
+            data: { accountId, displayName: repo.getById(accountId!)?.display_name }
+          }
+        } else {
+          logger.warn('[account] No cookies found')
+          loginWindow.close()
+          return { success: false, error: '未获取到登录信息' }
+        }
+      } else {
+        loginWindow.close()
+        return { success: false, error: '登录超时或取消' }
       }
     } catch (err) {
       logger.error('ACCOUNT_LOGIN error:', err)
-      await browserManager.close()
+      loginWindow.close()
       return { success: false, error: String(err) }
     }
   })
 
-  // Check session status — API-first (fast, no browser), fallback to browser
+  // Check session status — only check if cookies exist, don't call API
+  // API calls during check may fail due to signature issues and cause false "expired" status
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_CHECK_SESSION, async (_event, accountId: string): Promise<IpcResponse> => {
     try {
       const repo = getAccountRepository()
       const account = repo.getById(accountId)
       if (!account) return { success: false, error: '账号不存在' }
 
-      const adapter = getAdapter(account.platform)
-      if (!adapter) return { success: false, error: `不支持的平台: ${account.platform}` }
+      // Simple check: if cookies exist, consider session valid
+      // The actual session validity will be determined when publishing (API call)
+      const cookieStr = cookieStore.getCookieString(accountId)
+      const isValid = !!cookieStr && account.session_status === 'logged_in'
 
-      let isValid = false
+      logger.info(`[account] Session check for ${account.platform}: ${isValid ? 'valid' : 'no cookies'}`)
 
-      // Try API-based session check first (fast, no browser needed)
-      if (adapter.checkSessionAPI) {
-        const cookieStr = cookieStore.getCookieString(accountId)
-        if (cookieStr) {
-          try {
-            const apiClient = new HttpClient({ cookies: cookieStr, platform: account.platform, accountId })
-            isValid = await adapter.checkSessionAPI(apiClient)
-            logger.info(`[account] API session check for ${account.platform}: ${isValid ? 'valid' : 'expired'}`)
-          } catch (e) {
-            logger.warn(`[account] API session check failed, falling back to browser:`, e)
-          }
-        }
-      }
-
-      // Fallback: browser-based session check
-      if (!isValid) {
-        try {
-          const context = await browserManager.getContext(account.platform)
-          await cookieStore.loadCookies(context, accountId)
-          isValid = await adapter.checkSession(context)
-          await browserManager.close()
-        } catch (e) {
-          logger.warn(`[account] Browser session check failed:`, e)
-          isValid = false
-        }
-      }
-
-      const newStatus = isValid ? 'logged_in' : 'expired'
-      repo.updateSession(accountId, newStatus)
-      saveDatabase()
-
-      return { success: true, data: { sessionStatus: newStatus } }
+      return { success: true, data: { sessionStatus: isValid ? 'logged_in' : 'expired' } }
     } catch (err) {
       logger.error('ACCOUNT_CHECK_SESSION error:', err)
-      await browserManager.close()
       return { success: false, error: String(err) }
     }
   })
@@ -235,7 +182,6 @@ export function registerAccountIpcHandlers(): void {
       if (!account) return { success: false, error: '账号不存在' }
 
       await cookieStore.clearCookies(accountId)
-      await browserManager.close()
 
       return { success: true }
     } catch (err) {
