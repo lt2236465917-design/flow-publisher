@@ -20,21 +20,26 @@ export default function PlatformCard({ platformId, account, onLogin, onLogout, o
   return (
     <div
       style={{
-        background: '#ffffff',
-        borderRadius: 14,
-        border: '1px solid rgba(0, 0, 0, 0.06)',
+        background: 'rgba(255, 255, 255, 0.78)',
+        backdropFilter: 'blur(20px) saturate(180%)',
+        WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+        borderRadius: 16,
+        border: '0.5px solid rgba(255, 255, 255, 0.85)',
         padding: '24px 22px',
-        transition: 'all 0.25s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02), 0 12px 40px rgba(0, 0, 0, 0.02)',
+        transition: 'all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
         cursor: isLoggedIn ? 'default' : 'pointer',
       }}
       onClick={!isLoggedIn ? () => onLogin(platformId) : undefined}
       onMouseEnter={(e) => {
-        e.currentTarget.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.06)'
-        e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.1)'
+        e.currentTarget.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.03), 0 20px 56px rgba(0, 0, 0, 0.03)'
+        e.currentTarget.style.transform = 'translateY(-2px)'
+        e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.92)'
       }}
       onMouseLeave={(e) => {
-        e.currentTarget.style.boxShadow = 'none'
-        e.currentTarget.style.borderColor = 'rgba(0, 0, 0, 0.06)'
+        e.currentTarget.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.02), 0 12px 40px rgba(0, 0, 0, 0.02)'
+        e.currentTarget.style.transform = 'translateY(0)'
+        e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.85)'
       }}
     >
       {/* Header */}

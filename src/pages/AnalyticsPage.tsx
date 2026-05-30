@@ -311,9 +311,12 @@ function SummaryCard({ title, value, suffix, icon, color }: {
   return (
     <div
       style={{
-        background: '#ffffff',
-        borderRadius: 14,
-        border: '1px solid rgba(0, 0, 0, 0.06)',
+        background: 'rgba(255, 255, 255, 0.78)',
+        backdropFilter: 'blur(20px) saturate(180%)',
+        WebkitBackdropFilter: 'blur(20px) saturate(180%)',
+        borderRadius: 16,
+        border: '0.5px solid rgba(255, 255, 255, 0.85)',
+        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02), 0 12px 40px rgba(0, 0, 0, 0.02)',
         padding: '20px 22px',
         transition: 'all 0.2s ease',
       }}

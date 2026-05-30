@@ -35,7 +35,10 @@ export default function AppSidebar() {
       style={{
         width: 72,
         height: '100vh',
-        background: '#1d1d1f',
+        background: 'rgba(255, 255, 255, 0.72)',
+        backdropFilter: 'blur(24px) saturate(180%)',
+        WebkitBackdropFilter: 'blur(24px) saturate(180%)',
+        borderRight: '0.5px solid rgba(255, 255, 255, 0.85)',
         display: 'flex',
         flexDirection: 'column',
         alignItems: 'center',

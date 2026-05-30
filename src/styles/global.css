@@ -4,12 +4,12 @@
    ═══════════════════════════════════════════════════════════ */
 
 :root {
-  /* Surface */
-  --flow-bg: #ffffff;
-  --flow-surface: #f5f5f7;
-  --flow-surface-elevated: #ffffff;
-  --flow-border: rgba(0, 0, 0, 0.06);
-  --flow-border-strong: rgba(0, 0, 0, 0.1);
+  /* Surface — Pure White Aesthetic */
+  --flow-bg: #F8F9FA;
+  --flow-surface: rgba(255, 255, 255, 0.78);
+  --flow-surface-elevated: rgba(255, 255, 255, 0.82);
+  --flow-border: rgba(255, 255, 255, 0.85);
+  --flow-border-strong: rgba(255, 255, 255, 0.92);
   --flow-divider: rgba(0, 0, 0, 0.04);
 
   /* Text */
@@ -33,24 +33,39 @@
   --flow-font-heading: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
   --flow-font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
 
-  /* Sidebar */
-  --flow-sidebar-bg: #1d1d1f;
-  --flow-sidebar-hover: rgba(255, 255, 255, 0.06);
-  --flow-sidebar-active: rgba(255, 255, 255, 0.1);
-  --flow-sidebar-text: rgba(255, 255, 255, 0.55);
-  --flow-sidebar-text-active: #ffffff;
-  --flow-sidebar-accent: #2997ff;
+  /* Sidebar — Acrylic Glass (highest layer) */
+  --flow-sidebar-bg: rgba(255, 255, 255, 0.72);
+  --flow-sidebar-hover: rgba(0, 0, 0, 0.04);
+  --flow-sidebar-active: rgba(0, 0, 0, 0.06);
+  --flow-sidebar-text: #86868b;
+  --flow-sidebar-text-active: #1d1d1f;
+  --flow-sidebar-accent: #34c759;
+  --flow-sidebar-blur: 24px;
 
-  /* Elevation */
-  --flow-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --flow-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
-  --flow-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.08);
+  /* Elevation — Multi-layer Diffuse Shadows */
+  --flow-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.02), 0 4px 12px rgba(0, 0, 0, 0.01);
+  --flow-shadow-md: 0 2px 8px rgba(0, 0, 0, 0.02), 0 12px 40px rgba(0, 0, 0, 0.02);
+  --flow-shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.03), 0 24px 64px rgba(0, 0, 0, 0.03);
 
   /* Radius */
-  --flow-radius-sm: 6px;
-  --flow-radius-md: 10px;
-  --flow-radius-lg: 14px;
-  --flow-radius-xl: 20px;
+  --flow-radius-sm: 8px;
+  --flow-radius-md: 12px;
+  --flow-radius-lg: 16px;
+  --flow-radius-xl: 24px;
+
+  /* Glassmorphism — Refined Layer System */
+  --flow-glass-bg: rgba(255, 255, 255, 0.78);
+  --flow-glass-blur: 20px;
+  --flow-glass-border: rgba(255, 255, 255, 0.85);
+  --flow-glass-shadow: 0 2px 8px rgba(0, 0, 0, 0.02), 0 12px 40px rgba(0, 0, 0, 0.02);
+
+  /* Glass Layers — Depth hierarchy */
+  --flow-glass-1-bg: rgba(255, 255, 255, 0.72);  /* Sidebar */
+  --flow-glass-1-blur: 24px;
+  --flow-glass-2-bg: rgba(255, 255, 255, 0.78);  /* Cards */
+  --flow-glass-2-blur: 20px;
+  --flow-glass-3-bg: rgba(255, 255, 255, 0.85);  /* Modals */
+  --flow-glass-3-blur: 32px;
 }
 
 /* ── Reset ─────────────────────────────────────────────── */

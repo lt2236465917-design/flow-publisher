@@ -26,8 +26,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           borderRadius: 8,
           fontFamily: "'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif",
           fontSize: 14,
-          colorBgContainer: '#ffffff',
-          colorBgLayout: '#f5f5f7',
+          colorBgContainer: 'rgba(255, 255, 255, 0.78)',
+          colorBgLayout: '#F8F9FA',
           colorBorder: 'rgba(0, 0, 0, 0.06)',
           colorBorderSecondary: 'rgba(0, 0, 0, 0.04)',
           colorText: '#1d1d1f',
@@ -40,8 +40,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           margin: 16,
           marginSM: 12,
           marginLG: 24,
-          boxShadow: '0 1px 2px rgba(0, 0, 0, 0.04)',
-          boxShadowSecondary: '0 4px 12px rgba(0, 0, 0, 0.06)',
+          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02), 0 12px 40px rgba(0, 0, 0, 0.02)',
+          boxShadowSecondary: '0 4px 16px rgba(0, 0, 0, 0.03), 0 20px 56px rgba(0, 0, 0, 0.03)',
         },
         components: {
           Button: {
@@ -50,7 +50,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
             fontWeight: 500,
           },
           Card: {
-            borderRadiusLG: 14,
+            borderRadiusLG: 16,
             paddingLG: 20,
           },
           Input: {
@@ -63,10 +63,10 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           },
           Table: {
             borderRadius: 12,
-            headerBg: '#f5f5f7',
+            headerBg: 'rgba(255, 255, 255, 0.5)',
           },
           Modal: {
-            borderRadiusLG: 20,
+            borderRadiusLG: 24,
           },
           Tabs: {
             inkBarHeight: 2,
