@@ -33,16 +33,23 @@ export class WcAdapter extends BasePlatformAdapter {
   getPlatformFields(): PlatformFieldDefinition[] {
     return [
       {
-        name: 'originalDeclaration',
-        type: 'checkbox',
-        label: '声明原创',
-        defaultValue: false
-      },
-      {
         name: 'location',
         type: 'text',
         label: '位置信息',
         placeholder: '搜索位置'
+      },
+      {
+        name: 'collection',
+        type: 'dynamic-select',
+        label: '添加合集',
+        placeholder: '选择合集',
+        dynamicKey: 'collections'
+      },
+      {
+        name: 'originalDeclaration',
+        type: 'checkbox',
+        label: '声明原创',
+        defaultValue: false
       }
     ]
   }

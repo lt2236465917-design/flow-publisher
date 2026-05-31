@@ -93,7 +93,34 @@ export class BrowserManager {
     })
 
     await this.context.addInitScript(STEALTH_SCRIPTS)
-    logger.info('Browser launched successfully')
+
+    // --- Network monitor: log all WeChat Channels API requests ---
+    this.context.on('request', (request) => {
+      const url = request.url()
+      if (url.includes('channels.weixin.qq.com') && url.includes('/cgi-bin/')) {
+        const method = request.method()
+        const postData = request.postData()
+        logger.info(`[NET-MON] ${method} ${url}`)
+        if (postData) {
+          try {
+            const parsed = JSON.parse(postData)
+            logger.info(`[NET-MON] Body: ${JSON.stringify(parsed, null, 2).substring(0, 2000)}`)
+          } catch {
+            logger.info(`[NET-MON] Body (raw): ${postData.substring(0, 500)}`)
+          }
+        }
+      }
+    })
+    this.context.on('response', (response) => {
+      const url = response.url()
+      if (url.includes('channels.weixin.qq.com') && url.includes('/cgi-bin/')) {
+        response.text().then((body) => {
+          logger.info(`[NET-MON] Response ${response.status()} ${url}`)
+          logger.info(`[NET-MON] Resp body: ${body.substring(0, 3000)}`)
+        }).catch(() => {})
+      }
+    })
+    logger.info('Browser launched successfully (network monitor active)')
     return this.context
   }
 

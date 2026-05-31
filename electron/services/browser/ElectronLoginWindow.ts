@@ -38,6 +38,16 @@ export class ElectronLoginWindow {
       logger.info(`[ElectronLoginWindow] Set WeChat UA for ${this.platformId}`)
     }
 
+    // 确保用户手动关闭窗口时能正确清理
+    // 必须在 close 事件中分离 debugger（closed 事件时窗口已销毁，太晚了）
+    this.loginWindow.on('close', () => {
+      logger.info(`[ElectronLoginWindow] Window closing for ${this.platformId}, detaching debugger...`)
+      this.detachDebugger()
+    })
+    this.loginWindow.on('closed', () => {
+      this.loginWindow = null
+    })
+
     await this.loginWindow.loadURL(loginUrl)
     logger.info(`[ElectronLoginWindow] Opened login window for ${this.platformId}: ${loginUrl}`)
     return this.loginWindow
@@ -179,6 +189,87 @@ export class ElectronLoginWindow {
   }
 
   /**
+   * 导航到指定URL（登录后继续浏览用）
+   */
+  async navigateTo(url: string): Promise<void> {
+    if (this.loginWindow && !this.loginWindow.isDestroyed()) {
+      await this.loginWindow.loadURL(url)
+      logger.info(`[ElectronLoginWindow] Navigated to: ${url}`)
+    }
+  }
+
+  /**
+   * 启用网络请求监控（仅监控指定域名的API请求）
+   */
+  enableNetworkMonitor(domainFilter: string): void {
+    if (!this.loginWindow || this.loginWindow.isDestroyed()) return
+
+    this.loginWindow.webContents.on('did-start-navigation', (event: any, url: string) => {
+      if (url.includes(domainFilter)) {
+        logger.info(`[NET-MON] Navigation: ${url}`)
+      }
+    })
+
+    // 使用 Chrome DevTools Protocol 监控网络请求
+    try {
+      const wc = this.loginWindow.webContents
+      const dbg = wc.debugger
+      if (!dbg.isAttached()) {
+        dbg.attach('1.3')
+      }
+
+      // 监听 CDP 事件
+      dbg.on('message', (_event: any, method: string, params: any) => {
+        if (method === 'Network.requestWillBeSent') {
+          const req = params.request
+          const url = req.url
+          if (url.includes(domainFilter) && url.includes('/cgi-bin/')) {
+            logger.info(`[NET-MON] ${req.method} ${url}`)
+            if (req.postData) {
+              try {
+                const parsed = JSON.parse(req.postData)
+                logger.info(`[NET-MON] Body: ${JSON.stringify(parsed, null, 2).substring(0, 2000)}`)
+              } catch {
+                logger.info(`[NET-MON] Body (raw): ${req.postData.substring(0, 500)}`)
+              }
+            }
+          }
+        }
+        if (method === 'Network.responseReceived') {
+          const resp = params.response
+          const url = resp.url
+          if (url.includes(domainFilter) && url.includes('/cgi-bin/')) {
+            logger.info(`[NET-MON] Response ${resp.status} ${url}`)
+            // 获取响应体
+            const requestId = params.requestId
+            dbg.sendCommand('Network.getResponseBody', { requestId }).then((result: any) => {
+              if (result.body) {
+                logger.info(`[NET-MON] Resp body: ${result.body.substring(0, 3000)}`)
+              }
+            }).catch(() => {})
+          }
+        }
+      })
+
+      // 启用网络监控
+      dbg.sendCommand('Network.enable').then(() => {
+        logger.info(`[ElectronLoginWindow] Network monitor enabled for ${domainFilter}`)
+      }).catch((e: any) => {
+        logger.warn(`[ElectronLoginWindow] Failed to enable Network.enable: ${e}`)
+      })
+    } catch (e) {
+      logger.warn(`[ElectronLoginWindow] Failed to enable network monitor: ${e}`)
+    }
+  }
+
+  /**
+   * 获取窗口实例（用于外部操作）
+   */
+  getWindow(): BrowserWindow | null {
+    return this.loginWindow
+  }
+
+  /**
    * 获取cookies
    */
   async getCookies(): Promise<Array<{
@@ -209,7 +300,22 @@ export class ElectronLoginWindow {
     this.cleanup()
   }
 
+  private detachDebugger(): void {
+    try {
+      if (this.loginWindow && !this.loginWindow.isDestroyed()) {
+        const dbg = this.loginWindow.webContents.debugger
+        if (dbg.isAttached()) {
+          dbg.detach()
+          logger.info(`[ElectronLoginWindow] Debugger detached for ${this.platformId}`)
+        }
+      }
+    } catch (e) {
+      logger.warn(`[ElectronLoginWindow] Failed to detach debugger: ${e}`)
+    }
+  }
+
   private cleanup(): void {
+    this.detachDebugger()
     if (this.loginWindow && !this.loginWindow.isDestroyed()) {
       this.loginWindow.close()
     }

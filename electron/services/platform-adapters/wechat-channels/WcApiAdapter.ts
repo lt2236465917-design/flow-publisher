@@ -62,16 +62,23 @@ export class WcApiAdapter extends BasePlatformAdapter {
   getPlatformFields(): PlatformFieldDefinition[] {
     return [
       {
-        name: 'originalDeclaration',
-        type: 'checkbox',
-        label: '声明原创',
-        defaultValue: false
-      },
-      {
         name: 'location',
         type: 'location',
         label: '位置信息',
         placeholder: '搜索位置'
+      },
+      {
+        name: 'collection',
+        type: 'dynamic-select',
+        label: '添加合集',
+        placeholder: '选择合集',
+        dynamicKey: 'collections'
+      },
+      {
+        name: 'originalDeclaration',
+        type: 'checkbox',
+        label: '声明原创',
+        defaultValue: false
       }
     ]
   }
@@ -327,6 +334,11 @@ export class WcApiAdapter extends BasePlatformAdapter {
           'Content-Type': 'application/json'
         }
       )
+
+      logger.info(`[wechat-channels] getAccountInfoAPI response: errCode=${response.data?.errCode}, hasData=${!!response.data?.data}, hasFinderUser=${!!response.data?.data?.finderUser}`)
+      if (response.data?.errCode !== 0) {
+        logger.warn(`[wechat-channels] getAccountInfoAPI failed: ${JSON.stringify(response.data).substring(0, 500)}`)
+      }
 
       if (response.data?.errCode === 0 && response.data?.data?.finderUser) {
         const user = response.data.data.finderUser
@@ -995,6 +1007,12 @@ export class WcApiAdapter extends BasePlatformAdapter {
     }
     topicXml += '</finder>'
 
+    // Build collection (topicId) — from platformFields.collection (dynamic-select value)
+    const topicId = (payload.platformFields?.collection as string) || ''
+    if (topicId) {
+      logger.info(`[wechat-channels] Added collection topicId: ${topicId}`)
+    }
+
     const postReq: Record<string, unknown> = {
       longitude: 0,
       latitude: 0,
@@ -1048,7 +1066,8 @@ export class WcApiAdapter extends BasePlatformAdapter {
       _log_finder_id: finderUsername || '',
       scene: 7,
       reqScene: 7,
-      videoClipTaskId: draftId
+      videoClipTaskId: draftId,
+      ...(topicId ? { topicId } : {})
     }
 
     // Add mode + megavideoDesc for videos > 60s (matching yixiaoer)
@@ -1285,17 +1304,20 @@ export class WcApiAdapter extends BasePlatformAdapter {
       const response = await client.post<{
         errCode?: number
         data?: {
-          poiList?: Array<{
-            poiId?: string
-            poiName?: string
+          list?: Array<{
+            uid?: string
+            name?: string
             address?: string
-            latitude?: number
             longitude?: number
+            latitude?: number
             city?: string
+            region?: string
+            fullAddress?: string
+            poiCheckSum?: string
           }>
         }
       }>(
-        'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/post/search_poi',
+        'https://channels.weixin.qq.com/micro/content/cgi-bin/mmfinderassistant-bin/helper/helper_search_location',
         { keyword, finderId, count: 20 },
         {
           referer: 'https://channels.weixin.qq.com/platform/post/create',
@@ -1306,22 +1328,67 @@ export class WcApiAdapter extends BasePlatformAdapter {
       )
 
       const errCode = response.data?.errCode ?? -1
-      if (errCode !== 0 || !response.data?.data?.poiList) {
-        logger.warn(`[wechat-channels] POI search failed: errCode=${errCode}`)
+      if (errCode !== 0 || !response.data?.data?.list) {
+        logger.warn(`[wechat-channels] Location search failed: errCode=${errCode}`)
         return []
       }
 
-      return response.data.data.poiList.map((poi) => ({
-        id: poi.poiId || '',
-        name: poi.poiName || '',
-        address: poi.address || poi.city || '',
+      return response.data.data.list.map((poi) => ({
+        id: poi.uid || '',
+        name: poi.name || '',
+        address: poi.fullAddress || poi.address || poi.city || '',
         lat: poi.latitude,
         lng: poi.longitude,
-        poi_id: poi.poiId,
-        extra: { city: poi.city }
+        poi_id: poi.uid,
+        extra: { city: poi.city, region: poi.region, checkSum: poi.poiCheckSum }
       }))
     } catch (err) {
       logger.error('[wechat-channels] searchLocation error:', err)
+      return []
+    }
+  }
+
+  /**
+   * Fetch user's collection (合集) list from WeChat Channels.
+   * Actual endpoint: /micro/content/cgi-bin/mmfinderassistant-bin/collection/get_collection_list
+   */
+  async getCollections(client: HttpClient): Promise<Array<{ label: string; value: string }>> {
+    try {
+      const response = await client.post<{
+        errCode?: number
+        data?: {
+          collectionList?: Array<{
+            id?: string
+            name?: string
+            feedCount?: number
+            desc?: string
+          }>
+        }
+      }>(
+        'https://channels.weixin.qq.com/micro/content/cgi-bin/mmfinderassistant-bin/collection/get_collection_list',
+        {},
+        {
+          referer: 'https://channels.weixin.qq.com/platform/post/create',
+          Origin: 'https://channels.weixin.qq.com',
+          'Content-Type': 'application/json'
+        },
+        { timeout: 15_000, responseType: 'json' }
+      )
+
+      const errCode = response.data?.errCode ?? -1
+      if (errCode !== 0 || !response.data?.data?.collectionList) {
+        logger.warn(`[wechat-channels] get_collection_list failed: errCode=${errCode}`)
+        return []
+      }
+
+      return response.data.data.collectionList
+        .filter((c) => c.id && c.name)
+        .map((c) => ({
+          label: `${c.name} (${c.feedCount || 0}个内容)`,
+          value: c.id!
+        }))
+    } catch (err) {
+      logger.error('[wechat-channels] getCollections error:', err)
       return []
     }
   }

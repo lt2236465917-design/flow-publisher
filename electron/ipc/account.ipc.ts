@@ -103,28 +103,36 @@ export function registerAccountIpcHandlers(): void {
             douyin: ['.douyin.com', 'creator.douyin.com'],
             xiaohongshu: ['.xiaohongshu.com', 'edith.xiaohongshu.com', 'creator.xiaohongshu.com'],
             kuaishou: ['.kuaishou.com', 'cp.kuaishou.com'],
-            'wechat-channels': ['weixin.qq.com', 'channels.weixin.qq.com']
+            'wechat-channels': ['.qq.com', 'weixin.qq.com', 'channels.weixin.qq.com']
           }
           const domains = platformDomains[platformId] || []
-          const filteredCookies = cookies.filter(c =>
-            domains.some(d => c.domain.includes(d) || d.includes(c.domain))
-          )
+          const filteredCookies = cookies.filter(c => {
+            const cd = c.domain || ''
+            return domains.some(d => cd === d || cd.endsWith(d) || d.endsWith(cd) || cd.includes(d) || d.includes(cd))
+          })
           logger.info(`[account] Filtered cookies: ${filteredCookies.length}/${cookies.length} for ${platformId}`)
+          if (filteredCookies.length > 0) {
+            logger.info(`[account] Filtered cookie domains: ${[...new Set(filteredCookies.map(c => c.domain))].join(', ')}`)
+          }
 
           // 使用CookieStore保存cookies
           await cookieStore.saveCookies(accountId!, filteredCookies)
           logger.info(`[account] Cookies saved: ${filteredCookies.length} cookies`)
 
-          // 尝试通过API获取账号信息
+          // 尝试通过API获取账号信息（只用过滤后的平台cookie，避免旧cookie冲突）
           try {
-            const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ')
+            const cookieStr = filteredCookies.map(c => `${c.name}=${c.value}`).join('; ')
+            logger.info(`[account] Calling getAccountInfoAPI with ${filteredCookies.length} filtered cookies`)
             const apiClient = new HttpClient({ cookies: cookieStr, platform: platformId, accountId: accountId! })
             if ('getAccountInfoAPI' in adapter && typeof (adapter as any).getAccountInfoAPI === 'function') {
               const apiInfo = await (adapter as any).getAccountInfoAPI(apiClient)
+              logger.info(`[account] getAccountInfoAPI result: ${JSON.stringify(apiInfo)}`)
               if (apiInfo?.displayName) {
                 repo.updateSession(accountId!, 'logged_in', JSON.stringify(cookies), apiInfo.displayName)
                 saveDatabase()
                 logger.info(`[account] Account name updated via API: ${apiInfo.displayName}`)
+              } else {
+                logger.warn('[account] getAccountInfoAPI returned no displayName, keeping old name')
               }
             }
           } catch (e) {
@@ -132,6 +140,7 @@ export function registerAccountIpcHandlers(): void {
           }
 
           loginWindow.close()
+
           return {
             success: true,
             data: { accountId, displayName: repo.getById(accountId!)?.display_name }
