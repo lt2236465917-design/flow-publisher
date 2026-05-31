@@ -192,12 +192,17 @@ export class TaskQueue {
       stage: '正在提交内容...'
     })
 
+    // Merge shared declarations with platform-specific overrides
+    const sharedDeclarations: string[] = JSON.parse(task.declarations || '[]')
+    const platformDeclarations = platformFields.declarations
+    const mergedDeclarations = Array.isArray(platformDeclarations) ? platformDeclarations as string[] : sharedDeclarations
+
     const content = {
       title: task.title,
       description: task.description,
       hashtags: JSON.parse(task.hashtags || '[]'),
       coverPath: task.cover_path || undefined,
-      declarations: JSON.parse(task.declarations || '[]'),
+      declarations: mergedDeclarations,
       platformFields
     }
 

@@ -6,6 +6,13 @@ import type { PlatformFieldDefinition } from '@shared/types/platform-fields'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import PlatformFieldRenderer from './PlatformFieldRenderer'
 
+interface AccountInfo {
+  id: string
+  platform: string
+  displayName: string
+  sessionStatus: string
+}
+
 interface Props {
   platforms: PlatformId[]
   overrides: Record<PlatformId, Record<string, unknown>>
@@ -15,6 +22,20 @@ interface Props {
 export default function PlatformCustomizer({ platforms, overrides, onChange }: Props) {
   const [fieldDefs, setFieldDefs] = useState<Record<string, PlatformFieldDefinition[]>>({})
   const [loading, setLoading] = useState<Record<string, boolean>>({})
+  const [accounts, setAccounts] = useState<AccountInfo[]>([])
+
+  useEffect(() => {
+    // Fetch accounts for location search
+    window.electron.ipcRenderer
+      .invoke<{ success: boolean; data?: AccountInfo[] }>(IPC_CHANNELS.ACCOUNT_LIST)
+      .then((res: unknown) => {
+        const r = res as { success?: boolean; data?: AccountInfo[] }
+        if (r.success && r.data) {
+          setAccounts(r.data)
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     for (const platformId of platforms) {
@@ -39,6 +60,10 @@ export default function PlatformCustomizer({ platforms, overrides, onChange }: P
         })
     }
   }, [platforms])
+
+  const getAccountId = (platformId: PlatformId): string | undefined => {
+    return accounts.find((a) => a.platform === platformId && a.sessionStatus === 'logged_in')?.id
+  }
 
   const handleFieldChange = (platformId: PlatformId, fieldName: string, value: unknown) => {
     onChange({
@@ -90,6 +115,8 @@ export default function PlatformCustomizer({ platforms, overrides, onChange }: P
                   field={field}
                   value={platformOverrides[field.name]}
                   onChange={(name, value) => handleFieldChange(platformId, name, value)}
+                  platformId={platformId}
+                  accountId={getAccountId(platformId)}
                 />
               ))}
             </Form>

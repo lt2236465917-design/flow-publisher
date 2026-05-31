@@ -53,9 +53,20 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       },
       {
         name: 'location',
-        type: 'text',
+        type: 'location',
         label: '地点标注',
         placeholder: '搜索地点'
+      },
+      {
+        name: 'declarations',
+        type: 'checkbox-group',
+        label: '内容声明',
+        options: [
+          { label: '原创声明', value: '原创声明' },
+          { label: '内容由 AI 生成', value: 'AI生成' },
+          { label: '可能引起不适', value: '可能引起不适' },
+          { label: '虚构演绎，仅供娱乐', value: '虚构演绎' }
+        ]
       }
     ]
   }
@@ -340,8 +351,49 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     }
 
     // Add location if provided
+    // location can be a LocationResult object (from LocationSearch) or a string (legacy)
     if (payload.platformFields?.location) {
-      (body.common as Record<string, unknown>).post_loc = { poi_id: '', name: payload.platformFields.location }
+      const loc = payload.platformFields.location
+      if (typeof loc === 'object' && loc !== null && 'name' in loc) {
+        // LocationResult object from LocationSearch component
+        const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number }
+        ;(body.common as Record<string, unknown>).post_loc = {
+          poi_id: locObj.poi_id || '',
+          name: locObj.name,
+          ...(locObj.lat ? { latitude: locObj.lat } : {}),
+          ...(locObj.lng ? { longitude: locObj.lng } : {})
+        }
+      } else if (typeof loc === 'string') {
+        // Legacy string location
+        ;(body.common as Record<string, unknown>).post_loc = { poi_id: '', name: loc }
+      }
+    }
+
+    // Add declarations (内容声明)
+    // XHS supports: 原创, AI生成, 可能引起不适, 虚构演绎
+    // Maps to declare_info array in the common object
+    if (payload.declarations && payload.declarations.length > 0) {
+      const declareInfo: Array<Record<string, unknown>> = []
+      for (const decl of payload.declarations) {
+        switch (decl) {
+          case '原创声明':
+            declareInfo.push({ type: 1, value: 1 }) // 原创
+            break
+          case 'AI生成':
+            declareInfo.push({ type: 2, value: 1 }) // AI生成内容
+            break
+          case '可能引起不适':
+            declareInfo.push({ type: 3, value: 1 }) // 可能引起不适
+            break
+          case '虚构演绎':
+            declareInfo.push({ type: 4, value: 1 }) // 虚构演绎
+            break
+        }
+      }
+      if (declareInfo.length > 0) {
+        (body.common as Record<string, unknown>).declare_info = declareInfo
+        logger.info(`[xiaohongshu] Added declarations: ${JSON.stringify(declareInfo)}`)
+      }
     }
 
     try {
@@ -542,6 +594,72 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     return {
       'X-s': result,
       'X-t': String(timestamp)
+    }
+  }
+
+  /**
+   * Search POI locations on Xiaohongshu.
+   * Uses the creator location search endpoint.
+   */
+  async searchLocation(client: HttpClient, keyword: string): Promise<import('../IPlatformAdapter').LocationResult[]> {
+    try {
+      let cookie = client.getCookieString()
+      const urlPath = '/web_api/sns/v1/search/poi'
+      const bodyStr = JSON.stringify({ keyword, page: 1, page_size: 20 })
+      const { headers: signHeaders, a1 } = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
+
+      if (a1) {
+        cookie = cookie.replace('a1=', 'a1old=')
+        cookie = `${cookie};a1=${a1}`
+      }
+
+      const response = await axios.post<{
+        success: boolean
+        data?: {
+          items?: Array<{
+            id?: string
+            name?: string
+            address?: string
+            lat?: number
+            lng?: number
+            city?: string
+          }>
+        }
+        msg?: string
+      }>(
+        'https://edith.xiaohongshu.com/web_api/sns/v1/search/poi',
+        { keyword, page: 1, page_size: 20 },
+        {
+          headers: {
+            cookie,
+            referer: 'https://creator.xiaohongshu.com/publish/publish',
+            Origin: 'https://creator.xiaohongshu.com',
+            'Content-Type': 'application/json;charset=UTF-8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14',
+            ...signHeaders
+          },
+          timeout: 15_000,
+          responseType: 'json'
+        }
+      )
+
+      if (!response.data.success || !response.data.data?.items) {
+        logger.warn(`[xiaohongshu] POI search failed: ${response.data.msg}`)
+        return []
+      }
+
+      return response.data.data.items.map((item) => ({
+        id: item.id || '',
+        name: item.name || '',
+        address: item.address || item.city || '',
+        lat: item.lat,
+        lng: item.lng,
+        poi_id: item.id,
+        extra: { city: item.city }
+      }))
+    } catch (err) {
+      logger.error('[xiaohongshu] searchLocation error:', err)
+      return []
     }
   }
 }

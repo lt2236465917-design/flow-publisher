@@ -69,6 +69,12 @@ export class KsApiAdapter extends BasePlatformAdapter {
         placeholder: '输入话题挑战名称'
       },
       {
+        name: 'location',
+        type: 'location',
+        label: '位置信息',
+        placeholder: '搜索位置'
+      },
+      {
         name: 'magicEmoji',
         type: 'checkbox',
         label: '使用魔法表情',
@@ -79,6 +85,17 @@ export class KsApiAdapter extends BasePlatformAdapter {
         type: 'checkbox',
         label: '同城可见',
         defaultValue: false
+      },
+      {
+        name: 'declarations',
+        type: 'checkbox-group',
+        label: '内容声明',
+        options: [
+          { label: '内容由 AI 生成', value: 'AI生成' },
+          { label: '可能引起不适', value: '可能引起不适' },
+          { label: '虚构演绎，仅供娱乐', value: '虚构演绎' },
+          { label: '危险行为，请勿模仿', value: '危险行为' }
+        ]
       }
     ]
   }
@@ -658,6 +675,54 @@ export class KsApiAdapter extends BasePlatformAdapter {
     const videoHeight = uploadResult?.videoHeight || 1080
     const videoDuration = uploadResult?.videoDuration || 0
 
+    // Build declareInfo with content declarations
+    // Kuaishou supports: AI生成, 可能引起不适, 虚构演绎, 危险行为
+    const declareInfo: Record<string, unknown> = {
+      source: 0,
+      platform: 0,
+      time: 0,
+      location: '',
+      sourceId: 0,
+      sourceName: ''
+    }
+
+    // Map declarations to Kuaishou API fields
+    if (payload.declarations && payload.declarations.length > 0) {
+      for (const decl of payload.declarations) {
+        switch (decl) {
+          case 'AI生成':
+            declareInfo.aiGenerated = 1
+            break
+          case '可能引起不适':
+            declareInfo.uncomfortable = 1
+            break
+          case '虚构演绎':
+            declareInfo.fictional = 1
+            break
+          case '危险行为':
+            declareInfo.dangerous = 1
+            break
+        }
+      }
+      logger.info(`[kuaishou] Added declarations to declareInfo: ${JSON.stringify(declareInfo)}`)
+    }
+
+    // Extract location data from platformFields
+    let longitude = ''
+    let latitude = ''
+    let poiId: number | string = 0
+    if (payload.platformFields?.location) {
+      const loc = payload.platformFields.location
+      if (typeof loc === 'object' && loc !== null && 'name' in loc) {
+        const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number }
+        longitude = locObj.lng ? String(locObj.lng) : ''
+        latitude = locObj.lat ? String(locObj.lat) : ''
+        poiId = locObj.poi_id || 0
+        declareInfo.location = locObj.name
+        logger.info(`[kuaishou] Added location: ${locObj.name}, poiId=${poiId}`)
+      }
+    }
+
     const params: Record<string, unknown> = {
       fileId,
       coverKey: uploadResult?.coverKey || '',
@@ -672,9 +737,9 @@ export class KsApiAdapter extends BasePlatformAdapter {
       height: videoHeight,
       collectionId: '',
       publishTime: 0,
-      longitude: '',
-      latitude: '',
-      poiId: 0,
+      longitude,
+      latitude,
+      poiId,
       notifyResult: 0,
       domain: '',
       secondDomain: '',
@@ -684,7 +749,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
       coverMediaId: uploadResult?.coverMediaId || '',
       videoDuration: videoDuration,
       videoFrameRate: uploadResult?.videoFrameRate || 0,
-      declareInfo: { source: 0, platform: 0, time: 0, location: '', sourceId: 0, sourceName: '' }
+      declareInfo
     }
 
     logger.info(`[kuaishou] Submitting: fileId=${fileId}, caption=${caption.substring(0, 80)}`)
@@ -766,5 +831,71 @@ export class KsApiAdapter extends BasePlatformAdapter {
       stream.on('end', () => resolve(hash.digest('hex')))
       stream.on('error', reject)
     })
+  }
+
+  /**
+   * Search POI locations on Kuaishou.
+   * Uses the creator POI search endpoint.
+   */
+  async searchLocation(client: HttpClient, keyword: string): Promise<import('../IPlatformAdapter').LocationResult[]> {
+    try {
+      const cookie = client.getCookieString()
+
+      const searchPath = '/rest/cp/works/v2/poi/search'
+      const body = JSON.stringify({ keyword, count: 20 })
+
+      const signService = getSignService()
+      const sig = await signService.getSignature(
+        'kuaishou',
+        cookie,
+        JSON.stringify({ url: searchPath, body }),
+        body
+      )
+
+      let url = `https://cp.kuaishou.com${searchPath}`
+      if (sig) {
+        url += `?__NS_sig3=${sig}`
+      }
+
+      const response = await client.post<{
+        result: number
+        data?: {
+          poiList?: Array<{
+            poiId?: string
+            poiName?: string
+            address?: string
+            latitude?: number
+            longitude?: number
+            city?: string
+          }>
+        }
+      }>(
+        url,
+        body,
+        {
+          referer: REFERER,
+          Origin: ORIGIN,
+          'Content-Type': 'application/json'
+        }
+      )
+
+      if (response.data?.result !== 1 || !response.data.data?.poiList) {
+        logger.warn(`[kuaishou] POI search failed: result=${response.data?.result}`)
+        return []
+      }
+
+      return response.data.data.poiList.map((poi) => ({
+        id: poi.poiId || '',
+        name: poi.poiName || '',
+        address: poi.address || poi.city || '',
+        lat: poi.latitude,
+        lng: poi.longitude,
+        poi_id: poi.poiId,
+        extra: { city: poi.city }
+      }))
+    } catch (err) {
+      logger.error('[kuaishou] searchLocation error:', err)
+      return []
+    }
   }
 }

@@ -19,6 +19,7 @@ export const IPC_CHANNELS = {
   PUBLISH_GET_PLATFORM_FIELDS: 'publish:get-platform-fields',
   PUBLISH_GET_MODE: 'publish:get-mode',
   PUBLISH_SET_MODE: 'publish:set-mode',
+  PUBLISH_SEARCH_LOCATION: 'publish:search-location',
 
   // Scheduler
   SCHEDULE_CREATE: 'schedule:create',

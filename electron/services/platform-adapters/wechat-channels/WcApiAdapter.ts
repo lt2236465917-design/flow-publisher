@@ -69,7 +69,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
       },
       {
         name: 'location',
-        type: 'text',
+        type: 'location',
         label: '位置信息',
         placeholder: '搜索位置'
       }
@@ -860,7 +860,22 @@ export class WcApiAdapter extends BasePlatformAdapter {
     }
 
     // Build location — yixiaoer sends {} by default, only populates if location data exists
+    // location is a LocationResult object from LocationSearch component
     let location: Record<string, unknown> = {}
+    if (payload.platformFields?.location) {
+      const loc = payload.platformFields.location
+      if (typeof loc === 'object' && loc !== null && 'name' in loc) {
+        const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number; address?: string }
+        location = {
+          poiId: locObj.poi_id || '',
+          poiName: locObj.name,
+          address: locObj.address || '',
+          latitude: locObj.lat || 0,
+          longitude: locObj.lng || 0
+        }
+        logger.info(`[wechat-channels] Added location: ${locObj.name}`)
+      }
+    }
 
     // Use upload result data for media info
     const uploadResult = this.lastUploadResult
@@ -985,7 +1000,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
       latitude: 0,
       feedLongitude: 0,
       feedLatitude: 0,
-      originalFlag: 0,
+      originalFlag: payload.platformFields?.originalDeclaration ? 1 : 0,
       objectType: 0,
       postFlag: 0,
       isFullPost,
@@ -1256,5 +1271,58 @@ export class WcApiAdapter extends BasePlatformAdapter {
 
     logger.warn(`[wechat-channels] Complete cover upload response: ${JSON.stringify(completeResp).substring(0, 300)}`)
     return ''
+  }
+
+  /**
+   * Search POI locations on WeChat Channels.
+   * Uses the finder POI search endpoint.
+   */
+  async searchLocation(client: HttpClient, keyword: string): Promise<import('../IPlatformAdapter').LocationResult[]> {
+    try {
+      const cookie = client.getCookieString()
+      const finderId = this.extractFinderId(cookie) || this.cachedFinderUsername || ''
+
+      const response = await client.post<{
+        errCode?: number
+        data?: {
+          poiList?: Array<{
+            poiId?: string
+            poiName?: string
+            address?: string
+            latitude?: number
+            longitude?: number
+            city?: string
+          }>
+        }
+      }>(
+        'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/post/search_poi',
+        { keyword, finderId, count: 20 },
+        {
+          referer: 'https://channels.weixin.qq.com/platform/post/create',
+          Origin: 'https://channels.weixin.qq.com',
+          'Content-Type': 'application/json'
+        },
+        { timeout: 15_000, responseType: 'json' }
+      )
+
+      const errCode = response.data?.errCode ?? -1
+      if (errCode !== 0 || !response.data?.data?.poiList) {
+        logger.warn(`[wechat-channels] POI search failed: errCode=${errCode}`)
+        return []
+      }
+
+      return response.data.data.poiList.map((poi) => ({
+        id: poi.poiId || '',
+        name: poi.poiName || '',
+        address: poi.address || poi.city || '',
+        lat: poi.latitude,
+        lng: poi.longitude,
+        poi_id: poi.poiId,
+        extra: { city: poi.city }
+      }))
+    } catch (err) {
+      logger.error('[wechat-channels] searchLocation error:', err)
+      return []
+    }
   }
 }

@@ -214,6 +214,44 @@ export function registerPublishIpcHandlers(): void {
     }
   })
 
+  // Search POI locations for a platform
+  ipcMain.handle(IPC_CHANNELS.PUBLISH_SEARCH_LOCATION, async (_event, params: {
+    platformId: string
+    accountId: string
+    keyword: string
+  }): Promise<IpcResponse> => {
+    try {
+      const adapter = getAdapter(params.platformId)
+      if (!adapter?.searchLocation) {
+        return { success: false, error: `平台 ${params.platformId} 不支持位置搜索` }
+      }
+
+      const accountRepo = getAccountRepository()
+      const account = accountRepo.getById(params.accountId)
+      if (!account) return { success: false, error: '账号不存在' }
+      if (account.session_status !== 'logged_in') {
+        return { success: false, error: '账号未登录，请先登录' }
+      }
+
+      const cookieStr = cookieStore.getCookieString(params.accountId)
+      if (!cookieStr) {
+        return { success: false, error: 'Cookie 不存在，请重新登录' }
+      }
+
+      const context: CookieContext = {
+        cookies: cookieStr,
+        platform: params.platformId,
+        accountId: params.accountId
+      }
+      const client = new HttpClient(context)
+      const results = await adapter.searchLocation(client, params.keyword)
+      return { success: true, data: results }
+    } catch (err) {
+      logger.error('PUBLISH_SEARCH_LOCATION error:', err)
+      return { success: false, error: String(err) }
+    }
+  })
+
   // List publish records
   ipcMain.handle(IPC_CHANNELS.PUBLISH_LIST_RECORDS, async (): Promise<IpcResponse> => {
     try {

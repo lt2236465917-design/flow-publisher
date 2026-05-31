@@ -19,6 +19,16 @@ export interface UploadProgress {
   stage: string
 }
 
+export interface LocationResult {
+  id: string
+  name: string
+  address?: string
+  lat?: number
+  lng?: number
+  poi_id?: string
+  extra?: Record<string, unknown>
+}
+
 export interface SubmitContentPayload {
   title: string
   description: string
@@ -40,4 +50,5 @@ export interface IPlatformAdapter {
   checkSessionAPI?(client: HttpClient): Promise<boolean>
   getPlatformFields?(): PlatformFieldDefinition[]
   getAccountInfoAPI?(client: HttpClient): Promise<{ displayName?: string; avatarUrl?: string } | null>
+  searchLocation?(client: HttpClient, keyword: string): Promise<LocationResult[]>
 }

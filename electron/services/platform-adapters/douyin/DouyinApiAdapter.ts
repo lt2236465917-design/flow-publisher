@@ -55,8 +55,21 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     return [
       { name: 'collection', type: 'select', label: '合集选择', placeholder: '选择合集', options: [] },
       { name: 'mentions', type: 'tags', label: '@提及', placeholder: '输入要@的用户' },
-      { name: 'poiLocation', type: 'text', label: 'POI 地点', placeholder: '搜索地点' },
-      { name: 'miniApp', type: 'text', label: '小程序挂载', placeholder: '输入小程序 AppID' }
+      { name: 'poiLocation', type: 'location', label: 'POI 地点', placeholder: '搜索地点' },
+      { name: 'miniApp', type: 'text', label: '小程序挂载', placeholder: '输入小程序 AppID' },
+      {
+        name: 'declarations',
+        type: 'checkbox-group',
+        label: '内容声明',
+        options: [
+          { label: '原创声明', value: '原创声明' },
+          { label: '转载声明', value: '转载声明' },
+          { label: '内容由 AI 生成', value: 'AI生成' },
+          { label: '可能引起不适', value: '可能引起不适' },
+          { label: '虚构演绎，仅供娱乐', value: '虚构演绎' },
+          { label: '危险行为，请勿模仿', value: '危险行为' }
+        ]
+      }
     ]
   }
 
@@ -605,6 +618,24 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       if (payload.platformFields.collection) {
         ;(postData.item as Record<string, unknown>).collection_id = payload.platformFields.collection
       }
+
+      // Add POI location if provided
+      // poiLocation is a LocationResult object from LocationSearch component
+      if (payload.platformFields.poiLocation) {
+        const loc = payload.platformFields.poiLocation
+        if (typeof loc === 'object' && loc !== null && 'name' in loc) {
+          const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number; address?: string }
+          const common = (postData.item as Record<string, unknown>).common as Record<string, unknown>
+          common.poi_info = JSON.stringify({
+            poi_id: locObj.poi_id || '',
+            poi_name: locObj.name,
+            address: locObj.address || '',
+            ...(locObj.lat ? { latitude: locObj.lat } : {}),
+            ...(locObj.lng ? { longitude: locObj.lng } : {})
+          })
+          logger.info(`[douyin] Added POI location: ${locObj.name}`)
+        }
+      }
     }
 
     // Add declarations
@@ -822,6 +853,67 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     } catch (err) {
       logger.warn('[douyin] clientSign failed (cookie may lack security-sdk fields):', err)
       return ''
+    }
+  }
+
+  /**
+   * Search POI locations on Douyin.
+   * Uses the creator POI recommend endpoint.
+   */
+  async searchLocation(client: HttpClient, keyword: string): Promise<import('../IPlatformAdapter').LocationResult[]> {
+    try {
+      const cookie = client.getCookieString()
+      const csrfToken = await this.getCsrfToken(client)
+
+      const params = new URLSearchParams({
+        keyword,
+        count: '20',
+        ...COMMON_PARAMS,
+        aid: '1128',
+        msToken: ''
+      })
+
+      const url = `${API.poiSearch}?${params.toString()}`
+      const signedUrl = await this.signUrl(url, cookie)
+
+      const response = await client.get<{
+        status_code: number
+        poi_list?: Array<{
+          poi_id?: string
+          poi_name?: string
+          address?: string
+          latitude?: number
+          longitude?: number
+          city?: string
+          district?: string
+        }>
+      }>(
+        signedUrl,
+        undefined,
+        {
+          referer: 'https://creator.douyin.com/creator-micro/content/publish',
+          Origin: 'https://creator.douyin.com',
+          'x-secsdk-csrf-token': csrfToken
+        }
+      )
+
+      if (response.data.status_code !== 0 || !response.data.poi_list) {
+        logger.warn(`[douyin] POI search failed: status=${response.data.status_code}`)
+        return []
+      }
+
+      return response.data.poi_list.map((poi) => ({
+        id: poi.poi_id || '',
+        name: poi.poi_name || '',
+        address: poi.address || [poi.city, poi.district, poi.address].filter(Boolean).join(''),
+        lat: poi.latitude,
+        lng: poi.longitude,
+        poi_id: poi.poi_id,
+        extra: { city: poi.city, district: poi.district }
+      }))
+    } catch (err) {
+      logger.error('[douyin] searchLocation error:', err)
+      return []
     }
   }
 }

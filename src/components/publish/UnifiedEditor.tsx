@@ -1,6 +1,5 @@
 import { Form, Input } from 'antd'
 import HashtagInput from './HashtagInput'
-import DeclarationPicker from './DeclarationPicker'
 import type { PublishFormData } from '@/types/publish.types'
 
 const { TextArea } = Input
@@ -45,17 +44,10 @@ export default function UnifiedEditor({ form, onChange, platforms }: Props) {
         />
       </Form.Item>
 
-      <Form.Item label="话题标签" style={{ marginBottom: 10 }}>
+      <Form.Item label="话题标签" style={{ marginBottom: 0 }}>
         <HashtagInput
           value={form.hashtags}
           onChange={(hashtags) => onChange({ hashtags })}
-        />
-      </Form.Item>
-
-      <Form.Item label="" style={{ marginBottom: 0 }}>
-        <DeclarationPicker
-          value={form.declarations}
-          onChange={(declarations) => onChange({ declarations })}
         />
       </Form.Item>
     </Form>

@@ -1,16 +1,31 @@
 import { Input, Select, Checkbox, Form } from 'antd'
 import type { PlatformFieldDefinition } from '@shared/types/platform-fields'
+import type { PlatformId } from '@/constants/platforms'
 import HashtagInput from './HashtagInput'
+import LocationSearch from './LocationSearch'
 
 const { TextArea } = Input
+const { Group: CheckboxGroup } = Checkbox
+
+interface LocationValue {
+  id: string
+  name: string
+  address?: string
+  lat?: number
+  lng?: number
+  poi_id?: string
+  extra?: Record<string, unknown>
+}
 
 interface Props {
   field: PlatformFieldDefinition
   value: unknown
   onChange: (name: string, value: unknown) => void
+  platformId?: PlatformId
+  accountId?: string
 }
 
-export default function PlatformFieldRenderer({ field, value, onChange }: Props) {
+export default function PlatformFieldRenderer({ field, value, onChange, platformId, accountId }: Props) {
   const renderField = () => {
     switch (field.type) {
       case 'text':
@@ -61,11 +76,41 @@ export default function PlatformFieldRenderer({ field, value, onChange }: Props)
           </Checkbox>
         )
 
+      case 'checkbox-group':
+        return (
+          <CheckboxGroup
+            value={Array.isArray(value) ? (value as string[]) : []}
+            onChange={(checkedValues) => onChange(field.name, checkedValues)}
+          >
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 20px' }}>
+              {(field.options ?? []).map((opt: { label: string; value: string }) => (
+                <Checkbox key={opt.value} value={opt.value} style={{ fontSize: 13 }}>
+                  {opt.label}
+                </Checkbox>
+              ))}
+            </div>
+          </CheckboxGroup>
+        )
+
       case 'tags':
         return (
           <HashtagInput
             value={Array.isArray(value) ? (value as string[]) : []}
             onChange={(tags) => onChange(field.name, tags)}
+          />
+        )
+
+      case 'location':
+        if (!platformId || !accountId) {
+          return <Input value="请先登录平台账号" disabled />
+        }
+        return (
+          <LocationSearch
+            value={(value as LocationValue) ?? null}
+            onChange={(loc) => onChange(field.name, loc)}
+            platformId={platformId}
+            accountId={accountId}
+            placeholder={field.placeholder || '搜索地点'}
           />
         )
 

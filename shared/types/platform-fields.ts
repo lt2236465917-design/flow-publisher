@@ -1,4 +1,4 @@
-export type PlatformFieldType = 'text' | 'select' | 'checkbox' | 'tags' | 'textarea'
+export type PlatformFieldType = 'text' | 'select' | 'checkbox' | 'tags' | 'textarea' | 'checkbox-group' | 'location'
 
 export interface PlatformFieldOption {
   label: string
