@@ -929,7 +929,8 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
 
   /**
    * Get recommended POI locations on Douyin.
-   * Uses the creator POI recommend endpoint.
+   * Uses the life video API search endpoint with search_type=0 and poi_mode=1.
+   * Reference: yixiaoer implementation
    */
   async getRecommendLocations(client: HttpClient, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
@@ -938,20 +939,25 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
 
       logger.info(`[douyin] getRecommendLocations called with options:`, options)
 
+      // 使用和 yixiaoer 相同的 API 和参数
       const params = new URLSearchParams({
-        count: String(options?.count || 20),
+        count: String(options?.count || 12),
+        from_webapp: '1',
+        get_current_loc: '1',
+        keywords: '',
+        search_type: '0',
+        poi_anchor_tab: '2',
+        page: '1',
         ...COMMON_PARAMS,
         aid: '1128',
-        msToken: ''
+        msToken: '',
+        _signature: '',
+        poi_mode: '1',
+        latitude: String(options?.lat || 0),
+        longitude: String(options?.lng || 0)
       })
 
-      // 如果有经纬度，添加到参数中
-      if (options?.lat && options?.lng) {
-        params.set('latitude', String(options.lat))
-        params.set('longitude', String(options.lng))
-      }
-
-      const url = `${API.poiRecommend}?${params.toString()}`
+      const url = `${API.poiSearch}?${params.toString()}`
       const signedUrl = await this.signUrl(url, cookie)
 
       logger.debug(`[douyin] POI recommend URL: ${signedUrl}`)
@@ -966,6 +972,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           longitude?: number
           city?: string
           district?: string
+          address_info?: {
+            city?: string
+            city_code?: string
+            district?: string
+          }
         }>
       }>(
         signedUrl,
@@ -987,11 +998,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       return response.data.poi_list.map((poi) => ({
         id: poi.poi_id || '',
         name: poi.poi_name || '',
-        address: poi.address || [poi.city, poi.district, poi.address].filter(Boolean).join(''),
+        address: poi.address || [poi.address_info?.city, poi.address_info?.district, poi.address].filter(Boolean).join(''),
         lat: poi.latitude,
         lng: poi.longitude,
         poi_id: poi.poi_id,
-        extra: { city: poi.city, district: poi.district }
+        extra: { city: poi.address_info?.city, district: poi.address_info?.district, city_code: poi.address_info?.city_code }
       }))
     } catch (err) {
       logger.error('[douyin] getRecommendLocations error:', err)

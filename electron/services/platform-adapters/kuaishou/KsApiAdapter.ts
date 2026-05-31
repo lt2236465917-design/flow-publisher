@@ -857,32 +857,58 @@ export class KsApiAdapter extends BasePlatformAdapter {
 
   /**
    * Get recommended POI locations on Kuaishou.
-   * Uses the creator POI search endpoint without keyword.
+   * Uses the location/wi/poi/search endpoint.
+   * Reference: yixiaoer implementation
    */
   async getRecommendLocations(client: HttpClient, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
       const cookie = client.getCookieString()
 
-      const searchPath = '/rest/cp/works/v2/poi/search'
+      logger.info(`[kuaishou] getRecommendLocations called with options:`, options)
+
+      // 提取 kuaishou.web.cp.api_ph
+      const apiPhMatch = cookie.match(/kuaishou\.web\.cp\.api_ph=([a-z0-9]+)/)
+      const apiPh = apiPhMatch ? apiPhMatch[1] : ''
+
+      // 使用和 yixiaoer 相同的 API
+      const url = `https://cp.kuaishou.com/rest/zt/location/wi/poi/search?kpn=kuaishou_cp&subBiz=CP%2FCREATOR_PLATFORM&kpf=PC_WEB&kuaishou.web.cp.api_ph=${apiPh}`
+
+      // 先获取当前城市
+      let cityName = ''
+      try {
+        const cityUrl = 'https://cp.kuaishou.com/rest/cp/works/v2/common/pc/ip2poi'
+        const cityBody = JSON.stringify({ "kuaishou.web.cp.api_ph": apiPh })
+        const cityResponse = await client.post<{
+          result: number
+          data?: {
+            city?: string
+          }
+        }>(
+          cityUrl,
+          cityBody,
+          {
+            referer: REFERER,
+            Origin: ORIGIN,
+            'Content-Type': 'application/json'
+          }
+        )
+        if (cityResponse.data?.result === 1 && cityResponse.data?.data?.city) {
+          cityName = cityResponse.data.data.city
+          logger.info(`[kuaishou] Current city: ${cityName}`)
+        }
+      } catch (e) {
+        logger.warn('[kuaishou] Failed to get current city:', e)
+      }
+
       const body = JSON.stringify({
+        cityName: cityName || '北京',
+        count: options?.count || 20,
         keyword: '',
-        latitude: options?.lat || 0,
-        longitude: options?.lng || 0,
-        count: options?.count || 20
+        pcursor: '',
+        "kuaishou.web.cp.api_ph": apiPh
       })
 
-      const signService = getSignService()
-      const sig = await signService.getSignature(
-        'kuaishou',
-        cookie,
-        JSON.stringify({ url: searchPath, body }),
-        body
-      )
-
-      let url = `https://cp.kuaishou.com${searchPath}`
-      if (sig) {
-        url += `?__NS_sig3=${sig}`
-      }
+      logger.info(`[kuaishou] POI search request:`, { url, body })
 
       const response = await client.post<{
         result: number
@@ -905,6 +931,12 @@ export class KsApiAdapter extends BasePlatformAdapter {
           'Content-Type': 'application/json'
         }
       )
+
+      logger.info(`[kuaishou] POI search response:`, {
+        result: response.data?.result,
+        hasData: !!response.data?.data,
+        poiCount: response.data?.data?.poiList?.length || 0
+      })
 
       if (response.data?.result !== 1 || !response.data.data?.poiList) {
         logger.warn(`[kuaishou] POI recommend failed: result=${response.data?.result}`)

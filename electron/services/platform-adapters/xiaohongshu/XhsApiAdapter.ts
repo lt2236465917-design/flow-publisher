@@ -726,12 +726,16 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
   /**
    * Get recommended POI locations on Xiaohongshu.
-   * Uses the v5 API without keyword to get nearby recommendations.
+   * Uses the v1 API without keyword to get nearby recommendations.
+   * Reference: yixiaoer implementation
    */
   async getRecommendLocations(client: HttpClient, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
-      let cookie = client.getCookieString()
-      const urlPath = '/web_api/sns/v5/creator/poi/search'
+      const cookie = client.getCookieString()
+
+      logger.info(`[xiaohongshu] getRecommendLocations called with options:`, options)
+
+      // 使用和 yixiaoer 相同的实现方式
       const body = {
         latitude: options?.lat || 0,
         longitude: options?.lng || 0,
@@ -741,13 +745,8 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         source: 'WEB',
         type: 3
       }
-      const bodyStr = JSON.stringify(body)
-      const { headers: signHeaders, a1 } = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
 
-      if (a1) {
-        cookie = cookie.replace('a1=', 'a1old=')
-        cookie = `${cookie};a1=${a1}`
-      }
+      logger.info(`[xiaohongshu] POI recommend request body:`, body)
 
       const response = await axios.post<{
         success: boolean
@@ -764,7 +763,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         }
         msg?: string
       }>(
-        API.locationSearchV5,
+        API.locationSearch,
         body,
         {
           headers: {
@@ -773,13 +772,20 @@ export class XhsApiAdapter extends BasePlatformAdapter {
             Authorization: '',
             Origin: 'https://creator.xiaohongshu.com',
             'Content-Type': 'application/json;charset=UTF-8',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14',
-            ...signHeaders
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14'
           },
           timeout: 15_000,
           responseType: 'json'
         }
       )
+
+      logger.info(`[xiaohongshu] POI recommend response:`, {
+        success: response.data.success,
+        hasData: !!response.data.data,
+        hasPoiList: !!response.data.data?.poi_list,
+        poiCount: response.data.data?.poi_list?.length || 0,
+        msg: response.data.msg
+      })
 
       if (!response.data.success || !response.data.data?.poi_list) {
         logger.warn(`[xiaohongshu] POI recommend failed: ${response.data.msg}`)
