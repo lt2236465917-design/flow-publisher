@@ -17,7 +17,9 @@ const API = {
   userInfo: 'https://creator.xiaohongshu.com/api/galaxy/user/info',
   uploadPermit: 'https://creator.xiaohongshu.com/api/media/v1/upload/web/permit',
   noteCreate: 'https://edith.xiaohongshu.com/web_api/sns/v2/note',
-  personalInfo: 'https://creator.xiaohongshu.com/api/galaxy/creator/home/personal_info'
+  personalInfo: 'https://creator.xiaohongshu.com/api/galaxy/creator/home/personal_info',
+  collectionList: 'https://edith.xiaohongshu.com/api/sns/v1/note/collection/pc/list_v2',
+  locationSearch: 'https://edith.xiaohongshu.com/web_api/sns/v1/local/poi/creator/search'
 }
 
 export class XhsApiAdapter extends BasePlatformAdapter {
@@ -36,37 +38,36 @@ export class XhsApiAdapter extends BasePlatformAdapter {
   getPlatformFields(): PlatformFieldDefinition[] {
     return [
       {
-        name: 'noteType',
-        type: 'select',
-        label: '笔记类型',
-        options: [
-          { label: '视频笔记', value: 'video' },
-          { label: '图文笔记', value: 'image' }
-        ],
-        defaultValue: 'video'
-      },
-      {
-        name: 'productLinks',
-        type: 'tags',
-        label: '关联商品',
-        placeholder: '输入商品名称或链接'
+        name: 'collection',
+        type: 'dynamic-select',
+        label: '合集',
+        placeholder: '选择合集',
+        dynamicKey: 'collections'
       },
       {
         name: 'location',
         type: 'location',
-        label: '地点标注',
+        label: '位置',
         placeholder: '搜索地点'
       },
       {
-        name: 'declarations',
+        name: 'contentTypeDeclaration',
         type: 'checkbox-group',
-        label: '内容声明',
+        label: '内容类型声明',
+        maxSelections: 1,
         options: [
-          { label: '原创声明', value: '原创声明' },
-          { label: '内容由 AI 生成', value: 'AI生成' },
-          { label: '可能引起不适', value: '可能引起不适' },
-          { label: '虚构演绎，仅供娱乐', value: '虚构演绎' }
+          { label: '虚构演绎，仅供娱乐', value: '虚构演绎' },
+          { label: '笔记含AI合成内容', value: 'AI合成' },
+          { label: '内容包含营销广告', value: '营销广告' },
+          { label: '自主拍摄', value: '自主拍摄' },
+          { label: '来源转载', value: '来源转载' }
         ]
+      },
+      {
+        name: 'originalDeclaration',
+        type: 'checkbox',
+        label: '原创声明',
+        defaultValue: false
       }
     ]
   }
@@ -139,6 +140,69 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     } catch (err) {
       logger.error('[xiaohongshu] checkSessionAPI error:', err)
       return false
+    }
+  }
+
+  /**
+   * Fetch user's collection list from Xiaohongshu creator API.
+   * Uses the same signing mechanism as note creation.
+   * API endpoint: /api/sns/v1/note/collection/pc/list_v2
+   */
+  async getCollections(client: HttpClient): Promise<Array<{ label: string; value: string }>> {
+    try {
+      let cookie = client.getCookieString()
+      const urlPath = '/api/sns/v1/note/collection/pc/list_v2'
+      const bodyStr = JSON.stringify({ cursor: '', need_type_list: [0], target_uid: '' })
+      const { headers: signHeaders, a1 } = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
+
+      if (a1) {
+        cookie = cookie.replace('a1=', 'a1old=')
+        cookie = `${cookie};a1=${a1}`
+      }
+
+      const response = await axios.post<{
+        result: number
+        msg: string
+        data?: {
+          collection_info_list?: Array<{
+            id?: number
+            name?: string
+            desc?: string
+            icon?: string
+            view_num?: number
+          }>
+        }
+      }>(
+        API.collectionList,
+        { cursor: '', need_type_list: [0], target_uid: '' },
+        {
+          headers: {
+            cookie,
+            Origin: 'https://creator.xiaohongshu.com',
+            referer: 'https://www.xiaohongshu.com',
+            'Content-Type': 'application/json;charset=UTF-8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14',
+            ...signHeaders
+          },
+          timeout: 15_000,
+          responseType: 'json'
+        }
+      )
+
+      if (response.data.result !== 0 || !response.data.data?.collection_info_list) {
+        logger.warn(`[xiaohongshu] Collections fetch failed: ${response.data.msg}`)
+        return []
+      }
+
+      return response.data.data.collection_info_list
+        .filter((c) => c.id && c.name)
+        .map((c) => ({
+          label: c.name!,
+          value: c.id!.toString()
+        }))
+    } catch (err) {
+      logger.error('[xiaohongshu] getCollections error:', err)
+      return []
     }
   }
 
@@ -301,25 +365,133 @@ export class XhsApiAdapter extends BasePlatformAdapter {
   }
 
   async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {
-    // Build body matching yixiaoer's common/video_info structure
+    // XiaoHongShuStatementType enum (from yixiaoer)
+    const XiaoHongShuStatementType = {
+      ONLY_FOR_FUN: 1,  // 虚构演绎，仅供娱乐
+      AIGC: 2,          // 笔记含AI合成内容
+      MARK: 3,          // 内容包含营销广告
+      OWN: 4,           // 自主拍摄
+      FORWARD: 5        // 来源转载
+    }
+
+    // Build business_binds object (matching yixiaoer's structure)
+    const businessBinds: Record<string, unknown> = {
+      version: 1,
+      noteId: 0,
+      bizType: 0,
+      noteOrderBind: {},
+      groupBind: {},
+      liveNoticeBind: {},
+      notePostTiming: {},
+      noteCollectionBind: { id: '' },
+      optionRelationList: []
+    }
+
+    // Add collection if provided (through noteCollectionBind)
+    if (payload.platformFields?.collection) {
+      businessBinds.noteCollectionBind = { id: payload.platformFields.collection }
+      logger.info(`[xiaohongshu] Added collection: ${payload.platformFields.collection}`)
+    }
+
+    // Add original declaration if provided (through optionRelationList)
+    if (payload.platformFields?.originalDeclaration) {
+      (businessBinds.optionRelationList as Array<Record<string, unknown>>).push({
+        type: 'ORIGINAL_STATEMENT',
+        relationList: [{
+          bizType: 'ORIGINAL_STATEMENT',
+          bizId: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          extraInfo: '{}'
+        }]
+      })
+      logger.info(`[xiaohongshu] Added original declaration`)
+    }
+
+    // Build common object
+    const commonObj: Record<string, unknown> = {
+      type: 'video',
+      title: payload.title || '',
+      note_id: '',
+      desc: payload.description || '',
+      source: JSON.stringify({ type: 'web', ids: '', extraInfo: JSON.stringify({ systemId: 'web' }) }),
+      business_binds: JSON.stringify(businessBinds),
+      ats: [],
+      biz_relations: [],
+      hash_tag: payload.hashtags.map((tag) => ({
+        id: '',
+        name: tag,
+        link: '',
+        type: 'topic'
+      })),
+      privacy_info: { op_type: 1, type: 0 }
+    }
+
+    // Add location if provided (through post_loc)
+    if (payload.platformFields?.location) {
+      const loc = payload.platformFields.location
+      if (typeof loc === 'object' && loc !== null && 'name' in loc) {
+        const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number }
+        commonObj.post_loc = {
+          poi_id: locObj.poi_id || '',
+          name: locObj.name,
+          ...(locObj.lat ? { latitude: locObj.lat } : {}),
+          ...(locObj.lng ? { longitude: locObj.lng } : {})
+        }
+      } else if (typeof loc === 'string') {
+        commonObj.post_loc = { poi_id: '', name: loc }
+      }
+    }
+
+    // Add content type declaration if provided (through userDeclarationBind)
+    const contentTypeDeclarations = payload.platformFields?.contentTypeDeclaration as string[] || []
+    if (contentTypeDeclarations.length > 0) {
+      const decl = contentTypeDeclarations[0] // Only one can be selected
+      let statementType: number | null = null
+
+      switch (decl) {
+        case '虚构演绎':
+          statementType = XiaoHongShuStatementType.ONLY_FOR_FUN
+          break
+        case 'AI合成':
+          statementType = XiaoHongShuStatementType.AIGC
+          break
+        case '营销广告':
+          statementType = XiaoHongShuStatementType.MARK
+          break
+        case '自主拍摄':
+          statementType = XiaoHongShuStatementType.OWN
+          break
+        case '来源转载':
+          statementType = XiaoHongShuStatementType.FORWARD
+          break
+      }
+
+      if (statementType !== null) {
+        // userDeclarationBind is added to business_binds as a JSON string
+        const userDeclarationBind: Record<string, unknown> = { origin: statementType }
+
+        // For FORWARD type, add repostInfo
+        if (statementType === XiaoHongShuStatementType.FORWARD && payload.platformFields?.forwardSource) {
+          userDeclarationBind.repostInfo = { source: payload.platformFields.forwardSource }
+        }
+
+        // For OWN type, add photoInfo if available
+        if (statementType === XiaoHongShuStatementType.OWN && payload.platformFields?.photoInfo) {
+          userDeclarationBind.photoInfo = payload.platformFields.photoInfo
+        }
+
+        // Add to business_binds as a separate field in the JSON string
+        const bindsStr = commonObj.business_binds as string
+        const binds = JSON.parse(bindsStr)
+        binds.userDeclarationBind = userDeclarationBind
+        commonObj.business_binds = JSON.stringify(binds)
+
+        logger.info(`[xiaohongshu] Added content type declaration: ${decl} (type: ${statementType})`)
+      }
+    }
+
+    // Build body
     const body: Record<string, unknown> = {
-      common: {
-        type: 'video',
-        title: payload.title || '',
-        note_id: '',
-        desc: payload.description || '',
-        source: JSON.stringify({ type: 'web', ids: '', extraInfo: JSON.stringify({ systemId: 'web' }) }),
-        business_binds: JSON.stringify({ version: 1, noteId: 0, bizType: 13 }),
-        ats: [],
-        biz_relations: [],
-        hash_tag: payload.hashtags.map((tag) => ({
-          id: '',
-          name: tag,
-          link: '',
-          type: 'topic'
-        })),
-        privacy_info: { op_type: 1, type: 0 }
-      },
+      common: commonObj,
       image_info: null,
       video_info: {
         file_id: videoId || '',
@@ -347,52 +519,6 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         chapter_sync_text: false,
         segments: { count: 1, need_slice: false, items: [] },
         entrance: 'web'
-      }
-    }
-
-    // Add location if provided
-    // location can be a LocationResult object (from LocationSearch) or a string (legacy)
-    if (payload.platformFields?.location) {
-      const loc = payload.platformFields.location
-      if (typeof loc === 'object' && loc !== null && 'name' in loc) {
-        // LocationResult object from LocationSearch component
-        const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number }
-        ;(body.common as Record<string, unknown>).post_loc = {
-          poi_id: locObj.poi_id || '',
-          name: locObj.name,
-          ...(locObj.lat ? { latitude: locObj.lat } : {}),
-          ...(locObj.lng ? { longitude: locObj.lng } : {})
-        }
-      } else if (typeof loc === 'string') {
-        // Legacy string location
-        ;(body.common as Record<string, unknown>).post_loc = { poi_id: '', name: loc }
-      }
-    }
-
-    // Add declarations (内容声明)
-    // XHS supports: 原创, AI生成, 可能引起不适, 虚构演绎
-    // Maps to declare_info array in the common object
-    if (payload.declarations && payload.declarations.length > 0) {
-      const declareInfo: Array<Record<string, unknown>> = []
-      for (const decl of payload.declarations) {
-        switch (decl) {
-          case '原创声明':
-            declareInfo.push({ type: 1, value: 1 }) // 原创
-            break
-          case 'AI生成':
-            declareInfo.push({ type: 2, value: 1 }) // AI生成内容
-            break
-          case '可能引起不适':
-            declareInfo.push({ type: 3, value: 1 }) // 可能引起不适
-            break
-          case '虚构演绎':
-            declareInfo.push({ type: 4, value: 1 }) // 虚构演绎
-            break
-        }
-      }
-      if (declareInfo.length > 0) {
-        (body.common as Record<string, unknown>).declare_info = declareInfo
-        logger.info(`[xiaohongshu] Added declarations: ${JSON.stringify(declareInfo)}`)
       }
     }
 
@@ -600,12 +726,17 @@ export class XhsApiAdapter extends BasePlatformAdapter {
   /**
    * Search POI locations on Xiaohongshu.
    * Uses the creator location search endpoint.
+   * API endpoint: /web_api/sns/v1/local/poi/creator/search
    */
   async searchLocation(client: HttpClient, keyword: string): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
       let cookie = client.getCookieString()
-      const urlPath = '/web_api/sns/v1/search/poi'
-      const bodyStr = JSON.stringify({ keyword, page: 1, page_size: 20 })
+      const urlPath = '/web_api/sns/v1/local/poi/creator/search'
+      const bodyStr = JSON.stringify({
+        keyword,
+        search_id: Date.now().toString(),
+        page: { page_size: 20, page: 1 }
+      })
       const { headers: signHeaders, a1 } = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
 
       if (a1) {
@@ -616,23 +747,29 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       const response = await axios.post<{
         success: boolean
         data?: {
-          items?: Array<{
-            id?: string
-            name?: string
-            address?: string
-            lat?: number
-            lng?: number
+          poi_list?: Array<{
+            poi_id?: string
+            poi_name?: string
+            full_address?: string
+            latitude?: number
+            longitude?: number
             city?: string
+            poi_type?: number
           }>
         }
         msg?: string
       }>(
-        'https://edith.xiaohongshu.com/web_api/sns/v1/search/poi',
-        { keyword, page: 1, page_size: 20 },
+        API.locationSearch,
+        {
+          keyword,
+          search_id: Date.now().toString(),
+          page: { page_size: 20, page: 1 }
+        },
         {
           headers: {
             cookie,
-            referer: 'https://creator.xiaohongshu.com/publish/publish',
+            referer: 'https://creator.xiaohongshu.com/',
+            Authorization: '',
             Origin: 'https://creator.xiaohongshu.com',
             'Content-Type': 'application/json;charset=UTF-8',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14',
@@ -643,19 +780,19 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         }
       )
 
-      if (!response.data.success || !response.data.data?.items) {
+      if (!response.data.success || !response.data.data?.poi_list) {
         logger.warn(`[xiaohongshu] POI search failed: ${response.data.msg}`)
         return []
       }
 
-      return response.data.data.items.map((item) => ({
-        id: item.id || '',
-        name: item.name || '',
-        address: item.address || item.city || '',
-        lat: item.lat,
-        lng: item.lng,
-        poi_id: item.id,
-        extra: { city: item.city }
+      return response.data.data.poi_list.map((item) => ({
+        id: item.poi_id || '',
+        name: item.poi_name || '',
+        address: item.full_address || item.city || '',
+        lat: item.latitude,
+        lng: item.longitude,
+        poi_id: item.poi_id,
+        extra: { city: item.city, poi_type: item.poi_type }
       }))
     } catch (err) {
       logger.error('[xiaohongshu] searchLocation error:', err)
