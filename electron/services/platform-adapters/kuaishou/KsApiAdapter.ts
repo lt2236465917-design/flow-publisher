@@ -886,12 +886,9 @@ export class KsApiAdapter extends BasePlatformAdapter {
         )
         logger.info(`[kuaishou] ip2poi response:`, JSON.stringify(cityResponse.data).substring(0, 500))
         if (cityResponse.data?.result === 1) {
-          // 尝试从不同路径获取城市名
-          const cityData = cityResponse.data?.data?.city?.data?.city || cityResponse.data?.data?.city || ''
-          if (cityData) {
-            cityName = typeof cityData === 'string' ? cityData : cityData.city || ''
-            logger.info(`[kuaishou] Current city: ${cityName}`)
-          }
+          // 直接使用返回的城市名（可能是乱码，但 API 期望这种格式）
+          cityName = cityResponse.data?.data?.city || ''
+          logger.info(`[kuaishou] Current city: ${cityName}`)
         }
       } catch (e) {
         logger.warn('[kuaishou] Failed to get current city:', e)
