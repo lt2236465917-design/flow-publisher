@@ -857,7 +857,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
 
   /**
    * Get recommended POI locations on Kuaishou.
-   * Uses the location/wi/poi/nearby endpoint for nearby locations.
+   * Uses the location/wi/poi/search endpoint with cityName.
    * Reference: yixiaoer implementation
    */
   async getRecommendLocations(client: HttpClient, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
@@ -870,11 +870,46 @@ export class KsApiAdapter extends BasePlatformAdapter {
       const apiPhMatch = cookie.match(/kuaishou\.web\.cp\.api_ph=([a-z0-9]+)/)
       const apiPh = apiPhMatch ? apiPhMatch[1] : ''
 
-      // 使用和 yixiaoer 相同的 API - poi/nearby 获取附近位置
-      const searchPath = '/rest/zt/location/wi/poi/nearby'
+      // 先获取当前城市
+      let cityName = ''
+      try {
+        const cityUrl = 'https://cp.kuaishou.com/rest/cp/works/v2/common/pc/ip2poi'
+        const cityBody = JSON.stringify({ "kuaishou.web.cp.api_ph": apiPh })
+        const cityResponse = await client.post<{
+          result: number
+          data?: {
+            city?: {
+              data?: {
+                city?: string
+              }
+            }
+          }
+        }>(
+          cityUrl,
+          cityBody,
+          {
+            referer: REFERER,
+            Origin: ORIGIN,
+            'Content-Type': 'application/json'
+          }
+        )
+        if (cityResponse.data?.result === 1 && cityResponse.data?.data?.city?.data?.city) {
+          const rawCity = cityResponse.data.data.city.data.city
+          // 处理城市名称，参考 yixiaoer 的逻辑
+          cityName = rawCity.includes('鑷') ? rawCity : `${rawCity}市`
+          logger.info(`[kuaishou] Current city: ${cityName}`)
+        }
+      } catch (e) {
+        logger.warn('[kuaishou] Failed to get current city:', e)
+      }
+
+      // 使用和 yixiaoer 相同的 API - poi/search
+      const searchPath = '/rest/zt/location/wi/poi/search'
       const body = JSON.stringify({
-        location: `${options?.lat || 39.911},${options?.lng || 116.395}`,
+        cityName: cityName || '北京市',
         count: options?.count || 20,
+        keyword: cityName || '北京市',
+        pcursor: '',
         "kuaishou.web.cp.api_ph": apiPh
       })
 
@@ -892,11 +927,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
         url += `&__NS_sig3=${sig}`
       }
 
-      logger.info(`[kuaishou] POI nearby request:`, { url, body })
+      logger.info(`[kuaishou] POI search request:`, { url, body })
 
       const response = await client.post<{
         result: number
-        cityName?: string
         data?: {
           poiList?: Array<{
             poiId?: string
@@ -917,15 +951,14 @@ export class KsApiAdapter extends BasePlatformAdapter {
         }
       )
 
-      logger.info(`[kuaishou] POI nearby response:`, {
+      logger.info(`[kuaishou] POI search response:`, {
         result: response.data?.result,
-        cityName: response.data?.cityName,
         hasData: !!response.data?.data,
         poiCount: response.data?.data?.poiList?.length || 0
       })
 
       if (response.data?.result !== 1 || !response.data.data?.poiList) {
-        logger.warn(`[kuaishou] POI nearby failed: result=${response.data?.result}`)
+        logger.warn(`[kuaishou] POI search failed: result=${response.data?.result}`)
         return []
       }
 
