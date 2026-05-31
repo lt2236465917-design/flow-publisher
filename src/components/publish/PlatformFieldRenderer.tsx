@@ -115,7 +115,18 @@ export default function PlatformFieldRenderer({ field, value, onChange, platform
 
       case 'location':
         if (!platformId || !accountId) {
-          return <Input value="请先登录平台账号" disabled />
+          return (
+            <div style={{
+              padding: '8px 12px',
+              background: '#fff7e6',
+              border: '1px solid #ffd591',
+              borderRadius: 6,
+              color: '#d46b08',
+              fontSize: 13
+            }}>
+              ⚠️ 请先登录该平台账号后再选择位置
+            </div>
+          )
         }
         return (
           <LocationSearch

@@ -936,6 +936,8 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       const cookie = client.getCookieString()
       const csrfToken = await this.getCsrfToken(client)
 
+      logger.info(`[douyin] getRecommendLocations called with options:`, options)
+
       const params = new URLSearchParams({
         count: String(options?.count || 20),
         ...COMMON_PARAMS,
@@ -951,6 +953,8 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
 
       const url = `${API.poiRecommend}?${params.toString()}`
       const signedUrl = await this.signUrl(url, cookie)
+
+      logger.debug(`[douyin] POI recommend URL: ${signedUrl}`)
 
       const response = await client.get<{
         status_code: number
@@ -972,6 +976,8 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           'x-secsdk-csrf-token': csrfToken
         }
       )
+
+      logger.info(`[douyin] POI recommend response status: ${response.data.status_code}, poi_list count: ${response.data.poi_list?.length || 0}`)
 
       if (response.data.status_code !== 0 || !response.data.poi_list) {
         logger.warn(`[douyin] POI recommend failed: status=${response.data.status_code}`)

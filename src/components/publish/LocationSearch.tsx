@@ -48,38 +48,48 @@ export default function LocationSearch({ value, onChange, platformId, accountId,
       const res = await window.electron.ipcRenderer.invoke(
         IPC_CHANNELS.PUBLISH_GET_IP_LOCATION
       ) as { success: boolean; data?: IPLocation; error?: string }
+      console.log('[LocationSearch] IP location response:', res)
       if (res.success && res.data) {
         setIpLocation(res.data)
         return res.data
       }
     } catch (err) {
-      console.error('Failed to get IP location:', err)
+      console.error('[LocationSearch] Failed to get IP location:', err)
     } finally {
       setIpLoading(false)
     }
-    return null
+    // 返回默认位置（北京）
+    return { lat: 39.9042, lng: 116.4074, city: '北京', province: '北京市' }
   }, [])
 
   // 获取推荐位置
   const fetchRecommendLocations = useCallback(async (location?: IPLocation) => {
-    if (!accountId) return
+    if (!accountId) {
+      console.log('[LocationSearch] No accountId, skipping recommend fetch')
+      return
+    }
 
     setRecommendLoading(true)
     try {
+      const params = {
+        platformId,
+        accountId,
+        lat: location?.lat || ipLocation?.lat || 39.9042,
+        lng: location?.lng || ipLocation?.lng || 116.4074
+      }
+      console.log('[LocationSearch] Fetching recommend locations with params:', params)
       const res = await window.electron.ipcRenderer.invoke(
         IPC_CHANNELS.PUBLISH_GET_RECOMMEND_LOCATIONS,
-        {
-          platformId,
-          accountId,
-          lat: location?.lat || ipLocation?.lat,
-          lng: location?.lng || ipLocation?.lng
-        }
+        params
       ) as { success: boolean; data?: LocationResult[]; error?: string }
+      console.log('[LocationSearch] Recommend response:', res)
       if (res.success && res.data) {
         setRecommendResults(res.data)
+      } else {
+        console.warn('[LocationSearch] Recommend failed:', res.error)
       }
     } catch (err) {
-      console.error('Failed to get recommend locations:', err)
+      console.error('[LocationSearch] Failed to get recommend locations:', err)
     } finally {
       setRecommendLoading(false)
     }
@@ -161,19 +171,29 @@ export default function LocationSearch({ value, onChange, platformId, accountId,
   const renderRecommendList = () => {
     if (recommendLoading) {
       return (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '24px 0' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px 0', gap: 8 }}>
           <Spin indicator={<LoadingOutlined style={{ fontSize: 24 }} spin />} />
+          <span style={{ fontSize: 12, color: '#999' }}>正在获取推荐位置...</span>
         </div>
       )
     }
 
     if (recommendResults.length === 0) {
       return (
-        <Empty
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          description="暂无推荐位置"
-          style={{ margin: '16px 0' }}
-        />
+        <div style={{ textAlign: 'center', padding: '24px 0' }}>
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={
+              <div>
+                <div>暂无推荐位置</div>
+                <div style={{ fontSize: 12, color: '#999', marginTop: 4 }}>
+                  可切换到"搜索"标签手动查找
+                </div>
+              </div>
+            }
+            style={{ margin: 0 }}
+          />
+        </div>
       )
     }
 

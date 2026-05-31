@@ -234,22 +234,32 @@ export function registerPublishIpcHandlers(): void {
     lng?: number
   }): Promise<IpcResponse> => {
     try {
+      logger.info(`[publish] PUBLISH_GET_RECOMMEND_LOCATIONS called with params:`, params)
+
       const adapter = getAdapter(params.platformId)
       if (!adapter?.getRecommendLocations) {
+        logger.info(`[publish] Platform ${params.platformId} does not support getRecommendLocations`)
         return { success: true, data: [] }
       }
 
       const accountRepo = getAccountRepository()
       const account = accountRepo.getById(params.accountId)
-      if (!account) return { success: false, error: '账号不存在' }
+      if (!account) {
+        logger.warn(`[publish] Account not found: ${params.accountId}`)
+        return { success: false, error: '账号不存在' }
+      }
       if (account.session_status !== 'logged_in') {
+        logger.warn(`[publish] Account not logged in: ${params.accountId}, status: ${account.session_status}`)
         return { success: false, error: '账号未登录，请先登录' }
       }
 
       const cookieStr = cookieStore.getCookieString(params.accountId)
       if (!cookieStr) {
+        logger.warn(`[publish] Cookie not found for account: ${params.accountId}`)
         return { success: false, error: 'Cookie 不存在，请重新登录' }
       }
+
+      logger.info(`[publish] Fetching recommend locations for ${params.platformId}`)
 
       const context: CookieContext = {
         cookies: cookieStr,
@@ -262,6 +272,9 @@ export function registerPublishIpcHandlers(): void {
         lng: params.lng,
         count: 20
       })
+
+      logger.info(`[publish] Got ${results.length} recommend locations for ${params.platformId}`)
+
       return { success: true, data: results }
     } catch (err) {
       logger.error('PUBLISH_GET_RECOMMEND_LOCATIONS error:', err)
