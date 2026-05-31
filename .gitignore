@@ -14,3 +14,4 @@ TEST-FLOW.md
 electron.vite.config.d.ts
 electron.vite.config.js
 tsconfig.node.tsbuildinfo
+screenshots/
