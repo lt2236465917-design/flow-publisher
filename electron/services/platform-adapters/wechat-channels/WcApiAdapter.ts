@@ -1297,11 +1297,26 @@ export class WcApiAdapter extends BasePlatformAdapter {
   /**
    * Get recommended POI locations on WeChat Channels.
    * Uses the finder POI search endpoint without keyword.
+   * First ensures we have a valid finderId by calling checkSessionAPI if needed.
    */
   async getRecommendLocations(client: HttpClient, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
       const cookie = client.getCookieString()
-      const finderId = this.extractFinderId(cookie) || this.cachedFinderUsername || ''
+      let finderId = this.extractFinderId(cookie) || this.cachedFinderUsername || ''
+
+      // 如果没有 finderId，先调用 checkSessionAPI 获取
+      if (!finderId) {
+        logger.info(`[wechat-channels] No finderId found, calling checkSessionAPI to get it`)
+        await this.checkSessionAPI(client)
+        finderId = this.cachedFinderUsername || ''
+      }
+
+      logger.info(`[wechat-channels] getRecommendLocations called with finderId: ${finderId}, options:`, options)
+
+      if (!finderId) {
+        logger.warn(`[wechat-channels] Still no finderId after checkSessionAPI, cannot search locations`)
+        return []
+      }
 
       const body = {
         query: '',
@@ -1317,6 +1332,8 @@ export class WcApiAdapter extends BasePlatformAdapter {
         reqScene: 7,
         count: options?.count || 20
       }
+
+      logger.info(`[wechat-channels] POI search request body:`, body)
 
       const response = await client.post<{
         errCode?: number
@@ -1334,7 +1351,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
           }>
         }
       }>(
-        'https://channels.weixin.qq.com/micro/content/cgi-bin/mmfinderassistant-bin/helper/helper_search_location',
+        'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/helper/helper_search_location',
         body,
         {
           referer: 'https://channels.weixin.qq.com/platform/post/create',
@@ -1345,6 +1362,8 @@ export class WcApiAdapter extends BasePlatformAdapter {
       )
 
       const errCode = response.data?.errCode ?? -1
+      logger.info(`[wechat-channels] POI search response: errCode=${errCode}, listCount=${response.data?.data?.list?.length || 0}`)
+
       if (errCode !== 0 || !response.data?.data?.list) {
         logger.warn(`[wechat-channels] Location recommend failed: errCode=${errCode}`)
         return []
