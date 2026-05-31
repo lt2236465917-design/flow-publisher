@@ -70,13 +70,15 @@ export class KsApiAdapter extends BasePlatformAdapter {
       },
       {
         name: 'authorDeclaration',
-        type: 'checkbox-group',
+        type: 'select',
         label: '内容声明',
+        placeholder: '选择内容声明（可选）',
         options: [
-          { label: '内容为AI生成', value: 'AI生成' },
-          { label: '演绎情节，仅供娱乐', value: '演绎情节' },
-          { label: '个人观点，仅供参考', value: '个人观点' },
-          { label: '素材来源于网络', value: '素材来源于网络' }
+          { label: '无', value: '0' },
+          { label: '内容为AI生成', value: '1' },
+          { label: '演绎情节，仅供娱乐', value: '2' },
+          { label: '个人观点，仅供参考', value: '3' },
+          { label: '素材来源于网络', value: '4' }
         ]
       },
       {
@@ -713,28 +715,15 @@ export class KsApiAdapter extends BasePlatformAdapter {
       sourceName: ''
     }
 
-    // Map content declarations to Kuaishou API fields (支持多选)
-    const declarations = Array.isArray(payload.platformFields?.authorDeclaration)
-      ? (payload.platformFields.authorDeclaration as string[])
-      : []
-    for (const decl of declarations) {
-      switch (decl) {
-        case 'AI生成':
-          declareInfo.aiGenerated = 1
-          break
-        case '演绎情节':
-          declareInfo.fictional = 1
-          break
-        case '个人观点':
-          declareInfo.personalOpinion = 1
-          break
-        case '素材来源于网络':
-          declareInfo.internetSource = 1
-          break
-      }
-    }
-    if (declarations.length > 0) {
-      logger.info(`[kuaishou] Content declarations: ${declarations.join(', ')}, declareInfo: ${JSON.stringify(declareInfo)}`)
+    // Map content declaration to Kuaishou API field
+    // yixiaoer格式: declareInfo = { source: <number> }
+    // source: 0=无, 1=AI生成, 2=演绎情节, 3=个人观点, 4=素材来源于网络
+    const declarationSource = payload.platformFields?.authorDeclaration
+      ? Number(payload.platformFields.authorDeclaration)
+      : 0
+    if (declarationSource > 0) {
+      declareInfo.source = declarationSource
+      logger.info(`[kuaishou] Content declaration: source=${declarationSource}`)
     }
 
     // Extract location data from platformFields
