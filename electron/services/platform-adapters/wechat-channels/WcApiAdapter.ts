@@ -877,13 +877,15 @@ export class WcApiAdapter extends BasePlatformAdapter {
     if (payload.platformFields?.location) {
       const loc = payload.platformFields.location
       if (typeof loc === 'object' && loc !== null && 'name' in loc) {
-        const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number; address?: string }
+        const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number; address?: string; extra?: Record<string, unknown> }
+        // yixiaoer format: uses poiClassifyId (not poiId), and includes city
         location = {
-          poiId: locObj.poi_id || '',
+          latitude: locObj.lat || 0,
+          longitude: locObj.lng || 0,
+          city: (locObj.extra?.city as string) || '',
           poiName: locObj.name,
           address: locObj.address || '',
-          latitude: locObj.lat || 0,
-          longitude: locObj.lng || 0
+          poiClassifyId: locObj.poi_id || ''
         }
         logger.info(`[wechat-channels] Added location: ${locObj.name}`)
       }
@@ -1007,11 +1009,9 @@ export class WcApiAdapter extends BasePlatformAdapter {
     }
     topicXml += '</finder>'
 
-    // Build collection (topicId) — from platformFields.collection (dynamic-select value)
-    const topicId = (payload.platformFields?.collection as string) || ''
-    if (topicId) {
-      logger.info(`[wechat-channels] Added collection topicId: ${topicId}`)
-    }
+    // Build collection — from platformFields.collection (dynamic-select value)
+    // yixiaoer puts collection inside objectDesc.topic as collectionId/collectionName
+    const collectionId = (payload.platformFields?.collection as string) || ''
 
     const postReq: Record<string, unknown> = {
       longitude: 0,
@@ -1030,7 +1030,10 @@ export class WcApiAdapter extends BasePlatformAdapter {
         extReading: { link: '', title: '' },
         mediaType: 4,
         location,
-        topic: { finderTopicInfo: topicXml },
+        topic: {
+          finderTopicInfo: topicXml,
+          ...(collectionId ? { collectionId, collectionName: '' } : {})
+        },
         mentionedUser: [],
         mpTitle: '',
         media: [{
@@ -1066,8 +1069,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
       _log_finder_id: finderUsername || '',
       scene: 7,
       reqScene: 7,
-      videoClipTaskId: draftId,
-      ...(topicId ? { topicId } : {})
+      videoClipTaskId: draftId
     }
 
     // Add mode + megavideoDesc for videos > 60s (matching yixiaoer)
