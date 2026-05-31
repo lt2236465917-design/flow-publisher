@@ -809,26 +809,27 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
   /**
    * Search POI locations on Xiaohongshu.
-   * Uses the creator location search endpoint with keyword.
+   * Uses the v1 API with keyword, no signature required.
+   * Reference: yixiaoer implementation
    */
   async searchLocation(client: HttpClient, keyword: string, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
-      let cookie = client.getCookieString()
-      const urlPath = '/web_api/sns/v1/local/poi/creator/search'
-      const body = {
-        keyword,
-        search_id: Date.now().toString(),
-        page: { page_size: options?.count || 20, page: 1 },
-        latitude: options?.lat || 0,
-        longitude: options?.lng || 0
-      }
-      const bodyStr = JSON.stringify(body)
-      const { headers: signHeaders, a1 } = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
+      const cookie = client.getCookieString()
 
-      if (a1) {
-        cookie = cookie.replace('a1=', 'a1old=')
-        cookie = `${cookie};a1=${a1}`
+      logger.info(`[xiaohongshu] searchLocation called with keyword: ${keyword}, options:`, options)
+
+      // 使用和 yixiaoer 相同的实现方式，不使用签名
+      const body = {
+        latitude: options?.lat || 0,
+        longitude: options?.lng || 0,
+        keyword,
+        page: 1,
+        size: options?.count || 30,
+        source: 'WEB',
+        type: 3
       }
+
+      logger.info(`[xiaohongshu] POI search request body:`, body)
 
       const response = await axios.post<{
         success: boolean
@@ -854,13 +855,20 @@ export class XhsApiAdapter extends BasePlatformAdapter {
             Authorization: '',
             Origin: 'https://creator.xiaohongshu.com',
             'Content-Type': 'application/json;charset=UTF-8',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14',
-            ...signHeaders
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14'
           },
           timeout: 15_000,
           responseType: 'json'
         }
       )
+
+      logger.info(`[xiaohongshu] POI search response:`, {
+        success: response.data.success,
+        hasData: !!response.data.data,
+        hasPoiList: !!response.data.data?.poi_list,
+        poiCount: response.data.data?.poi_list?.length || 0,
+        msg: response.data.msg
+      })
 
       if (!response.data.success || !response.data.data?.poi_list) {
         logger.warn(`[xiaohongshu] POI search failed: ${response.data.msg}`)
