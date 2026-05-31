@@ -70,9 +70,8 @@ export class KsApiAdapter extends BasePlatformAdapter {
       },
       {
         name: 'authorDeclaration',
-        type: 'select',
-        label: '作者声明',
-        placeholder: '为作品添加补充说明',
+        type: 'checkbox-group',
+        label: '内容声明',
         options: [
           { label: '内容为AI生成', value: 'AI生成' },
           { label: '演绎情节，仅供娱乐', value: '演绎情节' },
@@ -714,10 +713,12 @@ export class KsApiAdapter extends BasePlatformAdapter {
       sourceName: ''
     }
 
-    // Map author declaration to Kuaishou API fields
-    const authorDecl = payload.platformFields?.authorDeclaration
-    if (authorDecl) {
-      switch (authorDecl) {
+    // Map content declarations to Kuaishou API fields (支持多选)
+    const declarations = Array.isArray(payload.platformFields?.authorDeclaration)
+      ? (payload.platformFields.authorDeclaration as string[])
+      : []
+    for (const decl of declarations) {
+      switch (decl) {
         case 'AI生成':
           declareInfo.aiGenerated = 1
           break
@@ -731,7 +732,9 @@ export class KsApiAdapter extends BasePlatformAdapter {
           declareInfo.internetSource = 1
           break
       }
-      logger.info(`[kuaishou] Added author declaration: ${authorDecl}, declareInfo: ${JSON.stringify(declareInfo)}`)
+    }
+    if (declarations.length > 0) {
+      logger.info(`[kuaishou] Content declarations: ${declarations.join(', ')}, declareInfo: ${JSON.stringify(declareInfo)}`)
     }
 
     // Extract location data from platformFields
