@@ -875,16 +875,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
       try {
         const cityUrl = 'https://cp.kuaishou.com/rest/cp/works/v2/common/pc/ip2poi'
         const cityBody = JSON.stringify({ "kuaishou.web.cp.api_ph": apiPh })
-        const cityResponse = await client.post<{
-          result: number
-          data?: {
-            city?: {
-              data?: {
-                city?: string
-              }
-            }
-          }
-        }>(
+        const cityResponse = await client.post<any>(
           cityUrl,
           cityBody,
           {
@@ -893,11 +884,14 @@ export class KsApiAdapter extends BasePlatformAdapter {
             'Content-Type': 'application/json'
           }
         )
-        if (cityResponse.data?.result === 1 && cityResponse.data?.data?.city?.data?.city) {
-          const rawCity = cityResponse.data.data.city.data.city
-          // 处理城市名称，参考 yixiaoer 的逻辑
-          cityName = rawCity.includes('鑷') ? rawCity : `${rawCity}市`
-          logger.info(`[kuaishou] Current city: ${cityName}`)
+        logger.info(`[kuaishou] ip2poi response:`, JSON.stringify(cityResponse.data).substring(0, 500))
+        if (cityResponse.data?.result === 1) {
+          // 尝试从不同路径获取城市名
+          const cityData = cityResponse.data?.data?.city?.data?.city || cityResponse.data?.data?.city || ''
+          if (cityData) {
+            cityName = typeof cityData === 'string' ? cityData : cityData.city || ''
+            logger.info(`[kuaishou] Current city: ${cityName}`)
+          }
         }
       } catch (e) {
         logger.warn('[kuaishou] Failed to get current city:', e)
