@@ -881,17 +881,29 @@ export class KsApiAdapter extends BasePlatformAdapter {
           {
             referer: REFERER,
             Origin: ORIGIN,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            responseType: 'text'
           }
         )
-        logger.info(`[kuaishou] ip2poi response:`, JSON.stringify(cityResponse.data).substring(0, 500))
-        if (cityResponse.data?.result === 1) {
-          // 直接使用返回的城市名（可能是乱码，但 API 期望这种格式）
-          cityName = cityResponse.data?.data?.city || ''
-          logger.info(`[kuaishou] Current city: ${cityName}`)
+        logger.info(`[kuaishou] ip2poi raw response:`, cityResponse.data?.substring?.(0, 500) || cityResponse.data)
+        // 尝试解析 JSON
+        try {
+          const parsed = typeof cityResponse.data === 'string' ? JSON.parse(cityResponse.data) : cityResponse.data
+          if (parsed?.result === 1) {
+            cityName = parsed?.data?.city || ''
+            logger.info(`[kuaishou] Current city: ${cityName}`)
+          }
+        } catch (parseErr) {
+          logger.warn('[kuaishou] Failed to parse ip2poi response:', parseErr)
         }
       } catch (e) {
         logger.warn('[kuaishou] Failed to get current city:', e)
+      }
+
+      // 如果获取城市失败，使用默认城市
+      if (!cityName) {
+        cityName = '北京'
+        logger.info(`[kuaishou] Using default city: ${cityName}`)
       }
 
       // 使用和 yixiaoer 相同的 API - poi/search
