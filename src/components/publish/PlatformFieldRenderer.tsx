@@ -79,7 +79,7 @@ export default function PlatformFieldRenderer({ field, value, onChange, platform
         )
 
       case 'checkbox-group': {
-        const currentValues = Array.isArray(value) ? (value as string[]) : []
+        const currentValues = Array.isArray(value) ? (value as string[]) : (Array.isArray(field.defaultValue) ? (field.defaultValue as string[]) : [])
         const handleChange = (checkedValues: string[]) => {
           if (field.maxSelections === 1) {
             // Radio-like: only keep the last checked item

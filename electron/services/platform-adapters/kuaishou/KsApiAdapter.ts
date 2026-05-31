@@ -63,39 +63,45 @@ export class KsApiAdapter extends BasePlatformAdapter {
   getPlatformFields(): PlatformFieldDefinition[] {
     return [
       {
-        name: 'challenges',
-        type: 'tags',
-        label: '话题挑战',
-        placeholder: '输入话题挑战名称'
-      },
-      {
         name: 'location',
         type: 'location',
-        label: '位置信息',
-        placeholder: '搜索位置'
+        label: '添加地点',
+        placeholder: '请选择所在地区'
       },
       {
-        name: 'magicEmoji',
-        type: 'checkbox',
-        label: '使用魔法表情',
-        defaultValue: false
-      },
-      {
-        name: 'localVisible',
-        type: 'checkbox',
-        label: '同城可见',
-        defaultValue: false
-      },
-      {
-        name: 'declarations',
-        type: 'checkbox-group',
-        label: '内容声明',
+        name: 'authorDeclaration',
+        type: 'select',
+        label: '作者声明',
+        placeholder: '为作品添加补充说明',
         options: [
-          { label: '内容由 AI 生成', value: 'AI生成' },
-          { label: '可能引起不适', value: '可能引起不适' },
-          { label: '虚构演绎，仅供娱乐', value: '虚构演绎' },
-          { label: '危险行为，请勿模仿', value: '危险行为' }
+          { label: '内容为AI生成', value: 'AI生成' },
+          { label: '演绎情节，仅供娱乐', value: '演绎情节' },
+          { label: '个人观点，仅供参考', value: '个人观点' },
+          { label: '素材来源于网络', value: '素材来源于网络' }
         ]
+      },
+      {
+        name: 'interactionSettings',
+        type: 'checkbox-group',
+        label: '互动设置',
+        options: [
+          { label: '允许别人跟我拍同框', value: 'allowStitch' },
+          { label: '允许下载此作品', value: 'allowDownload' },
+          { label: '作品展示在同城页', value: 'showInLocal' }
+        ],
+        defaultValue: ['allowStitch', 'allowDownload', 'showInLocal']
+      },
+      {
+        name: 'viewPermission',
+        type: 'checkbox-group',
+        label: '查看权限',
+        options: [
+          { label: '所有人可见', value: 'public' },
+          { label: '好友可见', value: 'friends' },
+          { label: '仅自己可见', value: 'private' }
+        ],
+        maxSelections: 1,
+        defaultValue: ['public']
       }
     ]
   }
@@ -665,18 +671,39 @@ export class KsApiAdapter extends BasePlatformAdapter {
       caption += ` #${tag} `
     }
 
-    // Platform-specific fields
+    // Platform-specific fields — view permission
+    // Kuaishou privacyType: 0=公开, 1=好友可见, 2=仅自己可见
     let privacyType = 0
-    if (payload.platformFields?.localVisible) {
-      privacyType = 1
+    if (Array.isArray(payload.platformFields?.viewPermission)) {
+      const perm = payload.platformFields.viewPermission as string[]
+      if (perm.includes('friends')) {
+        privacyType = 1
+      } else if (perm.includes('private')) {
+        privacyType = 2
+      } else {
+        privacyType = 0 // 默认公开
+      }
     }
+
+    // Interaction settings — default all enabled
+    const interactionSettings = Array.isArray(payload.platformFields?.interactionSettings)
+      ? (payload.platformFields.interactionSettings as string[])
+      : ['allowStitch', 'allowDownload', 'showInLocal']
+    const stitchOpen = interactionSettings.includes('allowStitch') ? 1 : 0
+    const downloadOpen = interactionSettings.includes('allowDownload') ? 1 : 0
+    const localVisible = interactionSettings.includes('showInLocal') ? 1 : 0
+
+    // Author declaration — supplementary text
+    const authorDeclaration = payload.platformFields?.authorDeclaration
+      ? String(payload.platformFields.authorDeclaration)
+      : ''
 
     const videoWidth = uploadResult?.videoWidth || 1920
     const videoHeight = uploadResult?.videoHeight || 1080
     const videoDuration = uploadResult?.videoDuration || 0
 
-    // Build declareInfo with content declarations
-    // Kuaishou supports: AI生成, 可能引起不适, 虚构演绎, 危险行为
+    // Build declareInfo with author declaration
+    // Kuaishou author declaration options: AI生成, 演绎情节, 个人观点, 素材来源于网络
     const declareInfo: Record<string, unknown> = {
       source: 0,
       platform: 0,
@@ -686,25 +713,24 @@ export class KsApiAdapter extends BasePlatformAdapter {
       sourceName: ''
     }
 
-    // Map declarations to Kuaishou API fields
-    if (payload.declarations && payload.declarations.length > 0) {
-      for (const decl of payload.declarations) {
-        switch (decl) {
-          case 'AI生成':
-            declareInfo.aiGenerated = 1
-            break
-          case '可能引起不适':
-            declareInfo.uncomfortable = 1
-            break
-          case '虚构演绎':
-            declareInfo.fictional = 1
-            break
-          case '危险行为':
-            declareInfo.dangerous = 1
-            break
-        }
+    // Map author declaration to Kuaishou API fields
+    const authorDecl = payload.platformFields?.authorDeclaration
+    if (authorDecl) {
+      switch (authorDecl) {
+        case 'AI生成':
+          declareInfo.aiGenerated = 1
+          break
+        case '演绎情节':
+          declareInfo.fictional = 1
+          break
+        case '个人观点':
+          declareInfo.personalOpinion = 1
+          break
+        case '素材来源于网络':
+          declareInfo.internetSource = 1
+          break
       }
-      logger.info(`[kuaishou] Added declarations to declareInfo: ${JSON.stringify(declareInfo)}`)
+      logger.info(`[kuaishou] Added author declaration: ${authorDecl}, declareInfo: ${JSON.stringify(declareInfo)}`)
     }
 
     // Extract location data from platformFields
@@ -749,7 +775,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
       coverMediaId: uploadResult?.coverMediaId || '',
       videoDuration: videoDuration,
       videoFrameRate: uploadResult?.videoFrameRate || 0,
-      declareInfo
+      declareInfo,
+      stitchOpen,
+      downloadOpen,
+      localVisible
     }
 
     logger.info(`[kuaishou] Submitting: fileId=${fileId}, caption=${caption.substring(0, 80)}`)
