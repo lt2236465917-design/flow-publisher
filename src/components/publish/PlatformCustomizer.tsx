@@ -47,9 +47,35 @@ export default function PlatformCustomizer({ platforms, overrides, onChange }: P
           IPC_CHANNELS.PUBLISH_GET_PLATFORM_FIELDS,
           platformId
         )
-        .then((res: unknown) => {
+        .then(async (res: unknown) => {
           const r = res as { success?: boolean; data?: PlatformFieldDefinition[] }
-          const fields: PlatformFieldDefinition[] = (r.success && r.data) ? r.data : []
+          let fields: PlatformFieldDefinition[] = (r.success && r.data) ? r.data : []
+
+          // Resolve dynamic-select fields: fetch options from backend
+          const DYNAMIC_KEY_IPC: Record<string, string> = {
+            collections: IPC_CHANNELS.PUBLISH_GET_COLLECTIONS
+          }
+          const account = accounts.find((a) => a.platform === platformId && a.sessionStatus === 'logged_in')
+          if (account) {
+            fields = await Promise.all(
+              fields.map(async (field) => {
+                if (field.type !== 'dynamic-select' || !field.dynamicKey) return field
+                const ipcChannel = DYNAMIC_KEY_IPC[field.dynamicKey]
+                if (!ipcChannel) return field
+                try {
+                  const optRes = await window.electron.ipcRenderer.invoke(
+                    ipcChannel,
+                    { platformId, accountId: account.id }
+                  ) as { success: boolean; data?: Array<{ label: string; value: string }> }
+                  if (optRes.success && optRes.data) {
+                    return { ...field, options: optRes.data }
+                  }
+                } catch {}
+                return field
+              })
+            )
+          }
+
           setFieldDefs((prev) => ({ ...prev, [platformId]: fields }))
         })
         .catch(() => {
@@ -59,7 +85,7 @@ export default function PlatformCustomizer({ platforms, overrides, onChange }: P
           setLoading((prev) => ({ ...prev, [platformId]: false }))
         })
     }
-  }, [platforms])
+  }, [platforms, accounts])
 
   const getAccountId = (platformId: PlatformId): string | undefined => {
     return accounts.find((a) => a.platform === platformId && a.sessionStatus === 'logged_in')?.id

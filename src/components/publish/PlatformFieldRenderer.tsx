@@ -50,6 +50,7 @@ export default function PlatformFieldRenderer({ field, value, onChange, platform
         )
 
       case 'select':
+      case 'dynamic-select':
         return (
           <Select
             value={value as string ?? field.defaultValue ?? undefined}
@@ -57,6 +58,7 @@ export default function PlatformFieldRenderer({ field, value, onChange, platform
             placeholder={field.placeholder}
             style={{ width: '100%' }}
             allowClear
+            notFoundContent={field.type === 'dynamic-select' ? (accountId ? '加载中...' : '请先登录平台账号') : '暂无选项'}
           >
             {(field.options ?? []).map((opt: { label: string; value: string }) => (
               <Select.Option key={opt.value} value={opt.value}>

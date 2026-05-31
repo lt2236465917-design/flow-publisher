@@ -51,4 +51,5 @@ export interface IPlatformAdapter {
   getPlatformFields?(): PlatformFieldDefinition[]
   getAccountInfoAPI?(client: HttpClient): Promise<{ displayName?: string; avatarUrl?: string } | null>
   searchLocation?(client: HttpClient, keyword: string): Promise<LocationResult[]>
+  getCollections?(client: HttpClient): Promise<Array<{ label: string; value: string }>>
 }

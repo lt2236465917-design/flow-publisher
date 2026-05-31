@@ -240,7 +240,7 @@ export default function PublishPage() {
           {flow.form.platforms.length > 0 && (
             <>
               <Divider />
-              <SectionTitle>平台定制</SectionTitle>
+              <SectionTitle>发布设置</SectionTitle>
               <PlatformCustomizer
                 platforms={flow.form.platforms}
                 overrides={flow.form.platformOverrides}

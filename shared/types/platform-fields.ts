@@ -1,4 +1,4 @@
-export type PlatformFieldType = 'text' | 'select' | 'checkbox' | 'tags' | 'textarea' | 'checkbox-group' | 'location'
+export type PlatformFieldType = 'text' | 'select' | 'checkbox' | 'tags' | 'textarea' | 'checkbox-group' | 'location' | 'dynamic-select'
 
 export interface PlatformFieldOption {
   label: string
@@ -14,4 +14,6 @@ export interface PlatformFieldDefinition {
   options?: PlatformFieldOption[]
   defaultValue?: unknown
   maxLength?: number
+  /** For 'dynamic-select' type: identifies which data source to fetch options from */
+  dynamicKey?: string
 }

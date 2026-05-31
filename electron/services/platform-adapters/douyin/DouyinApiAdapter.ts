@@ -53,10 +53,8 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
 
   getPlatformFields(): PlatformFieldDefinition[] {
     return [
-      { name: 'collection', type: 'select', label: '合集选择', placeholder: '选择合集', options: [] },
-      { name: 'mentions', type: 'tags', label: '@提及', placeholder: '输入要@的用户' },
-      { name: 'poiLocation', type: 'location', label: 'POI 地点', placeholder: '搜索地点' },
-      { name: 'miniApp', type: 'text', label: '小程序挂载', placeholder: '输入小程序 AppID' },
+      { name: 'collection', type: 'dynamic-select', label: '合集', placeholder: '选择合集', dynamicKey: 'collections' },
+      { name: 'poiLocation', type: 'location', label: '位置', placeholder: '搜索地点' },
       {
         name: 'declarations',
         type: 'checkbox-group',
@@ -69,8 +67,67 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           { label: '虚构演绎，仅供娱乐', value: '虚构演绎' },
           { label: '危险行为，请勿模仿', value: '危险行为' }
         ]
+      },
+      {
+        name: 'downloadPermission',
+        type: 'checkbox',
+        label: '允许下载',
+        defaultValue: true
       }
     ]
+  }
+
+  /**
+   * Fetch user's collection list from Douyin creator API.
+   */
+  async getCollections(client: HttpClient): Promise<Array<{ label: string; value: string }>> {
+    try {
+      const cookie = client.getCookieString()
+      const csrfToken = await this.getCsrfToken(client)
+
+      const params = new URLSearchParams({
+        count: '100',
+        cursor: '0',
+        ...COMMON_PARAMS,
+        aid: '1128',
+        msToken: ''
+      })
+
+      const url = `${API.collections}?${params.toString()}`
+      const signedUrl = await this.signUrl(url, cookie)
+
+      const response = await client.get<{
+        status_code: number
+        collection_list?: Array<{
+          collection_id?: string
+          name?: string
+          item_count?: number
+        }>
+      }>(
+        signedUrl,
+        undefined,
+        {
+          referer: 'https://creator.douyin.com/creator-micro/content/publish',
+          Origin: 'https://creator.douyin.com',
+          'x-secsdk-csrf-token': csrfToken
+        }
+      )
+
+      if (response.data.status_code !== 0 || !response.data.collection_list) {
+        logger.warn(`[douyin] Collections fetch failed: status=${response.data.status_code}`)
+        return []
+      }
+
+      return response.data.collection_list
+        .filter((c) => c.collection_id && c.name)
+        .map((c) => ({
+          label: c.name!,
+          value: c.collection_id!
+        }))
+    } catch (err) {
+      logger.error('[douyin] getCollections error:', err)
+      return []
+    }
   }
 
   // --- Signature helpers ---
@@ -636,14 +693,21 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           logger.info(`[douyin] Added POI location: ${locObj.name}`)
         }
       }
-    }
 
-    // Add declarations
-    if (payload.declarations.length > 0) {
-      const declare = postData.item as Record<string, unknown>
-      ;(declare.declare as Record<string, unknown>).user_declare_info = JSON.stringify(
-        payload.declarations.map((d) => ({ protocol_name: d }))
-      )
+      // Download permission: true = allow, false = disallow
+      if (payload.platformFields.downloadPermission !== undefined) {
+        const common = (postData.item as Record<string, unknown>).common as Record<string, unknown>
+        common.download = payload.platformFields.downloadPermission ? 1 : 0
+      }
+
+      // Declarations: map selected options to Douyin's user_declare_info format
+      if (Array.isArray(payload.platformFields.declarations) && payload.platformFields.declarations.length > 0) {
+        const declare = (postData.item as Record<string, unknown>).declare as Record<string, unknown>
+        declare.user_declare_info = JSON.stringify(
+          (payload.platformFields.declarations as string[]).map((d) => ({ protocol_name: d }))
+        )
+        logger.info(`[douyin] Added declarations: ${payload.platformFields.declarations.join(', ')}`)
+      }
     }
 
     try {

@@ -252,6 +252,43 @@ export function registerPublishIpcHandlers(): void {
     }
   })
 
+  // Get collections for a platform (e.g. Douyin)
+  ipcMain.handle(IPC_CHANNELS.PUBLISH_GET_COLLECTIONS, async (_event, params: {
+    platformId: string
+    accountId: string
+  }): Promise<IpcResponse> => {
+    try {
+      const adapter = getAdapter(params.platformId)
+      if (!adapter?.getCollections) {
+        return { success: true, data: [] }
+      }
+
+      const accountRepo = getAccountRepository()
+      const account = accountRepo.getById(params.accountId)
+      if (!account) return { success: false, error: '账号不存在' }
+      if (account.session_status !== 'logged_in') {
+        return { success: false, error: '账号未登录，请先登录' }
+      }
+
+      const cookieStr = cookieStore.getCookieString(params.accountId)
+      if (!cookieStr) {
+        return { success: false, error: 'Cookie 不存在，请重新登录' }
+      }
+
+      const context: CookieContext = {
+        cookies: cookieStr,
+        platform: params.platformId,
+        accountId: params.accountId
+      }
+      const client = new HttpClient(context)
+      const collections = await adapter.getCollections(client)
+      return { success: true, data: collections }
+    } catch (err) {
+      logger.error('PUBLISH_GET_COLLECTIONS error:', err)
+      return { success: false, error: String(err) }
+    }
+  })
+
   // List publish records
   ipcMain.handle(IPC_CHANNELS.PUBLISH_LIST_RECORDS, async (): Promise<IpcResponse> => {
     try {
