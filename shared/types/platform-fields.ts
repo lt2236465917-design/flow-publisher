@@ -16,4 +16,6 @@ export interface PlatformFieldDefinition {
   maxLength?: number
   /** For 'dynamic-select' type: identifies which data source to fetch options from */
   dynamicKey?: string
+  /** For 'checkbox-group' type: max number of selectable options (1 = radio-like behavior) */
+  maxSelections?: number
 }

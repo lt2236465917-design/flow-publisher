@@ -59,6 +59,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         name: 'declarations',
         type: 'checkbox-group',
         label: '内容声明',
+        maxSelections: 1,
         options: [
           { label: '原创声明', value: '原创声明' },
           { label: '转载声明', value: '转载声明' },
@@ -70,9 +71,13 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       },
       {
         name: 'downloadPermission',
-        type: 'checkbox',
-        label: '允许下载',
-        defaultValue: true
+        type: 'checkbox-group',
+        label: '保存权限',
+        options: [
+          { label: '允许下载', value: 'allow' },
+          { label: '不允许下载', value: 'deny' }
+        ],
+        maxSelections: 1
       }
     ]
   }
@@ -694,10 +699,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         }
       }
 
-      // Download permission: true = allow, false = disallow
-      if (payload.platformFields.downloadPermission !== undefined) {
+      // Download permission: ['allow'] = allow, ['deny'] = disallow
+      if (Array.isArray(payload.platformFields.downloadPermission)) {
+        const perm = payload.platformFields.downloadPermission as string[]
         const common = (postData.item as Record<string, unknown>).common as Record<string, unknown>
-        common.download = payload.platformFields.downloadPermission ? 1 : 0
+        common.download = perm.includes('deny') ? 0 : 1
       }
 
       // Declarations: map selected options to Douyin's user_declare_info format

@@ -78,11 +78,21 @@ export default function PlatformFieldRenderer({ field, value, onChange, platform
           </Checkbox>
         )
 
-      case 'checkbox-group':
+      case 'checkbox-group': {
+        const currentValues = Array.isArray(value) ? (value as string[]) : []
+        const handleChange = (checkedValues: string[]) => {
+          if (field.maxSelections === 1) {
+            // Radio-like: only keep the last checked item
+            const last = checkedValues.filter((v) => !currentValues.includes(v))
+            onChange(field.name, last.length > 0 ? [last[last.length - 1]] : [])
+          } else {
+            onChange(field.name, checkedValues)
+          }
+        }
         return (
           <CheckboxGroup
-            value={Array.isArray(value) ? (value as string[]) : []}
-            onChange={(checkedValues) => onChange(field.name, checkedValues)}
+            value={currentValues}
+            onChange={handleChange}
           >
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 20px' }}>
               {(field.options ?? []).map((opt: { label: string; value: string }) => (
@@ -93,6 +103,7 @@ export default function PlatformFieldRenderer({ field, value, onChange, platform
             </div>
           </CheckboxGroup>
         )
+      }
 
       case 'tags':
         return (
