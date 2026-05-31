@@ -7,6 +7,7 @@ import { HttpClient } from '../services/http/HttpClient'
 import type { CookieContext } from '../services/http/HttpClient'
 import { ffmpegService } from '../services/ffmpeg/FFmpegService'
 import { validateVideo } from '../services/ffmpeg/VideoValidator'
+import { ipLocationService } from '../services/location/IPLocationService'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import { logger } from '../utils/logger'
 
@@ -214,11 +215,67 @@ export function registerPublishIpcHandlers(): void {
     }
   })
 
+  // Get IP location
+  ipcMain.handle(IPC_CHANNELS.PUBLISH_GET_IP_LOCATION, async (): Promise<IpcResponse> => {
+    try {
+      const location = await ipLocationService.getLocation()
+      return { success: true, data: location }
+    } catch (err) {
+      logger.error('PUBLISH_GET_IP_LOCATION error:', err)
+      return { success: false, error: String(err) }
+    }
+  })
+
+  // Get recommend locations for a platform
+  ipcMain.handle(IPC_CHANNELS.PUBLISH_GET_RECOMMEND_LOCATIONS, async (_event, params: {
+    platformId: string
+    accountId: string
+    lat?: number
+    lng?: number
+  }): Promise<IpcResponse> => {
+    try {
+      const adapter = getAdapter(params.platformId)
+      if (!adapter?.getRecommendLocations) {
+        return { success: true, data: [] }
+      }
+
+      const accountRepo = getAccountRepository()
+      const account = accountRepo.getById(params.accountId)
+      if (!account) return { success: false, error: '账号不存在' }
+      if (account.session_status !== 'logged_in') {
+        return { success: false, error: '账号未登录，请先登录' }
+      }
+
+      const cookieStr = cookieStore.getCookieString(params.accountId)
+      if (!cookieStr) {
+        return { success: false, error: 'Cookie 不存在，请重新登录' }
+      }
+
+      const context: CookieContext = {
+        cookies: cookieStr,
+        platform: params.platformId,
+        accountId: params.accountId
+      }
+      const client = new HttpClient(context)
+      const results = await adapter.getRecommendLocations(client, {
+        lat: params.lat,
+        lng: params.lng,
+        count: 20
+      })
+      return { success: true, data: results }
+    } catch (err) {
+      logger.error('PUBLISH_GET_RECOMMEND_LOCATIONS error:', err)
+      return { success: false, error: String(err) }
+    }
+  })
+
   // Search POI locations for a platform
   ipcMain.handle(IPC_CHANNELS.PUBLISH_SEARCH_LOCATION, async (_event, params: {
     platformId: string
     accountId: string
     keyword: string
+    lat?: number
+    lng?: number
   }): Promise<IpcResponse> => {
     try {
       const adapter = getAdapter(params.platformId)
@@ -244,7 +301,11 @@ export function registerPublishIpcHandlers(): void {
         accountId: params.accountId
       }
       const client = new HttpClient(context)
-      const results = await adapter.searchLocation(client, params.keyword)
+      const results = await adapter.searchLocation(client, params.keyword, {
+        lat: params.lat,
+        lng: params.lng,
+        count: 20
+      })
       return { success: true, data: results }
     } catch (err) {
       logger.error('PUBLISH_SEARCH_LOCATION error:', err)

@@ -856,15 +856,91 @@ export class KsApiAdapter extends BasePlatformAdapter {
   }
 
   /**
-   * Search POI locations on Kuaishou.
-   * Uses the creator POI search endpoint.
+   * Get recommended POI locations on Kuaishou.
+   * Uses the creator POI search endpoint without keyword.
    */
-  async searchLocation(client: HttpClient, keyword: string): Promise<import('../IPlatformAdapter').LocationResult[]> {
+  async getRecommendLocations(client: HttpClient, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
       const cookie = client.getCookieString()
 
       const searchPath = '/rest/cp/works/v2/poi/search'
-      const body = JSON.stringify({ keyword, count: 20 })
+      const body = JSON.stringify({
+        keyword: '',
+        latitude: options?.lat || 0,
+        longitude: options?.lng || 0,
+        count: options?.count || 20
+      })
+
+      const signService = getSignService()
+      const sig = await signService.getSignature(
+        'kuaishou',
+        cookie,
+        JSON.stringify({ url: searchPath, body }),
+        body
+      )
+
+      let url = `https://cp.kuaishou.com${searchPath}`
+      if (sig) {
+        url += `?__NS_sig3=${sig}`
+      }
+
+      const response = await client.post<{
+        result: number
+        data?: {
+          poiList?: Array<{
+            poiId?: string
+            poiName?: string
+            address?: string
+            latitude?: number
+            longitude?: number
+            city?: string
+          }>
+        }
+      }>(
+        url,
+        body,
+        {
+          referer: REFERER,
+          Origin: ORIGIN,
+          'Content-Type': 'application/json'
+        }
+      )
+
+      if (response.data?.result !== 1 || !response.data.data?.poiList) {
+        logger.warn(`[kuaishou] POI recommend failed: result=${response.data?.result}`)
+        return []
+      }
+
+      return response.data.data.poiList.map((poi) => ({
+        id: poi.poiId || '',
+        name: poi.poiName || '',
+        address: poi.address || poi.city || '',
+        lat: poi.latitude,
+        lng: poi.longitude,
+        poi_id: poi.poiId,
+        extra: { city: poi.city }
+      }))
+    } catch (err) {
+      logger.error('[kuaishou] getRecommendLocations error:', err)
+      return []
+    }
+  }
+
+  /**
+   * Search POI locations on Kuaishou.
+   * Uses the creator POI search endpoint with keyword.
+   */
+  async searchLocation(client: HttpClient, keyword: string, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
+    try {
+      const cookie = client.getCookieString()
+
+      const searchPath = '/rest/cp/works/v2/poi/search'
+      const body = JSON.stringify({
+        keyword,
+        latitude: options?.lat || 0,
+        longitude: options?.lng || 0,
+        count: options?.count || 20
+      })
 
       const signService = getSignService()
       const sig = await signService.getSignature(

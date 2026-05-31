@@ -19,7 +19,8 @@ const API = {
   noteCreate: 'https://edith.xiaohongshu.com/web_api/sns/v2/note',
   personalInfo: 'https://creator.xiaohongshu.com/api/galaxy/creator/home/personal_info',
   collectionList: 'https://edith.xiaohongshu.com/api/sns/v1/note/collection/pc/list_v2',
-  locationSearch: 'https://edith.xiaohongshu.com/web_api/sns/v1/local/poi/creator/search'
+  locationSearch: 'https://edith.xiaohongshu.com/web_api/sns/v1/local/poi/creator/search',
+  locationSearchV5: 'https://www.xiaohongshu.com/web_api/sns/v5/creator/poi/search'
 }
 
 export class XhsApiAdapter extends BasePlatformAdapter {
@@ -724,19 +725,98 @@ export class XhsApiAdapter extends BasePlatformAdapter {
   }
 
   /**
-   * Search POI locations on Xiaohongshu.
-   * Uses the creator location search endpoint.
-   * API endpoint: /web_api/sns/v1/local/poi/creator/search
+   * Get recommended POI locations on Xiaohongshu.
+   * Uses the v5 API without keyword to get nearby recommendations.
    */
-  async searchLocation(client: HttpClient, keyword: string): Promise<import('../IPlatformAdapter').LocationResult[]> {
+  async getRecommendLocations(client: HttpClient, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
+    try {
+      let cookie = client.getCookieString()
+      const urlPath = '/web_api/sns/v5/creator/poi/search'
+      const body = {
+        latitude: options?.lat || 0,
+        longitude: options?.lng || 0,
+        keyword: '',
+        page: 1,
+        size: options?.count || 30,
+        source: 'WEB',
+        type: 3
+      }
+      const bodyStr = JSON.stringify(body)
+      const { headers: signHeaders, a1 } = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
+
+      if (a1) {
+        cookie = cookie.replace('a1=', 'a1old=')
+        cookie = `${cookie};a1=${a1}`
+      }
+
+      const response = await axios.post<{
+        success: boolean
+        data?: {
+          poi_list?: Array<{
+            poi_id?: string
+            poi_name?: string
+            full_address?: string
+            latitude?: number
+            longitude?: number
+            city?: string
+            poi_type?: number
+          }>
+        }
+        msg?: string
+      }>(
+        API.locationSearchV5,
+        body,
+        {
+          headers: {
+            cookie,
+            referer: 'https://creator.xiaohongshu.com/',
+            Authorization: '',
+            Origin: 'https://creator.xiaohongshu.com',
+            'Content-Type': 'application/json;charset=UTF-8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14',
+            ...signHeaders
+          },
+          timeout: 15_000,
+          responseType: 'json'
+        }
+      )
+
+      if (!response.data.success || !response.data.data?.poi_list) {
+        logger.warn(`[xiaohongshu] POI recommend failed: ${response.data.msg}`)
+        return []
+      }
+
+      return response.data.data.poi_list.map((item) => ({
+        id: item.poi_id || '',
+        name: item.poi_name || '',
+        address: item.full_address || item.city || '',
+        lat: item.latitude,
+        lng: item.longitude,
+        poi_id: item.poi_id,
+        extra: { city: item.city, poi_type: item.poi_type }
+      }))
+    } catch (err) {
+      logger.error('[xiaohongshu] getRecommendLocations error:', err)
+      return []
+    }
+  }
+
+  /**
+   * Search POI locations on Xiaohongshu.
+   * Uses the creator location search endpoint with keyword.
+   */
+  async searchLocation(client: HttpClient, keyword: string, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
       let cookie = client.getCookieString()
       const urlPath = '/web_api/sns/v1/local/poi/creator/search'
-      const bodyStr = JSON.stringify({
+      const body = {
         keyword,
         search_id: Date.now().toString(),
-        page: { page_size: 20, page: 1 }
-      })
+        page: { page_size: options?.count || 20, page: 1 },
+        latitude: options?.lat || 0,
+        longitude: options?.lng || 0
+      }
+      const bodyStr = JSON.stringify(body)
       const { headers: signHeaders, a1 } = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
 
       if (a1) {
@@ -760,11 +840,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         msg?: string
       }>(
         API.locationSearch,
-        {
-          keyword,
-          search_id: Date.now().toString(),
-          page: { page_size: 20, page: 1 }
-        },
+        body,
         {
           headers: {
             cookie,

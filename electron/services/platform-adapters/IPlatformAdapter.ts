@@ -29,6 +29,12 @@ export interface LocationResult {
   extra?: Record<string, unknown>
 }
 
+export interface LocationSearchOptions {
+  lat?: number
+  lng?: number
+  count?: number
+}
+
 export interface SubmitContentPayload {
   title: string
   description: string
@@ -50,6 +56,7 @@ export interface IPlatformAdapter {
   checkSessionAPI?(client: HttpClient): Promise<boolean>
   getPlatformFields?(): PlatformFieldDefinition[]
   getAccountInfoAPI?(client: HttpClient): Promise<{ displayName?: string; avatarUrl?: string } | null>
-  searchLocation?(client: HttpClient, keyword: string): Promise<LocationResult[]>
+  searchLocation?(client: HttpClient, keyword: string, options?: LocationSearchOptions): Promise<LocationResult[]>
+  getRecommendLocations?(client: HttpClient, options?: LocationSearchOptions): Promise<LocationResult[]>
   getCollections?(client: HttpClient): Promise<Array<{ label: string; value: string }>>
 }

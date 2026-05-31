@@ -20,7 +20,8 @@ const API = {
   uploadAuth: 'https://creator.douyin.com/web/api/media/upload/auth/v5/',
   awemeCreate: 'https://creator.douyin.com/web/api/media/aweme/create_v2/',
   collections: 'https://creator.douyin.com/aweme/v1/collection/list/',
-  poiSearch: 'https://creator.douyin.com/aweme/v1/poi/recommend/',
+  poiRecommend: 'https://creator.douyin.com/aweme/v1/poi/recommend/',
+  poiSearch: 'https://creator.douyin.com/aweme/v1/life/video_api/search/poi/',
   vodCommit: 'https://vod.bytedanceapi.com'
 }
 
@@ -927,21 +928,98 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
   }
 
   /**
-   * Search POI locations on Douyin.
+   * Get recommended POI locations on Douyin.
    * Uses the creator POI recommend endpoint.
    */
-  async searchLocation(client: HttpClient, keyword: string): Promise<import('../IPlatformAdapter').LocationResult[]> {
+  async getRecommendLocations(client: HttpClient, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
       const cookie = client.getCookieString()
       const csrfToken = await this.getCsrfToken(client)
 
       const params = new URLSearchParams({
-        keyword,
-        count: '20',
+        count: String(options?.count || 20),
         ...COMMON_PARAMS,
         aid: '1128',
         msToken: ''
       })
+
+      // 如果有经纬度，添加到参数中
+      if (options?.lat && options?.lng) {
+        params.set('latitude', String(options.lat))
+        params.set('longitude', String(options.lng))
+      }
+
+      const url = `${API.poiRecommend}?${params.toString()}`
+      const signedUrl = await this.signUrl(url, cookie)
+
+      const response = await client.get<{
+        status_code: number
+        poi_list?: Array<{
+          poi_id?: string
+          poi_name?: string
+          address?: string
+          latitude?: number
+          longitude?: number
+          city?: string
+          district?: string
+        }>
+      }>(
+        signedUrl,
+        undefined,
+        {
+          referer: 'https://creator.douyin.com/creator-micro/content/publish',
+          Origin: 'https://creator.douyin.com',
+          'x-secsdk-csrf-token': csrfToken
+        }
+      )
+
+      if (response.data.status_code !== 0 || !response.data.poi_list) {
+        logger.warn(`[douyin] POI recommend failed: status=${response.data.status_code}`)
+        return []
+      }
+
+      return response.data.poi_list.map((poi) => ({
+        id: poi.poi_id || '',
+        name: poi.poi_name || '',
+        address: poi.address || [poi.city, poi.district, poi.address].filter(Boolean).join(''),
+        lat: poi.latitude,
+        lng: poi.longitude,
+        poi_id: poi.poi_id,
+        extra: { city: poi.city, district: poi.district }
+      }))
+    } catch (err) {
+      logger.error('[douyin] getRecommendLocations error:', err)
+      return []
+    }
+  }
+
+  /**
+   * Search POI locations on Douyin.
+   * Uses the life video API search endpoint with keyword.
+   */
+  async searchLocation(client: HttpClient, keyword: string, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
+    try {
+      const cookie = client.getCookieString()
+      const csrfToken = await this.getCsrfToken(client)
+
+      const params = new URLSearchParams({
+        count: String(options?.count || 12),
+        from_webapp: '1',
+        get_current_loc: '1',
+        keywords: keyword,
+        search_type: 'poi',
+        poi_anchor_tab: '2',
+        page: '1',
+        ...COMMON_PARAMS,
+        aid: '1128',
+        msToken: ''
+      })
+
+      // 如果有经纬度，添加到参数中
+      if (options?.lat && options?.lng) {
+        params.set('latitude', String(options.lat))
+        params.set('longitude', String(options.lng))
+      }
 
       const url = `${API.poiSearch}?${params.toString()}`
       const signedUrl = await this.signUrl(url, cookie)

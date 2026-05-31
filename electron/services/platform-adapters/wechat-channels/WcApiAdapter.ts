@@ -1295,13 +1295,28 @@ export class WcApiAdapter extends BasePlatformAdapter {
   }
 
   /**
-   * Search POI locations on WeChat Channels.
-   * Uses the finder POI search endpoint.
+   * Get recommended POI locations on WeChat Channels.
+   * Uses the finder POI search endpoint without keyword.
    */
-  async searchLocation(client: HttpClient, keyword: string): Promise<import('../IPlatformAdapter').LocationResult[]> {
+  async getRecommendLocations(client: HttpClient, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
       const cookie = client.getCookieString()
       const finderId = this.extractFinderId(cookie) || this.cachedFinderUsername || ''
+
+      const body = {
+        query: '',
+        cookies: '',
+        longitude: options?.lng || 0,
+        latitude: options?.lat || 0,
+        timestamp: getTimestamp13(),
+        _log_finder_uin: '',
+        _log_finder_id: finderId,
+        rawKeyBuff: null,
+        pluginSessionId: null,
+        scene: 7,
+        reqScene: 7,
+        count: options?.count || 20
+      }
 
       const response = await client.post<{
         errCode?: number
@@ -1320,7 +1335,78 @@ export class WcApiAdapter extends BasePlatformAdapter {
         }
       }>(
         'https://channels.weixin.qq.com/micro/content/cgi-bin/mmfinderassistant-bin/helper/helper_search_location',
-        { keyword, finderId, count: 20 },
+        body,
+        {
+          referer: 'https://channels.weixin.qq.com/platform/post/create',
+          Origin: 'https://channels.weixin.qq.com',
+          'Content-Type': 'application/json'
+        },
+        { timeout: 15_000, responseType: 'json' }
+      )
+
+      const errCode = response.data?.errCode ?? -1
+      if (errCode !== 0 || !response.data?.data?.list) {
+        logger.warn(`[wechat-channels] Location recommend failed: errCode=${errCode}`)
+        return []
+      }
+
+      return response.data.data.list.map((poi) => ({
+        id: poi.uid || '',
+        name: poi.name || '',
+        address: poi.fullAddress || poi.address || poi.city || '',
+        lat: poi.latitude,
+        lng: poi.longitude,
+        poi_id: poi.uid,
+        extra: { city: poi.city, region: poi.region, checkSum: poi.poiCheckSum }
+      }))
+    } catch (err) {
+      logger.error('[wechat-channels] getRecommendLocations error:', err)
+      return []
+    }
+  }
+
+  /**
+   * Search POI locations on WeChat Channels.
+   * Uses the finder POI search endpoint with keyword.
+   */
+  async searchLocation(client: HttpClient, keyword: string, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
+    try {
+      const cookie = client.getCookieString()
+      const finderId = this.extractFinderId(cookie) || this.cachedFinderUsername || ''
+
+      const body = {
+        query: keyword,
+        cookies: '',
+        longitude: options?.lng || 0,
+        latitude: options?.lat || 0,
+        timestamp: getTimestamp13(),
+        _log_finder_uin: '',
+        _log_finder_id: finderId,
+        rawKeyBuff: null,
+        pluginSessionId: null,
+        scene: 7,
+        reqScene: 7,
+        count: options?.count || 20
+      }
+
+      const response = await client.post<{
+        errCode?: number
+        data?: {
+          list?: Array<{
+            uid?: string
+            name?: string
+            address?: string
+            longitude?: number
+            latitude?: number
+            city?: string
+            region?: string
+            fullAddress?: string
+            poiCheckSum?: string
+          }>
+        }
+      }>(
+        'https://channels.weixin.qq.com/micro/content/cgi-bin/mmfinderassistant-bin/helper/helper_search_location',
+        body,
         {
           referer: 'https://channels.weixin.qq.com/platform/post/create',
           Origin: 'https://channels.weixin.qq.com',
