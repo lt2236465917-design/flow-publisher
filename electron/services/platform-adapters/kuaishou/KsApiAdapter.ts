@@ -871,13 +871,26 @@ export class KsApiAdapter extends BasePlatformAdapter {
       const apiPh = apiPhMatch ? apiPhMatch[1] : ''
 
       // 使用和 yixiaoer 相同的 API - poi/nearby 获取附近位置
-      const url = `https://cp.kuaishou.com/rest/zt/location/wi/poi/nearby?kpn=kuaishou_cp&subBiz=CP%2FCREATOR_PLATFORM&kpf=PC_WEB&kuaishou.web.cp.api_ph=${apiPh}`
-
+      const searchPath = '/rest/zt/location/wi/poi/nearby'
       const body = JSON.stringify({
         location: `${options?.lat || 39.911},${options?.lng || 116.395}`,
         count: options?.count || 20,
         "kuaishou.web.cp.api_ph": apiPh
       })
+
+      // 获取签名
+      const signService = getSignService()
+      const sig = await signService.getSignature(
+        'kuaishou',
+        cookie,
+        JSON.stringify({ url: searchPath, body }),
+        body
+      )
+
+      let url = `https://cp.kuaishou.com${searchPath}?kpn=kuaishou_cp&subBiz=CP%2FCREATOR_PLATFORM&kpf=PC_WEB&kuaishou.web.cp.api_ph=${apiPh}`
+      if (sig) {
+        url += `&__NS_sig3=${sig}`
+      }
 
       logger.info(`[kuaishou] POI nearby request:`, { url, body })
 
