@@ -69,34 +69,6 @@ export class KsApiAdapter extends BasePlatformAdapter {
         placeholder: '请选择所在地区'
       },
       {
-        name: 'category',
-        type: 'select',
-        label: '作品分类',
-        placeholder: '选择作品内容分类（可选）',
-        options: [
-          { label: '生活', value: '生活' },
-          { label: '美食', value: '美食' },
-          { label: '娱乐', value: '娱乐' },
-          { label: '情感', value: '情感' },
-          { label: '搞笑', value: '搞笑' },
-          { label: '游戏', value: '游戏' },
-          { label: '知识', value: '知识' },
-          { label: '三农', value: '三农' },
-          { label: '艺术', value: '艺术' },
-          { label: '体育', value: '体育' },
-          { label: '汽车', value: '汽车' },
-          { label: '时尚', value: '时尚' },
-          { label: '旅行', value: '旅行' },
-          { label: '音乐', value: '音乐' },
-          { label: '舞蹈', value: '舞蹈' },
-          { label: '影视', value: '影视' },
-          { label: '动画', value: '动画' },
-          { label: '科技', value: '科技' },
-          { label: '教育', value: '教育' },
-          { label: '健康', value: '健康' }
-        ]
-      },
-      {
         name: 'authorDeclaration',
         type: 'select',
         label: '作者声明',
@@ -130,24 +102,6 @@ export class KsApiAdapter extends BasePlatformAdapter {
         ],
         maxSelections: 1,
         defaultValue: ['public']
-      },
-      {
-        name: 'isOriginal',
-        type: 'checkbox',
-        label: '声明原创',
-        defaultValue: true
-      },
-      {
-        name: 'publishTime',
-        type: 'text',
-        label: '定时发布',
-        placeholder: '留空立即发布，格式: yyyy-MM-dd HH:mm'
-      },
-      {
-        name: 'collectionId',
-        type: 'text',
-        label: '合集ID',
-        placeholder: '输入合集ID（可选）'
       }
     ]
   }
@@ -740,34 +694,6 @@ export class KsApiAdapter extends BasePlatformAdapter {
     const downloadType = interactionSettings.includes('allowDownload') ? 2 : 0
     const disableNearbyShow = interactionSettings.includes('showInLocal') ? 0 : 1
 
-    // Original declaration — photoStatus: 1=原创, 2=转载
-    const isOriginal = payload.platformFields?.isOriginal !== false
-    const photoStatus = isOriginal ? 1 : 2
-
-    // Scheduled publishing — publishTime: 0=立即发布, otherwise unix timestamp (ms)
-    let publishTime = 0
-    if (payload.platformFields?.publishTime) {
-      const timeStr = String(payload.platformFields.publishTime)
-      if (timeStr) {
-        const parsed = new Date(timeStr)
-        if (!isNaN(parsed.getTime()) && parsed.getTime() > Date.now()) {
-          publishTime = parsed.getTime()
-          logger.info(`[kuaishou] Scheduled publish: ${parsed.toISOString()}`)
-        }
-      }
-    }
-
-    // Category (domain / secondDomain)
-    const domain = payload.platformFields?.category
-      ? String(payload.platformFields.category)
-      : ''
-    const secondDomain = ''
-
-    // Collection ID
-    const collectionId = payload.platformFields?.collectionId
-      ? String(payload.platformFields.collectionId)
-      : ''
-
     // Author declaration — supplementary text
     const authorDeclaration = payload.platformFields?.authorDeclaration
       ? String(payload.platformFields.authorDeclaration)
@@ -829,24 +755,21 @@ export class KsApiAdapter extends BasePlatformAdapter {
       coverKey: uploadResult?.coverKey || '',
       coverTimeStamp: 0,
       caption: caption.trim(),
-      photoStatus,
-      coverType: uploadResult?.coverKey ? 3 : 1,
-      coverCropped: false,
+      photoStatus: 1,
+      coverType: 1,
       coverTitle: '',
       photoType: 0,
       privacyType,
       width: videoWidth,
       height: videoHeight,
-      collectionId,
-      publishTime,
+      collectionId: '',
+      publishTime: 0,
       longitude,
       latitude,
       poiId,
       notifyResult: 0,
-      domain,
-      secondDomain,
-      movieId: '',
-      associateTasks: [],
+      domain: '',
+      secondDomain: '',
       coverUrl: '',
       'kuaishou.web.cp.api_ph': apiPh,
       mediaId: uploadResult?.mediaId || '',
