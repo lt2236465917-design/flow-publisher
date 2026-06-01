@@ -222,7 +222,7 @@ export default function LocationSearch({ value, onChange, platformId, accountId,
             <List.Item
               onClick={() => handleSelect(item)}
               style={{
-                padding: '8px 12px',
+                padding: '10px 12px',
                 cursor: 'pointer',
                 borderBottom: '1px solid rgba(0, 0, 0, 0.04)',
               }}
@@ -234,12 +234,12 @@ export default function LocationSearch({ value, onChange, platformId, accountId,
               }}
             >
               <div style={{ width: '100%' }}>
-                <div style={{ fontSize: 13, fontWeight: 500, color: '#1d1d1f' }}>
+                <div style={{ fontSize: 14, fontWeight: 500, color: '#1d1d1f' }}>
                   <EnvironmentOutlined style={{ marginRight: 6, color: '#0071e3' }} />
                   {item.name}
                 </div>
                 {item.address && (
-                  <div style={{ fontSize: 11, color: '#86868b', marginTop: 2, marginLeft: 18 }}>
+                  <div style={{ fontSize: 12, color: '#86868b', marginTop: 3, marginLeft: 20 }}>
                     {item.address}
                   </div>
                 )}
@@ -277,7 +277,7 @@ export default function LocationSearch({ value, onChange, platformId, accountId,
                 <List.Item
                   onClick={() => handleSelect(item)}
                   style={{
-                    padding: '8px 12px',
+                    padding: '10px 12px',
                     cursor: 'pointer',
                     borderBottom: '1px solid rgba(0, 0, 0, 0.04)',
                   }}
@@ -289,12 +289,12 @@ export default function LocationSearch({ value, onChange, platformId, accountId,
                   }}
                 >
                   <div style={{ width: '100%' }}>
-                    <div style={{ fontSize: 13, fontWeight: 500, color: '#1d1d1f' }}>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: '#1d1d1f' }}>
                       <EnvironmentOutlined style={{ marginRight: 6, color: '#0071e3' }} />
                       {item.name}
                     </div>
                     {item.address && (
-                      <div style={{ fontSize: 11, color: '#86868b', marginTop: 2, marginLeft: 18 }}>
+                      <div style={{ fontSize: 12, color: '#86868b', marginTop: 3, marginLeft: 20 }}>
                         {item.address}
                       </div>
                     )}
@@ -375,11 +375,11 @@ export default function LocationSearch({ value, onChange, platformId, accountId,
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
               <EnvironmentOutlined style={{ color: '#0071e3', flexShrink: 0 }} />
               <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 500, color: '#1d1d1f', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ fontSize: 14, fontWeight: 500, color: '#1d1d1f', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {value.name}
                 </div>
                 {value.address && (
-                  <div style={{ fontSize: 11, color: '#86868b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  <div style={{ fontSize: 12, color: '#86868b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {value.address}
                   </div>
                 )}
@@ -395,7 +395,7 @@ export default function LocationSearch({ value, onChange, platformId, accountId,
         ) : (
           <>
             <EnvironmentOutlined style={{ color: '#86868b', marginRight: 6 }} />
-            <span style={{ color: '#bfbfbf', fontSize: 13 }}>{placeholder}</span>
+            <span style={{ color: '#bfbfbf', fontSize: 14 }}>{placeholder}</span>
           </>
         )}
       </div>

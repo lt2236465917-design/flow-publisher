@@ -978,6 +978,20 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
             district?: string
           }
         }>
+        current_locs?: Array<{
+          poi_id?: string
+          poi_name?: string
+          address?: string
+          latitude?: number
+          longitude?: number
+          city?: string
+          district?: string
+          address_info?: {
+            city?: string
+            city_code?: string
+            district?: string
+          }
+        }>
       }>(
         signedUrl,
         undefined,
@@ -988,14 +1002,19 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         }
       )
 
-      logger.info(`[douyin] POI recommend response status: ${response.data.status_code}, poi_list count: ${response.data.poi_list?.length || 0}`)
+      // yixiaoer: concatenate current_locs before poi_list
+      const currentLocs = response.data.current_locs || []
+      const poiList = response.data.poi_list || []
+      const allPois = [...currentLocs, ...poiList]
 
-      if (response.data.status_code !== 0 || !response.data.poi_list) {
+      logger.info(`[douyin] POI recommend response status: ${response.data.status_code}, current_locs: ${currentLocs.length}, poi_list: ${poiList.length}`)
+
+      if (response.data.status_code !== 0) {
         logger.warn(`[douyin] POI recommend failed: status=${response.data.status_code}`)
         return []
       }
 
-      return response.data.poi_list.map((poi) => ({
+      const results: import('../IPlatformAdapter').LocationResult[] = allPois.map((poi) => ({
         id: poi.poi_id || '',
         name: poi.poi_name || '',
         address: poi.address || [poi.address_info?.city, poi.address_info?.district, poi.address].filter(Boolean).join(''),
@@ -1004,6 +1023,21 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         poi_id: poi.poi_id,
         extra: { city: poi.address_info?.city, district: poi.address_info?.district, city_code: poi.address_info?.city_code }
       }))
+
+      // Add city-level option as first result if not already present
+      if (options?.city && !results.some(r => r.name === options.city || r.name === options.city + '市')) {
+        results.unshift({
+          id: `city_${options.city}`,
+          name: options.city,
+          address: options.city,
+          lat: options.lat,
+          lng: options.lng,
+          poi_id: `city_${options.city}`,
+          extra: { city: options.city, isCityLevel: true }
+        })
+      }
+
+      return results
     } catch (err) {
       logger.error('[douyin] getRecommendLocations error:', err)
       return []
@@ -1047,10 +1081,16 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           poi_id?: string
           poi_name?: string
           address?: string
+          simple_address_str?: string
           latitude?: number
           longitude?: number
           city?: string
           district?: string
+          address_info?: {
+            city?: string
+            city_code?: string
+            district?: string
+          }
         }>
       }>(
         signedUrl,
@@ -1070,11 +1110,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       return response.data.poi_list.map((poi) => ({
         id: poi.poi_id || '',
         name: poi.poi_name || '',
-        address: poi.address || [poi.city, poi.district, poi.address].filter(Boolean).join(''),
+        address: poi.simple_address_str || poi.address || [poi.address_info?.city, poi.address_info?.district, poi.address].filter(Boolean).join(''),
         lat: poi.latitude,
         lng: poi.longitude,
         poi_id: poi.poi_id,
-        extra: { city: poi.city, district: poi.district }
+        extra: { city: poi.address_info?.city || poi.city, district: poi.address_info?.district || poi.district }
       }))
     } catch (err) {
       logger.error('[douyin] searchLocation error:', err)

@@ -1295,48 +1295,186 @@ export class WcApiAdapter extends BasePlatformAdapter {
   }
 
   /**
+   * Filter cookie string to only include WeChat-relevant cookies.
+   * The CookieStore may contain cookies from all platforms; WeChat API
+   * rejects requests with foreign cookies.
+   * Also deduplicates by cookie name (keeps the last value for each name).
+   */
+  private filterWechatCookies(cookie: string): string {
+    const wechatCookieNames = ['sessionid', 'wxuin', 'finder_id', 'pass_ticket', 'skey',
+      'slave_sid', 'sessionid_ss', 'uin', 'websid']
+    // Use a Map to deduplicate — last value wins
+    const cookieMap = new Map<string, string>()
+    for (const part of cookie.split(';')) {
+      const trimmed = part.trim()
+      if (!trimmed) continue
+      const eqIdx = trimmed.indexOf('=')
+      if (eqIdx < 0) continue
+      const name = trimmed.substring(0, eqIdx).trim()
+      const value = trimmed.substring(eqIdx + 1).trim()
+      if (wechatCookieNames.includes(name)) {
+        cookieMap.set(name, value)
+      }
+    }
+    return Array.from(cookieMap.entries())
+      .map(([k, v]) => `${k}=${v}`)
+      .join('; ')
+  }
+
+  /**
    * Get recommended POI locations on WeChat Channels.
    * Uses the finder POI search endpoint without keyword.
-   * First ensures we have a valid finderId by calling checkSessionAPI if needed.
+   * Matching yixiaoer's getLocationListResponse$3 + getShipinhaoLocation.
    */
   async getRecommendLocations(client: HttpClient, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
-      const cookie = client.getCookieString()
-      let finderId = this.extractFinderId(cookie) || this.cachedFinderUsername || ''
-
-      // 如果没有 finderId，先调用 checkSessionAPI 获取
-      if (!finderId) {
-        logger.info(`[wechat-channels] No finderId found, calling checkSessionAPI to get it`)
-        await this.checkSessionAPI(client)
-        finderId = this.cachedFinderUsername || ''
-      }
+      const rawCookie = client.getCookieString()
+      // Filter to only WeChat cookies — the API rejects requests with foreign cookies
+      const cookie = this.filterWechatCookies(rawCookie)
+      const finderId = this.extractFinderId(rawCookie) || this.cachedFinderUsername || ''
 
       logger.info(`[wechat-channels] getRecommendLocations called with finderId: ${finderId}, options:`, options)
+      logger.info(`[wechat-channels] Filtered cookies: "${cookie}"`)
 
-      if (!finderId) {
-        logger.warn(`[wechat-channels] Still no finderId after checkSessionAPI, cannot search locations`)
-        return []
-      }
-
+      // Try the location API directly — don't call checkSessionAPI first
+      // (checkSessionAPI uses auth_data which may return 300330 even when location API works)
       const body = {
         query: '',
         cookies: '',
-        longitude: options?.lng || 0,
-        latitude: options?.lat || 0,
+        longitude: 0,
+        latitude: 0,
         timestamp: getTimestamp13(),
         _log_finder_uin: '',
         _log_finder_id: finderId,
         rawKeyBuff: null,
         pluginSessionId: null,
         scene: 7,
-        reqScene: 7,
-        count: options?.count || 20
+        reqScene: 7
       }
 
-      logger.info(`[wechat-channels] POI search request body:`, body)
+      logger.info(`[wechat-channels] POI recommend request body:`, body)
 
-      const response = await client.post<{
+      // Use postMinimal to avoid extra browser-like headers (Accept-Encoding, sec-ch-ua, etc.)
+      // yixiaoer only sends cookie + referer for this endpoint
+      const response = await client.postMinimal<{
         errCode?: number
+        errMsg?: string
+        data?: {
+          address?: {
+            city?: string
+            province?: string
+            poiCheckSum?: string
+          }
+          list?: Array<{
+            uid?: string
+            name?: string
+            address?: string
+            longitude?: number
+            latitude?: number
+            city?: string
+            region?: string
+            fullAddress?: string
+            poiCheckSum?: string
+          }>
+        }
+      }>(
+        'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/helper/helper_search_location',
+        body,
+        {
+          referer: 'https://channels.weixin.qq.com',
+          'Content-Type': 'application/json',
+          Cookie: cookie
+        },
+        { timeout: 15_000, responseType: 'json' }
+      )
+
+      const errCode = response.data?.errCode ?? -1
+      logger.info(`[wechat-channels] POI recommend response: errCode=${errCode}, msg=${response.data?.errMsg}, listCount=${response.data?.data?.list?.length || 0}`)
+
+      if (errCode !== 0) {
+        if (errCode === 300330 || errCode === 300333) {
+          logger.warn(`[wechat-channels] Session invalid (errCode=${errCode}), please re-login`)
+        }
+        logger.warn(`[wechat-channels] Location recommend failed: errCode=${errCode}, msg=${response.data?.errMsg}`)
+        return []
+      }
+
+      const results: import('../IPlatformAdapter').LocationResult[] = []
+
+      // yixiaoer also adds the default address as a location option (when no query)
+      const addressData = response.data?.data?.address
+      if (addressData?.poiCheckSum) {
+        results.push({
+          id: addressData.poiCheckSum,
+          name: addressData.city || '',
+          address: (addressData.province || '') + (addressData.city || ''),
+          lat: undefined,
+          lng: undefined,
+          poi_id: addressData.poiCheckSum,
+          extra: { city: addressData.city, region: addressData.province, checkSum: addressData.poiCheckSum }
+        })
+      } else if (options?.city) {
+        // Fallback: add city-level option from IP location
+        results.push({
+          id: `city_${options.city}`,
+          name: options.city,
+          address: options.city,
+          lat: options.lat,
+          lng: options.lng,
+          poi_id: `city_${options.city}`,
+          extra: { city: options.city, isCityLevel: true }
+        })
+      }
+
+      // Add all list items
+      const list = response.data?.data?.list || []
+      for (const poi of list) {
+        results.push({
+          id: poi.uid || '',
+          name: poi.name || '',
+          address: poi.fullAddress || poi.address || poi.city || '',
+          lat: poi.latitude,
+          lng: poi.longitude,
+          poi_id: poi.uid,
+          extra: { city: poi.city, region: poi.region, checkSum: poi.poiCheckSum }
+        })
+      }
+
+      return results
+    } catch (err) {
+      logger.error('[wechat-channels] getRecommendLocations error:', err)
+      return []
+    }
+  }
+
+  /**
+   * Search POI locations on WeChat Channels.
+   * Uses the same endpoint as recommend (matching yixiaoer's getLocationListResponse$3).
+   */
+  async searchLocation(client: HttpClient, keyword: string, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
+    try {
+      const rawCookie = client.getCookieString()
+      const cookie = this.filterWechatCookies(rawCookie)
+      const finderId = this.extractFinderId(rawCookie) || this.cachedFinderUsername || ''
+
+      // Use the same endpoint and body format as recommend (matching yixiaoer)
+      const body = {
+        query: keyword,
+        cookies: '',
+        longitude: 0,
+        latitude: 0,
+        timestamp: getTimestamp13(),
+        _log_finder_uin: '',
+        _log_finder_id: finderId,
+        rawKeyBuff: null,
+        pluginSessionId: null,
+        scene: 7,
+        reqScene: 7
+      }
+
+      const response = await client.postMinimal<{
+        errCode?: number
+        errMsg?: string
         data?: {
           list?: Array<{
             uid?: string
@@ -1354,9 +1492,9 @@ export class WcApiAdapter extends BasePlatformAdapter {
         'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/helper/helper_search_location',
         body,
         {
-          referer: 'https://channels.weixin.qq.com/platform/post/create',
-          Origin: 'https://channels.weixin.qq.com',
-          'Content-Type': 'application/json'
+          referer: 'https://channels.weixin.qq.com',
+          'Content-Type': 'application/json',
+          Cookie: cookie
         },
         { timeout: 15_000, responseType: 'json' }
       )
@@ -1365,78 +1503,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
       logger.info(`[wechat-channels] POI search response: errCode=${errCode}, listCount=${response.data?.data?.list?.length || 0}`)
 
       if (errCode !== 0 || !response.data?.data?.list) {
-        logger.warn(`[wechat-channels] Location recommend failed: errCode=${errCode}`)
-        return []
-      }
-
-      return response.data.data.list.map((poi) => ({
-        id: poi.uid || '',
-        name: poi.name || '',
-        address: poi.fullAddress || poi.address || poi.city || '',
-        lat: poi.latitude,
-        lng: poi.longitude,
-        poi_id: poi.uid,
-        extra: { city: poi.city, region: poi.region, checkSum: poi.poiCheckSum }
-      }))
-    } catch (err) {
-      logger.error('[wechat-channels] getRecommendLocations error:', err)
-      return []
-    }
-  }
-
-  /**
-   * Search POI locations on WeChat Channels.
-   * Uses the finder POI search endpoint with keyword.
-   */
-  async searchLocation(client: HttpClient, keyword: string, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
-    try {
-      const cookie = client.getCookieString()
-      const finderId = this.extractFinderId(cookie) || this.cachedFinderUsername || ''
-
-      const body = {
-        query: keyword,
-        cookies: '',
-        longitude: options?.lng || 0,
-        latitude: options?.lat || 0,
-        timestamp: getTimestamp13(),
-        _log_finder_uin: '',
-        _log_finder_id: finderId,
-        rawKeyBuff: null,
-        pluginSessionId: null,
-        scene: 7,
-        reqScene: 7,
-        count: options?.count || 20
-      }
-
-      const response = await client.post<{
-        errCode?: number
-        data?: {
-          list?: Array<{
-            uid?: string
-            name?: string
-            address?: string
-            longitude?: number
-            latitude?: number
-            city?: string
-            region?: string
-            fullAddress?: string
-            poiCheckSum?: string
-          }>
-        }
-      }>(
-        'https://channels.weixin.qq.com/micro/content/cgi-bin/mmfinderassistant-bin/helper/helper_search_location',
-        body,
-        {
-          referer: 'https://channels.weixin.qq.com/platform/post/create',
-          Origin: 'https://channels.weixin.qq.com',
-          'Content-Type': 'application/json'
-        },
-        { timeout: 15_000, responseType: 'json' }
-      )
-
-      const errCode = response.data?.errCode ?? -1
-      if (errCode !== 0 || !response.data?.data?.list) {
-        logger.warn(`[wechat-channels] Location search failed: errCode=${errCode}`)
+        logger.warn(`[wechat-channels] Location search failed: errCode=${errCode}, msg=${response.data?.errMsg}`)
         return []
       }
 

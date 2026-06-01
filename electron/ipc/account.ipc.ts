@@ -103,7 +103,7 @@ export function registerAccountIpcHandlers(): void {
             douyin: ['.douyin.com', 'creator.douyin.com'],
             xiaohongshu: ['.xiaohongshu.com', 'edith.xiaohongshu.com', 'creator.xiaohongshu.com'],
             kuaishou: ['.kuaishou.com', 'cp.kuaishou.com'],
-            'wechat-channels': ['.qq.com', 'weixin.qq.com', 'channels.weixin.qq.com']
+            'wechat-channels': ['.qq.com', 'weixin.qq.com', 'channels.weixin.qq.com', '.weixin.qq.com', 'finderassistancea.video.qq.com']
           }
           const domains = platformDomains[platformId] || []
           const filteredCookies = cookies.filter(c => {

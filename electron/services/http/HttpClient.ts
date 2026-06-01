@@ -22,6 +22,8 @@ export interface HttpRequestOptions {
   responseType?: 'json' | 'arraybuffer' | 'blob' | 'text'
   onUploadProgress?: (progress: { loaded: number; total: number; percent: number }) => void
   noCookie?: boolean
+  /** When true, only send explicitly provided headers + Cookie (no browser-like defaults) */
+  minimalHeaders?: boolean
 }
 
 export interface ApiResponse<T = unknown> {
@@ -67,6 +69,9 @@ export class HttpClient {
   }
 
   async request<T = unknown>(options: HttpRequestOptions): Promise<ApiResponse<T>> {
+    const baseHeaders = options.minimalHeaders
+      ? { Accept: 'application/json, text/plain, */*' }
+      : BROWSER_HEADERS
     const config: AxiosRequestConfig = {
       method: options.method,
       url: options.url,
@@ -75,7 +80,7 @@ export class HttpClient {
       adapter: 'http',
       httpsAgent: HTTPS_AGENT,
       headers: {
-        ...BROWSER_HEADERS,
+        ...baseHeaders,
         ...(options.noCookie ? {} : { Cookie: this.context.cookies }),
         ...options.headers
       },
@@ -255,6 +260,19 @@ export class HttpClient {
     options?: Partial<HttpRequestOptions>
   ): Promise<ApiResponse<T>> {
     return this.request<T>({ method: 'POST', url, data, headers, ...options })
+  }
+
+  /**
+   * POST with minimal headers (no browser-like defaults).
+   * Use for APIs that are sensitive to extra headers (e.g., WeChat Channels location API).
+   */
+  async postMinimal<T = unknown>(
+    url: string,
+    data?: unknown,
+    headers?: Record<string, string>,
+    options?: Partial<HttpRequestOptions>
+  ): Promise<ApiResponse<T>> {
+    return this.request<T>({ method: 'POST', url, data, headers, minimalHeaders: true, ...options })
   }
 
   async uploadFile<T = unknown>(

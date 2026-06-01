@@ -261,6 +261,13 @@ export function registerPublishIpcHandlers(): void {
 
       logger.info(`[publish] Fetching recommend locations for ${params.platformId}`)
 
+      // Get IP location to provide city name for city-level results
+      let cityName = ''
+      try {
+        const ipLoc = await ipLocationService.getLocation()
+        cityName = ipLoc.city || ''
+      } catch { /* ignore */ }
+
       const context: CookieContext = {
         cookies: cookieStr,
         platform: params.platformId,
@@ -270,7 +277,8 @@ export function registerPublishIpcHandlers(): void {
       const results = await adapter.getRecommendLocations(client, {
         lat: params.lat,
         lng: params.lng,
-        count: 20
+        count: 20,
+        city: cityName
       })
 
       logger.info(`[publish] Got ${results.length} recommend locations for ${params.platformId}`)

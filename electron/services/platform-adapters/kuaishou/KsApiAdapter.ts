@@ -857,8 +857,12 @@ export class KsApiAdapter extends BasePlatformAdapter {
 
   /**
    * Get recommended POI locations on Kuaishou.
-   * Uses the location/wi/poi/search endpoint with cityName.
-   * Reference: yixiaoer implementation
+   * Matching yixiaoer's getLocationResponse$1 flow:
+   * 1. If GPS coordinates → use poi/nearby to get cityName + locations
+   * 2. Otherwise → use ip2poi to get cityName
+   * 3. Call poi/search with the cityName
+   *
+   * IMPORTANT: poi/nearby and poi/search do NOT use __NS_sig3 signature!
    */
   async getRecommendLocations(client: HttpClient, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
@@ -870,110 +874,147 @@ export class KsApiAdapter extends BasePlatformAdapter {
       const apiPhMatch = cookie.match(/kuaishou\.web\.cp\.api_ph=([a-z0-9]+)/)
       const apiPh = apiPhMatch ? apiPhMatch[1] : ''
 
-      // 先获取当前城市
       let cityName = ''
-      try {
-        const cityUrl = 'https://cp.kuaishou.com/rest/cp/works/v2/common/pc/ip2poi'
-        const cityBody = JSON.stringify({ "kuaishou.web.cp.api_ph": apiPh })
-        const cityResponse = await client.post<any>(
-          cityUrl,
-          cityBody,
-          {
-            referer: REFERER,
-            Origin: ORIGIN,
-            'Content-Type': 'application/json',
-            responseType: 'text'
-          }
-        )
-        logger.info(`[kuaishou] ip2poi raw response:`, cityResponse.data?.substring?.(0, 500) || cityResponse.data)
-        // 尝试解析 JSON
+
+      // Step 1: Get cityName via poi/nearby (matching yixiaoer's getLocationNearByResponse)
+      // NOTE: No __NS_sig3 for location endpoints!
+      if (options?.lat && options?.lng) {
         try {
-          const parsed = typeof cityResponse.data === 'string' ? JSON.parse(cityResponse.data) : cityResponse.data
-          if (parsed?.result === 1) {
-            cityName = parsed?.data?.city || ''
-            logger.info(`[kuaishou] Current city: ${cityName}`)
+          const nearbyUrl = `https://cp.kuaishou.com/rest/zt/location/wi/poi/nearby?kpn=kuaishou_cp&subBiz=CP%2FCREATOR_PLATFORM&kpf=PC_WEB&kuaishou.web.cp.api_ph=${apiPh}`
+          const nearbyBody = JSON.stringify({
+            location: `${options.lat},${options.lng}`,
+            count: options?.count || 20,
+            "kuaishou.web.cp.api_ph": apiPh
+          })
+
+          logger.info(`[kuaishou] POI nearby request:`, { url: nearbyUrl, body: nearbyBody })
+
+          const nearbyResponse = await client.post<any>(nearbyUrl, nearbyBody, {
+            referer: REFERER, 'Content-Type': 'application/json'
+          })
+
+          // Response: { result, data: { cityName, locations: [...] } }
+          logger.info(`[kuaishou] POI nearby response: result=${nearbyResponse.data?.result}, cityName=${nearbyResponse.data?.data?.cityName}, locations=${nearbyResponse.data?.data?.locations?.length || 0}`)
+
+          if (nearbyResponse.data?.result === 1 && nearbyResponse.data?.data) {
+            cityName = nearbyResponse.data.data.cityName || ''
+            const nearbyLocations = nearbyResponse.data.data.locations || []
+            if (nearbyLocations.length > 0) {
+              logger.info(`[kuaishou] Got ${nearbyLocations.length} locations from nearby, cityName="${cityName}"`)
+              return nearbyLocations.map((poi: any) => ({
+                id: poi.id?.toString() || '',
+                name: poi.title || '',
+                address: poi.address || '',
+                lat: poi.latitude,
+                lng: poi.longitude,
+                poi_id: poi.id?.toString(),
+                extra: { city: poi.city }
+              }))
+            }
           }
-        } catch (parseErr) {
-          logger.warn('[kuaishou] Failed to parse ip2poi response:', parseErr)
+        } catch (e) {
+          logger.warn('[kuaishou] POI nearby failed, falling back to ip2poi:', e)
         }
-      } catch (e) {
-        logger.warn('[kuaishou] Failed to get current city:', e)
       }
 
-      // 如果获取城市失败，使用默认城市
+      // Fallback: use ip2poi to get city (matching yixiaoer's getCurrentCity)
       if (!cityName) {
-        cityName = '北京'
+        try {
+          const cityUrl = 'https://cp.kuaishou.com/rest/cp/works/v2/common/pc/ip2poi'
+          const cityBody = JSON.stringify({ "kuaishou.web.cp.api_ph": apiPh })
+          const cityResponse = await client.post<any>(cityUrl, cityBody, {
+            referer: REFERER, 'Content-Type': 'application/json'
+          }, { responseType: 'text' })
+          logger.info(`[kuaishou] ip2poi raw response (first 500):`, typeof cityResponse.data === 'string' ? cityResponse.data.substring(0, 500) : JSON.stringify(cityResponse.data).substring(0, 500))
+
+          try {
+            const parsed = typeof cityResponse.data === 'string' ? JSON.parse(cityResponse.data) : cityResponse.data
+            if (parsed?.result === 1) {
+              // yixiaoer accesses: response.data.city.data.city (nested) or response.data.city (direct)
+              const nestedCity = parsed?.data?.city?.data?.city
+              if (nestedCity && typeof nestedCity === 'string') {
+                cityName = nestedCity
+              } else {
+                cityName = parsed?.data?.city || ''
+              }
+              logger.info(`[kuaishou] Current city from ip2poi: "${cityName}"`)
+            }
+          } catch (parseErr) {
+            logger.warn('[kuaishou] Failed to parse ip2poi response:', parseErr)
+          }
+        } catch (e) {
+          logger.warn('[kuaishou] Failed to get current city:', e)
+        }
+      }
+
+      // yixiaoer: append "市" unless city already contains "自治"
+      if (cityName) {
+        if (!cityName.includes('自治')) {
+          cityName = cityName + '市'
+        }
+        logger.info(`[kuaishou] City name after processing: "${cityName}"`)
+      } else {
+        cityName = '北京市'
         logger.info(`[kuaishou] Using default city: ${cityName}`)
       }
 
-      // 使用和 yixiaoer 相同的 API - poi/search
-      const searchPath = '/rest/zt/location/wi/poi/search'
+      // Step 2: Call poi/search with cityName (matching yixiaoer)
+      // NOTE: No __NS_sig3 for location endpoints!
+      const searchUrl = `https://cp.kuaishou.com/rest/zt/location/wi/poi/search?kpn=kuaishou_cp&subBiz=CP%2FCREATOR_PLATFORM&kpf=PC_WEB&kuaishou.web.cp.api_ph=${apiPh}`
       const body = JSON.stringify({
-        cityName: cityName || '北京市',
+        cityName: cityName,
         count: options?.count || 20,
-        keyword: cityName || '北京市',
+        keyword: cityName,
         pcursor: '',
         "kuaishou.web.cp.api_ph": apiPh
       })
 
-      // 获取签名
-      const signService = getSignService()
-      const sig = await signService.getSignature(
-        'kuaishou',
-        cookie,
-        JSON.stringify({ url: searchPath, body }),
-        body
-      )
+      logger.info(`[kuaishou] POI search request:`, { url: searchUrl, body })
 
-      let url = `https://cp.kuaishou.com${searchPath}?kpn=kuaishou_cp&subBiz=CP%2FCREATOR_PLATFORM&kpf=PC_WEB&kuaishou.web.cp.api_ph=${apiPh}`
-      if (sig) {
-        url += `&__NS_sig3=${sig}`
-      }
-
-      logger.info(`[kuaishou] POI search request:`, { url, body })
-
-      const response = await client.post<{
-        result: number
-        data?: {
-          poiList?: Array<{
-            poiId?: string
-            poiName?: string
-            address?: string
-            latitude?: number
-            longitude?: number
-            city?: string
-          }>
-        }
-      }>(
-        url,
+      const response = await client.post<any>(
+        searchUrl,
         body,
         {
           referer: REFERER,
-          Origin: ORIGIN,
           'Content-Type': 'application/json'
         }
       )
 
-      logger.info(`[kuaishou] POI search response:`, {
-        result: response.data?.result,
-        hasData: !!response.data?.data,
-        poiCount: response.data?.data?.poiList?.length || 0
-      })
+      // yixiaoer: response.locations is the field name (not data.locations or data.poiList)
+      const locations = response.data?.data?.locations || response.data?.locations || []
 
-      if (response.data?.result !== 1 || !response.data.data?.poiList) {
+      logger.info(`[kuaishou] POI search response: result=${response.data?.result}, locations=${locations.length}`)
+
+      if (response.data?.result !== 1 || !locations.length) {
         logger.warn(`[kuaishou] POI search failed: result=${response.data?.result}`)
         return []
       }
 
-      return response.data.data.poiList.map((poi) => ({
-        id: poi.poiId || '',
-        name: poi.poiName || '',
+      const results: import('../IPlatformAdapter').LocationResult[] = locations.map((poi: any) => ({
+        id: poi.id?.toString() || poi.poiId || '',
+        name: poi.title || poi.poiName || '',
         address: poi.address || poi.city || '',
         lat: poi.latitude,
         lng: poi.longitude,
-        poi_id: poi.poiId,
+        poi_id: poi.id?.toString() || poi.poiId,
         extra: { city: poi.city }
       }))
+
+      // Add city-level option as first result if not already present
+      const cityDisplayName = cityName.replace('市', '')
+      if (cityDisplayName && !results.some(r => r.name === cityDisplayName || r.name === cityName)) {
+        results.unshift({
+          id: `city_${cityDisplayName}`,
+          name: cityDisplayName,
+          address: cityName,
+          lat: options?.lat,
+          lng: options?.lng,
+          poi_id: `city_${cityDisplayName}`,
+          extra: { city: cityDisplayName, isCityLevel: true }
+        })
+      }
+
+      return results
     } catch (err) {
       logger.error('[kuaishou] getRecommendLocations error:', err)
       return []
@@ -982,67 +1023,68 @@ export class KsApiAdapter extends BasePlatformAdapter {
 
   /**
    * Search POI locations on Kuaishou.
-   * Uses the creator POI search endpoint with keyword.
+   * Uses the same endpoint as recommend (matching yixiaoer's getLocationResponse$1).
+   * NOTE: No __NS_sig3 for location endpoints!
    */
   async searchLocation(client: HttpClient, keyword: string, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
       const cookie = client.getCookieString()
+      const apiPhMatch = cookie.match(/kuaishou\.web\.cp\.api_ph=([a-z0-9]+)/)
+      const apiPh = apiPhMatch ? apiPhMatch[1] : ''
 
-      const searchPath = '/rest/cp/works/v2/poi/search'
+      // Get city name for the search (same as recommend flow)
+      let cityName = '北京市'
+      try {
+        const cityUrl = 'https://cp.kuaishou.com/rest/cp/works/v2/common/pc/ip2poi'
+        const cityBody = JSON.stringify({ "kuaishou.web.cp.api_ph": apiPh })
+        const cityResponse = await client.post<any>(cityUrl, cityBody, {
+          referer: REFERER, 'Content-Type': 'application/json'
+        }, { responseType: 'text' })
+        const parsed = typeof cityResponse.data === 'string' ? JSON.parse(cityResponse.data) : cityResponse.data
+        if (parsed?.result === 1) {
+          const nestedCity = parsed?.data?.city?.data?.city
+          const rawCity = nestedCity || parsed?.data?.city || ''
+          if (rawCity) {
+            cityName = rawCity.includes('自治') ? rawCity : rawCity + '市'
+          }
+        }
+      } catch { /* use default */ }
+
+      // Use the same endpoint as recommend (matching yixiaoer)
+      const searchUrl = `https://cp.kuaishou.com/rest/zt/location/wi/poi/search?kpn=kuaishou_cp&subBiz=CP%2FCREATOR_PLATFORM&kpf=PC_WEB&kuaishou.web.cp.api_ph=${apiPh}`
       const body = JSON.stringify({
-        keyword,
-        latitude: options?.lat || 0,
-        longitude: options?.lng || 0,
-        count: options?.count || 20
+        cityName,
+        count: options?.count || 20,
+        keyword: keyword,
+        pcursor: '',
+        "kuaishou.web.cp.api_ph": apiPh
       })
 
-      const signService = getSignService()
-      const sig = await signService.getSignature(
-        'kuaishou',
-        cookie,
-        JSON.stringify({ url: searchPath, body }),
-        body
-      )
-
-      let url = `https://cp.kuaishou.com${searchPath}`
-      if (sig) {
-        url += `?__NS_sig3=${sig}`
-      }
-
-      const response = await client.post<{
-        result: number
-        data?: {
-          poiList?: Array<{
-            poiId?: string
-            poiName?: string
-            address?: string
-            latitude?: number
-            longitude?: number
-            city?: string
-          }>
-        }
-      }>(
-        url,
+      const response = await client.post<any>(
+        searchUrl,
         body,
         {
           referer: REFERER,
-          Origin: ORIGIN,
           'Content-Type': 'application/json'
         }
       )
 
-      if (response.data?.result !== 1 || !response.data.data?.poiList) {
+      logger.info(`[kuaishou] searchLocation response: result=${response.data?.result}, hasData=${!!response.data?.data}`)
+
+      // yixiaoer: response.locations (not data.locations)
+      const locations = response.data?.data?.locations || response.data?.locations || []
+      if (response.data?.result !== 1 || !locations.length) {
         logger.warn(`[kuaishou] POI search failed: result=${response.data?.result}`)
         return []
       }
 
-      return response.data.data.poiList.map((poi) => ({
-        id: poi.poiId || '',
-        name: poi.poiName || '',
+      return locations.map((poi: any) => ({
+        id: poi.id?.toString() || poi.poiId || '',
+        name: poi.title || poi.poiName || '',
         address: poi.address || poi.city || '',
         lat: poi.latitude,
         lng: poi.longitude,
-        poi_id: poi.poiId,
+        poi_id: poi.id?.toString() || poi.poiId,
         extra: { city: poi.city }
       }))
     } catch (err) {

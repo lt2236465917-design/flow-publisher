@@ -735,7 +735,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
       logger.info(`[xiaohongshu] getRecommendLocations called with options:`, options)
 
-      // 使用和 yixiaoer 相同的实现方式
+      // Use actual lat/lng for nearby results (yixiaoer uses 0 but their API context differs)
       const body = {
         latitude: options?.lat || 0,
         longitude: options?.lng || 0,
@@ -792,15 +792,36 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         return []
       }
 
-      return response.data.data.poi_list.map((item) => ({
+      // Log first item to debug field names
+      const firstItem = response.data.data.poi_list[0]
+      if (firstItem) {
+        logger.info(`[xiaohongshu] First POI item fields:`, JSON.stringify(firstItem).substring(0, 500))
+      }
+
+      const results: import('../IPlatformAdapter').LocationResult[] = response.data.data.poi_list.map((item) => ({
         id: item.poi_id || '',
-        name: item.poi_name || '',
+        name: item.poi_name || item.name || '',
         address: item.full_address || item.city || '',
         lat: item.latitude,
         lng: item.longitude,
         poi_id: item.poi_id,
         extra: { city: item.city, poi_type: item.poi_type }
       }))
+
+      // Add city-level option as first result if not already present
+      if (options?.city && !results.some(r => r.name === options.city || r.name === options.city + '市')) {
+        results.unshift({
+          id: `city_${options.city}`,
+          name: options.city,
+          address: options.city,
+          lat: options.lat,
+          lng: options.lng,
+          poi_id: `city_${options.city}`,
+          extra: { city: options.city, isCityLevel: true }
+        })
+      }
+
+      return results
     } catch (err) {
       logger.error('[xiaohongshu] getRecommendLocations error:', err)
       return []
@@ -875,14 +896,20 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         return []
       }
 
+      // Log first search result to debug field names
+      const firstItem = response.data.data.poi_list[0]
+      if (firstItem) {
+        logger.info(`[xiaohongshu] First search POI fields:`, JSON.stringify(firstItem).substring(0, 500))
+      }
+
       return response.data.data.poi_list.map((item) => ({
         id: item.poi_id || '',
-        name: item.poi_name || '',
-        address: item.full_address || item.city || '',
+        name: item.poi_name || item.name || '',
+        address: item.full_address || item.address || item.city || '',
         lat: item.latitude,
         lng: item.longitude,
         poi_id: item.poi_id,
-        extra: { city: item.city, poi_type: item.poi_type }
+        extra: { city: item.city_name || item.city, poi_type: item.poi_type }
       }))
     } catch (err) {
       logger.error('[xiaohongshu] searchLocation error:', err)

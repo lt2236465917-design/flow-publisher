@@ -33,6 +33,8 @@ export interface LocationSearchOptions {
   lat?: number
   lng?: number
   count?: number
+  /** Current city name from IP location, used to add a city-level option to results */
+  city?: string
 }
 
 export interface SubmitContentPayload {
