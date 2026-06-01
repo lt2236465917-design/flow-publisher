@@ -3,7 +3,7 @@ import axios from 'axios'
 import { BasePlatformAdapter } from '../BasePlatformAdapter'
 import type { UploadProgress, SubmitContentPayload, VideoConstraints } from '../IPlatformAdapter'
 import type { PlatformFieldDefinition } from '../../../shared/types/platform-fields'
-import type { HttpClient } from '../../http/HttpClient'
+import { HttpClient } from '../../http/HttpClient'
 import { XHS_URLS } from './xhs-urls'
 import { XHS_SELECTORS } from './xhs-selectors'
 import { logger } from '../../../utils/logger'
@@ -210,8 +210,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         cookie = `${cookie};a1=${a1}`
       }
 
-      logger.info(`[xiaohongshu] POST ${API.collectionList}`)
-      const response = await axios.post<{
+      logger.info(`[xiaohongshu] POST ${API.collectionList}, body=${bodyStr}`)
+
+      // 使用 HttpClient 发送请求（和发布接口保持一致的 headers）
+      const apiClient = new HttpClient({ cookies: cookie, platform: 'xiaohongshu', accountId: '' })
+      const response = await apiClient.post<{
         result: number
         msg: string
         data?: {
@@ -227,16 +230,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         API.collectionList,
         { cursor: '', need_type_list: [0], target_uid: '' },
         {
-          headers: {
-            cookie,
-            Origin: 'https://creator.xiaohongshu.com',
-            referer: 'https://www.xiaohongshu.com',
-            'Content-Type': 'application/json;charset=UTF-8',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14',
-            ...signHeaders
-          },
-          timeout: 15_000,
-          responseType: 'json'
+          Origin: 'https://creator.xiaohongshu.com',
+          referer: 'https://creator.xiaohongshu.com',
+          Authorization: '',
+          ...signHeaders
         }
       )
 
@@ -253,8 +250,12 @@ export class XhsApiAdapter extends BasePlatformAdapter {
           label: c.name!,
           value: c.id!.toString()
         }))
-    } catch (err) {
-      logger.error('[xiaohongshu] getCollections error:', err)
+    } catch (err: any) {
+      if (err?.response) {
+        logger.error(`[xiaohongshu] getCollections error: status=${err.response.status}, data=${JSON.stringify(err.response.data)?.substring(0, 500)}`)
+      } else {
+        logger.error('[xiaohongshu] getCollections error:', err?.message || err)
+      }
       return []
     }
   }

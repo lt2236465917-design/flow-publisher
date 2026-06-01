@@ -26,9 +26,7 @@ export default function PlatformCard({ platformId, account, onLogin }: Props) {
         padding: '24px 22px',
         boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02), 0 12px 40px rgba(0, 0, 0, 0.02)',
         transition: 'all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
-        cursor: 'pointer',
       }}
-      onClick={() => onLogin(platformId)}
       onMouseEnter={(e) => {
         e.currentTarget.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.03), 0 20px 56px rgba(0, 0, 0, 0.03)'
         e.currentTarget.style.transform = 'translateY(-2px)'

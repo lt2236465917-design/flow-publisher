@@ -39,7 +39,12 @@ export default function PlatformCustomizer({ platforms, overrides, onChange }: P
 
   useEffect(() => {
     for (const platformId of platforms) {
-      if (fieldDefs[platformId] !== undefined) continue
+      // 如果已有字段定义且不需要重新解析动态选项，跳过
+      const hasExistingFields = fieldDefs[platformId] !== undefined
+      const needsDynamicResolve = hasExistingFields && fieldDefs[platformId].some(
+        (f) => f.type === 'dynamic-select' && f.dynamicKey && (!f.options || f.options.length === 0)
+      )
+      if (hasExistingFields && !needsDynamicResolve) continue
 
       setLoading((prev) => ({ ...prev, [platformId]: true }))
       window.electron.ipcRenderer
