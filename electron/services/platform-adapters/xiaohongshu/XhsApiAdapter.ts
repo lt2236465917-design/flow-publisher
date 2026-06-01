@@ -144,6 +144,50 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     }
   }
 
+  async getAccountInfoAPI(client: HttpClient): Promise<{ displayName?: string; avatarUrl?: string } | null> {
+    try {
+      const response = await client.get<{
+        success: boolean
+        data?: {
+          userId: string
+          userName: string
+          userAvatar: string
+          nickname?: string
+          name?: string
+          imageb?: string
+          avatar?: string
+        }
+      }>(
+        API.userInfo,
+        undefined,
+        {
+          referer: 'https://creator.xiaohongshu.com/publish/publish',
+          Origin: 'https://creator.xiaohongshu.com'
+        }
+      )
+
+      logger.info(`[xiaohongshu] getAccountInfoAPI response: ${JSON.stringify(response.data).substring(0, 500)}`)
+
+      if (response.data?.success && response.data?.data) {
+        const data = response.data.data
+        // API 返回的字段名是 userName 和 userAvatar
+        const nickname = data.userName || data.nickname || data.name || ''
+        const avatarUrl = data.userAvatar || data.imageb || data.avatar || ''
+        logger.info(`[xiaohongshu] getAccountInfoAPI: nickname=${nickname}, avatarUrl=${avatarUrl ? 'yes' : 'no'}`)
+        return {
+          displayName: nickname || undefined,
+          avatarUrl: avatarUrl || undefined
+        }
+      }
+
+      logger.warn(`[xiaohongshu] getAccountInfoAPI failed: success=${response.data?.success}`)
+      return null
+    } catch (err) {
+      logger.error('[xiaohongshu] getAccountInfoAPI error:', err)
+      return null
+    }
+  }
+
   /**
    * Fetch user's collection list from Xiaohongshu creator API.
    * Uses the same signing mechanism as note creation.
@@ -152,15 +196,21 @@ export class XhsApiAdapter extends BasePlatformAdapter {
   async getCollections(client: HttpClient): Promise<Array<{ label: string; value: string }>> {
     try {
       let cookie = client.getCookieString()
+      logger.info(`[xiaohongshu] getCollections called, cookie length: ${cookie.length}`)
+
       const urlPath = '/api/sns/v1/note/collection/pc/list_v2'
       const bodyStr = JSON.stringify({ cursor: '', need_type_list: [0], target_uid: '' })
+
+      logger.info(`[xiaohongshu] Getting sign headers for collection list...`)
       const { headers: signHeaders, a1 } = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
+      logger.info(`[xiaohongshu] Sign headers: X-s=${signHeaders['X-s'] ? 'yes' : 'no'}, X-t=${signHeaders['X-t'] ? 'yes' : 'no'}, X-S-Common=${signHeaders['X-S-Common'] ? 'yes' : 'no'}, has a1: ${!!a1}`)
 
       if (a1) {
         cookie = cookie.replace('a1=', 'a1old=')
         cookie = `${cookie};a1=${a1}`
       }
 
+      logger.info(`[xiaohongshu] POST ${API.collectionList}`)
       const response = await axios.post<{
         result: number
         msg: string
@@ -189,6 +239,8 @@ export class XhsApiAdapter extends BasePlatformAdapter {
           responseType: 'json'
         }
       )
+
+      logger.info(`[xiaohongshu] Collections response: result=${response.data.result}, msg=${response.data.msg}, hasData=${!!response.data.data}, hasList=${!!response.data.data?.collection_info_list}`)
 
       if (response.data.result !== 0 || !response.data.data?.collection_info_list) {
         logger.warn(`[xiaohongshu] Collections fetch failed: ${response.data.msg}`)

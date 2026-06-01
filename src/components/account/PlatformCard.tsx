@@ -1,5 +1,5 @@
 import { Avatar } from 'antd'
-import { LoginOutlined, LogoutOutlined, ReloadOutlined } from '@ant-design/icons'
+import { LoginOutlined, ReloadOutlined } from '@ant-design/icons'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
 import type { AccountInfo } from '@/types/platform.types'
@@ -9,11 +9,9 @@ interface Props {
   platformId: PlatformId
   account?: AccountInfo
   onLogin: (platformId: PlatformId) => void
-  onLogout: (accountId: string) => void
-  onCheckSession: (accountId: string) => void
 }
 
-export default function PlatformCard({ platformId, account, onLogin, onLogout, onCheckSession }: Props) {
+export default function PlatformCard({ platformId, account, onLogin }: Props) {
   const platform = PLATFORMS[platformId]
   const isLoggedIn = account?.sessionStatus === 'logged_in'
 
@@ -28,9 +26,9 @@ export default function PlatformCard({ platformId, account, onLogin, onLogout, o
         padding: '24px 22px',
         boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02), 0 12px 40px rgba(0, 0, 0, 0.02)',
         transition: 'all 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)',
-        cursor: isLoggedIn ? 'default' : 'pointer',
+        cursor: 'pointer',
       }}
-      onClick={!isLoggedIn ? () => onLogin(platformId) : undefined}
+      onClick={() => onLogin(platformId)}
       onMouseEnter={(e) => {
         e.currentTarget.style.boxShadow = '0 4px 16px rgba(0, 0, 0, 0.03), 0 20px 56px rgba(0, 0, 0, 0.03)'
         e.currentTarget.style.transform = 'translateY(-2px)'
@@ -80,7 +78,7 @@ export default function PlatformCard({ platformId, account, onLogin, onLogout, o
         </div>
       </div>
 
-      {/* Actions */}
+      {/* Actions - 只有一个按钮：已登录显示"重新登录"，未登录显示"登录" */}
       <div
         style={{
           display: 'flex',
@@ -89,26 +87,38 @@ export default function PlatformCard({ platformId, account, onLogin, onLogout, o
           borderTop: '1px solid rgba(0, 0, 0, 0.04)',
         }}
       >
-        {isLoggedIn ? (
-          <>
-            <ActionButton icon={<ReloadOutlined />} label="检查" onClick={() => onCheckSession(account!.id)} />
-            <ActionButton icon={<LogoutOutlined />} label="退出" onClick={() => onLogout(account!.id)} danger />
-          </>
-        ) : (
-          <ActionButton icon={<LoginOutlined />} label="登录" onClick={() => onLogin(platformId)} primary />
-        )}
+        <ActionButton
+          icon={isLoggedIn ? <ReloadOutlined /> : <LoginOutlined />}
+          label={isLoggedIn ? '重新登录' : '登录'}
+          onClick={() => onLogin(platformId)}
+          primary={!isLoggedIn}
+          secondary={isLoggedIn}
+        />
       </div>
     </div>
   )
 }
 
-function ActionButton({ icon, label, onClick, primary, danger }: {
+function ActionButton({ icon, label, onClick, primary, secondary, danger }: {
   icon: React.ReactNode
   label: string
   onClick: () => void
   primary?: boolean
+  secondary?: boolean
   danger?: boolean
 }) {
+  const getBg = () => {
+    if (primary) return '#34c759'  // 绿色
+    if (secondary) return '#0071e3'  // 蓝色
+    return 'transparent'
+  }
+
+  const getHoverBg = () => {
+    if (primary) return '#30d158'
+    if (secondary) return '#0077ed'
+    return 'rgba(0, 0, 0, 0.03)'
+  }
+
   return (
     <button
       onClick={(e) => { e.stopPropagation(); onClick() }}
@@ -120,9 +130,9 @@ function ActionButton({ icon, label, onClick, primary, danger }: {
         gap: 6,
         padding: '8px 0',
         borderRadius: 8,
-        border: primary ? 'none' : '1px solid rgba(0, 0, 0, 0.08)',
-        background: primary ? '#0071e3' : 'transparent',
-        color: primary ? '#fff' : danger ? '#ff3b30' : '#86868b',
+        border: (primary || secondary) ? 'none' : '1px solid rgba(0, 0, 0, 0.08)',
+        background: getBg(),
+        color: (primary || secondary) ? '#fff' : danger ? '#ff3b30' : '#86868b',
         fontSize: 12,
         fontWeight: 500,
         cursor: 'pointer',
@@ -130,18 +140,10 @@ function ActionButton({ icon, label, onClick, primary, danger }: {
         fontFamily: "'DM Sans', sans-serif",
       }}
       onMouseEnter={(e) => {
-        if (primary) {
-          e.currentTarget.style.background = '#0077ed'
-        } else {
-          e.currentTarget.style.background = 'rgba(0, 0, 0, 0.03)'
-        }
+        e.currentTarget.style.background = getHoverBg()
       }}
       onMouseLeave={(e) => {
-        if (primary) {
-          e.currentTarget.style.background = '#0071e3'
-        } else {
-          e.currentTarget.style.background = 'transparent'
-        }
+        e.currentTarget.style.background = getBg()
       }}
     >
       {icon}

@@ -24,6 +24,29 @@ registerAdapter(new WcApiAdapter())
 registerAdapter(new KsApiAdapter())
 
 export function registerAccountIpcHandlers(): void {
+  // 启动时清理重复账号：每个平台只保留最新的一个
+  try {
+    const repo = getAccountRepository()
+    const all = repo.getAll()
+    const seen = new Map<string, string>() // platform -> latest id
+    for (const a of all) {
+      const existing = seen.get(a.platform)
+      if (!existing || a.updated_at > (all.find(x => x.id === existing)?.updated_at || '')) {
+        if (existing) repo.deleteById(existing)
+        seen.set(a.platform, a.id)
+      } else {
+        repo.deleteById(a.id)
+      }
+    }
+    const deleted = all.length - seen.size
+    if (deleted > 0) {
+      saveDatabase()
+      logger.info(`[account] Cleaned up ${deleted} duplicate accounts`)
+    }
+  } catch (e) {
+    logger.warn('[account] Failed to cleanup duplicate accounts:', e)
+  }
+
   // List all accounts
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_LIST, async (): Promise<IpcResponse> => {
     try {
@@ -47,8 +70,6 @@ export function registerAccountIpcHandlers(): void {
   // Start login flow for a platform
   // 使用Electron内置BrowserWindow进行登录，与yixiaoer相同方式，不会被检测为自动化
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_LOGIN, async (event, platformId: string): Promise<IpcResponse> => {
-    const loginWindow = new ElectronLoginWindow(platformId)
-
     try {
       const adapter = getAdapter(platformId)
       if (!adapter) {
@@ -57,16 +78,24 @@ export function registerAccountIpcHandlers(): void {
 
       const repo = getAccountRepository()
       const existing = repo.getByPlatform(platformId)
-      let accountId = existing[0]?.id
+      let accountId: string
 
-      if (!accountId) {
+      // 复用已有账号，如果不存在则创建
+      if (existing.length > 0) {
+        accountId = existing[0].id
+        logger.info(`[account] Reusing existing account for ${platformId}: ${accountId}`)
+      } else {
         const account = repo.create({ platform: platformId, displayName: adapter.platformName })
         accountId = account.id
         saveDatabase()
+        logger.info(`[account] Created new account for ${platformId}: ${accountId}`)
       }
 
+      // 使用accountId作为partition，确保session隔离
+      const loginWindow = new ElectronLoginWindow(platformId, accountId)
+
       // 使用Electron内置浏览器打开登录页面（与yixiaoer相同方式）
-      logger.info(`[account] Opening login window for ${platformId}...`)
+      logger.info(`[account] Opening login window for ${platformId}, accountId: ${accountId}...`)
       await loginWindow.open(adapter.loginUrl)
 
       // 通知渲染进程
@@ -81,7 +110,7 @@ export function registerAccountIpcHandlers(): void {
       const checkDomains: Record<string, string[]> = {
         douyin: ['creator.douyin.com/creator-micro'],
         xiaohongshu: ['creator.xiaohongshu.com/new', 'creator.xiaohongshu.com/publish'],
-        kuaishou: ['cp.kuaishou.com/profile', 'cp.kuaishou.com/article'],
+        kuaishou: [], // 快手即使未登录也会跳转/profile，不能用URL检测，完全依赖cookie检测
         'wechat-channels': ['channels.weixin.qq.com/platform']
       }
       const domains = checkDomains[platformId] || []
@@ -119,24 +148,67 @@ export function registerAccountIpcHandlers(): void {
           await cookieStore.saveCookies(accountId!, filteredCookies)
           logger.info(`[account] Cookies saved: ${filteredCookies.length} cookies`)
 
-          // 尝试通过API获取账号信息（只用过滤后的平台cookie，避免旧cookie冲突）
+          // 登录成功，先将session_status更新为'logged_in'
+          // 这样前端才能找到已登录的账号来获取合集等动态数据
+          repo.updateSession(accountId!, 'logged_in', JSON.stringify(cookies))
+          saveDatabase()
+          logger.info(`[account] Session status updated to logged_in`)
+
+          // 获取账号名称：先尝试从页面DOM提取，再尝试API
+          let displayName: string | undefined
+
+          // 方式1：从登录页面直接提取用户名（快手等需要签名的平台用这个方式）
           try {
-            const cookieStr = filteredCookies.map(c => `${c.name}=${c.value}`).join('; ')
-            logger.info(`[account] Calling getAccountInfoAPI with ${filteredCookies.length} filtered cookies`)
-            const apiClient = new HttpClient({ cookies: cookieStr, platform: platformId, accountId: accountId! })
-            if ('getAccountInfoAPI' in adapter && typeof (adapter as any).getAccountInfoAPI === 'function') {
-              const apiInfo = await (adapter as any).getAccountInfoAPI(apiClient)
-              logger.info(`[account] getAccountInfoAPI result: ${JSON.stringify(apiInfo)}`)
-              if (apiInfo?.displayName) {
-                repo.updateSession(accountId!, 'logged_in', JSON.stringify(cookies), apiInfo.displayName)
-                saveDatabase()
-                logger.info(`[account] Account name updated via API: ${apiInfo.displayName}`)
-              } else {
-                logger.warn('[account] getAccountInfoAPI returned no displayName, keeping old name')
+            const window = loginWindow.getWindow()
+            if (window && !window.isDestroyed()) {
+              const page = window.webContents
+              displayName = await page.executeJavaScript(`
+                (function() {
+                  // 快手: 从页面元素提取用户名
+                  var el = document.querySelector('[class*="user-name"], [class*="username"], [class*="nickname"], .profile-name, .author-name')
+                  if (el && el.textContent && el.textContent.trim().length >= 2) return el.textContent.trim()
+                  // 快手: 从 meta 标签提取
+                  var meta = document.querySelector('meta[name="author"]')
+                  if (meta && meta.content) return meta.content
+                  // 通用: 从页面标题提取（很多平台在标题中显示用户名）
+                  var title = document.title
+                  if (title && title.includes('-')) return title.split('-')[0].trim()
+                  return null
+                })()
+              `)
+              if (displayName) {
+                logger.info(`[account] Got displayName from page DOM: ${displayName}`)
               }
             }
           } catch (e) {
-            logger.warn('[account] Failed to get account name via API:', e)
+            logger.warn('[account] Failed to extract displayName from page:', e)
+          }
+
+          // 方式2：通过API获取账号信息
+          if (!displayName) {
+            try {
+              const cookieStr = filteredCookies.map(c => `${c.name}=${c.value}`).join('; ')
+              logger.info(`[account] Calling getAccountInfoAPI with ${filteredCookies.length} filtered cookies`)
+              const apiClient = new HttpClient({ cookies: cookieStr, platform: platformId, accountId: accountId! })
+              if ('getAccountInfoAPI' in adapter && typeof (adapter as any).getAccountInfoAPI === 'function') {
+                const apiInfo = await (adapter as any).getAccountInfoAPI(apiClient)
+                logger.info(`[account] getAccountInfoAPI result: ${JSON.stringify(apiInfo)}`)
+                if (apiInfo?.displayName) {
+                  displayName = apiInfo.displayName
+                }
+              }
+            } catch (e) {
+              logger.warn('[account] Failed to get account name via API:', e)
+            }
+          }
+
+          // 更新账号名称
+          if (displayName) {
+            repo.updateSession(accountId!, 'logged_in', JSON.stringify(cookies), displayName)
+            saveDatabase()
+            logger.info(`[account] Account name updated: ${displayName}`)
+          } else {
+            logger.warn('[account] Could not get displayName from any source')
           }
 
           loginWindow.close()
@@ -175,6 +247,26 @@ export function registerAccountIpcHandlers(): void {
       const isValid = !!cookieStr && account.session_status === 'logged_in'
 
       logger.info(`[account] Session check for ${account.platform}: ${isValid ? 'valid' : 'no cookies'}`)
+
+      // 如果登录成功但 displayName 还是默认平台名，尝试通过 API 重新获取
+      if (isValid && (!account.display_name || account.display_name === getAdapter(account.platform).platformName)) {
+        try {
+          const adapter = getAdapter(account.platform)
+          if ('getAccountInfoAPI' in adapter && typeof (adapter as any).getAccountInfoAPI === 'function') {
+            const apiClient = new HttpClient({ cookies: cookieStr, platform: account.platform, accountId })
+            const apiInfo = await (adapter as any).getAccountInfoAPI(apiClient)
+            if (apiInfo?.displayName) {
+              const repo2 = getAccountRepository()
+              repo2.updateSession(accountId, 'logged_in', cookieStr, apiInfo.displayName)
+              saveDatabase()
+              logger.info(`[account] Refreshed displayName via checkSession: ${apiInfo.displayName}`)
+              return { success: true, data: { sessionStatus: 'logged_in', displayName: apiInfo.displayName } }
+            }
+          }
+        } catch (e) {
+          logger.warn('[account] Failed to refresh displayName during checkSession:', e)
+        }
+      }
 
       return { success: true, data: { sessionStatus: isValid ? 'logged_in' : 'expired' } }
     } catch (err) {

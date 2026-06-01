@@ -84,51 +84,61 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
   }
 
   /**
-   * Fetch user's collection list from Douyin creator API.
+   * Fetch user's collection (mix) list from Douyin creator API.
+   * 参考yixiaoer: 使用 /web/api/mix/list/ 端点
    */
   async getCollections(client: HttpClient): Promise<Array<{ label: string; value: string }>> {
     try {
       const cookie = client.getCookieString()
-      const csrfToken = await this.getCsrfToken(client)
 
+      // 参考yixiaoer: 使用 /web/api/mix/list/ 端点，不需要签名
       const params = new URLSearchParams({
-        count: '100',
+        status: '0,2',
+        count: '15',
         cursor: '0',
-        ...COMMON_PARAMS,
+        cookie_enabled: 'true',
+        screen_width: '1920',
+        screen_height: '1080',
+        browser_language: 'zh-CN',
+        browser_platform: 'Win32',
+        browser_name: 'Mozilla',
+        browser_version: COMMON_PARAMS.browser_version,
+        browser_online: 'true',
+        timezone_name: 'Asia/Shanghai',
         aid: '1128',
-        msToken: ''
+        _signature: ''
       })
 
-      const url = `${API.collections}?${params.toString()}`
-      const signedUrl = await this.signUrl(url, cookie)
+      const url = `https://creator.douyin.com/web/api/mix/list/?${params.toString()}`
+
+      logger.info(`[douyin] Fetching collections from: ${url}`)
 
       const response = await client.get<{
-        status_code: number
-        collection_list?: Array<{
-          collection_id?: string
-          name?: string
+        mix_list?: Array<{
+          mix_id?: string
+          mix_name?: string
           item_count?: number
         }>
       }>(
-        signedUrl,
+        url,
         undefined,
         {
-          referer: 'https://creator.douyin.com/creator-micro/content/publish',
-          Origin: 'https://creator.douyin.com',
-          'x-secsdk-csrf-token': csrfToken
+          referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page'
         }
       )
 
-      if (response.data.status_code !== 0 || !response.data.collection_list) {
-        logger.warn(`[douyin] Collections fetch failed: status=${response.data.status_code}`)
+      logger.info(`[douyin] Collections response: ${JSON.stringify(response.data).substring(0, 1000)}`)
+
+      if (!response.data?.mix_list) {
+        logger.warn(`[douyin] Collections fetch failed: no mix_list`)
         return []
       }
 
-      return response.data.collection_list
-        .filter((c) => c.collection_id && c.name)
+      return response.data.mix_list
+        .filter((c) => c.mix_id && c.mix_name)
         .map((c) => ({
-          label: c.name!,
-          value: c.collection_id!
+          label: c.mix_name!,
+          value: c.mix_id!
         }))
     } catch (err) {
       logger.error('[douyin] getCollections error:', err)
@@ -299,6 +309,69 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     } catch (err) {
       logger.error('[douyin] checkSessionAPI error:', err)
       return false
+    }
+  }
+
+  async getAccountInfoAPI(client: HttpClient): Promise<{ displayName?: string; avatarUrl?: string } | null> {
+    try {
+      const cookie = client.getCookieString()
+      logger.info(`[douyin] getAccountInfoAPI called, cookie length: ${cookie.length}`)
+
+      const msToken = this.extractMsToken(cookie)
+      const baseUrl = `${API.userInfo}?${new URLSearchParams({
+        ...COMMON_PARAMS,
+        no_cache: Date.now().toString().substring(0, 10),
+        msToken
+      }).toString()}`
+      const signedUrl = await this.signUrl(baseUrl, cookie)
+
+      logger.info(`[douyin] getAccountInfoAPI request: ${signedUrl.substring(0, 100)}...`)
+
+      const response = await client.get<{
+        status_code: number
+        user?: {
+          nickname: string
+          avatar_thumb?: { url_list?: string[] }
+        }
+        douyin_user_verify_info?: {
+          nick_name: string
+          avatar_url: string
+        }
+      }>(
+        signedUrl,
+        undefined,
+        {
+          referer: 'https://creator.douyin.com/creator-micro/home',
+          Origin: 'https://creator.douyin.com'
+        }
+      )
+
+      logger.info(`[douyin] getAccountInfoAPI response: ${JSON.stringify(response.data).substring(0, 500)}`)
+
+      // 优先使用 user 字段，如果没有则使用 douyin_user_verify_info 字段
+      if (response.data?.user) {
+        const user = response.data.user
+        logger.info(`[douyin] getAccountInfoAPI success (user): nickname=${user.nickname}`)
+        return {
+          displayName: user.nickname,
+          avatarUrl: user.avatar_thumb?.url_list?.[0]
+        }
+      }
+
+      if (response.data?.douyin_user_verify_info) {
+        const info = response.data.douyin_user_verify_info
+        logger.info(`[douyin] getAccountInfoAPI success (douyin_user_verify_info): nick_name=${info.nick_name}`)
+        return {
+          displayName: info.nick_name,
+          avatarUrl: info.avatar_url
+        }
+      }
+
+      logger.warn(`[douyin] getAccountInfoAPI failed: status=${response.data?.status_code}, no user info found`)
+      return null
+    } catch (err) {
+      logger.error('[douyin] getAccountInfoAPI error:', err)
+      return null
     }
   }
 

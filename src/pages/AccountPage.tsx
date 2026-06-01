@@ -8,7 +8,7 @@ import PlatformCard from '@/components/account/PlatformCard'
 import QRLoginDialog from '@/components/account/QRLoginDialog'
 
 export default function AccountPage() {
-  const { accounts, loading, fetchAccounts, startLogin, logout, checkSession } = useAccountStore()
+  const { accounts, loading, fetchAccounts, startLogin } = useAccountStore()
   const [loginPlatform, setLoginPlatform] = useState<PlatformId | null>(null)
 
   useQrCodeListener()
@@ -24,11 +24,6 @@ export default function AccountPage() {
       message.success('登录成功')
     }
     setTimeout(() => setLoginPlatform(null), 2000)
-  }
-
-  const handleLogout = async (accountId: string) => {
-    await logout(accountId)
-    message.info('已退出登录')
   }
 
   const getAccount = (platformId: PlatformId) => accounts.find((a) => a.platform === platformId)
@@ -68,8 +63,6 @@ export default function AccountPage() {
               platformId={id}
               account={getAccount(id)}
               onLogin={handleLogin}
-              onLogout={handleLogout}
-              onCheckSession={checkSession}
             />
           ))}
         </div>

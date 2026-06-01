@@ -8,9 +8,12 @@ import { logger } from '../../utils/logger'
 export class ElectronLoginWindow {
   private loginWindow: BrowserWindow | null = null
   private platformId: string
+  private accountId: string
 
-  constructor(platformId: string) {
+  constructor(platformId: string, accountId?: string) {
     this.platformId = platformId
+    // 参考yixiaoer: 使用accountId作为partition的一部分，支持多账号
+    this.accountId = accountId || `${platformId}-${Date.now()}`
   }
 
   /**
@@ -21,13 +24,38 @@ export class ElectronLoginWindow {
       this.loginWindow.close()
     }
 
+    // 参考yixiaoer: 使用 persist:auth-${accountId} 作为partition
+    // 每个账号独立的session，支持多账号登录和切换
+    const partition = `persist:auth-${this.accountId}`
+
+    // 清除该账号的旧session数据，确保需要重新扫码登录
+    try {
+      const ses = session.fromPartition(partition)
+      // 先用 cookies API 逐个删除残留 cookies（clearStorageData 有时清不干净）
+      const existingCookies = await ses.cookies.get({})
+      for (const cookie of existingCookies) {
+        const url = `http${cookie.secure ? 's' : ''}://${cookie.domain?.startsWith('.') ? cookie.domain.slice(1) : cookie.domain}${cookie.path}`
+        await ses.cookies.remove(url, cookie.name).catch(() => {})
+      }
+      // 再清除所有类型的存储数据
+      await ses.clearStorageData({
+        storages: ['cookies', 'localstorage', 'sessionstorage', 'indexeddb', 'websql', 'shadercache', 'serviceworkers', 'cachestorage']
+      })
+      await ses.clearAuthCache()
+      const remaining = await ses.cookies.get({})
+      logger.info(`[ElectronLoginWindow] Cleared all storage data for account ${this.accountId}, remaining cookies: ${remaining.length}`)
+    } catch (e) {
+      logger.warn(`[ElectronLoginWindow] Failed to clear session: ${e}`)
+    }
+
     this.loginWindow = new BrowserWindow({
       width: 1200,
       height: 800,
       title: `登录 - ${this.getPlatformName()}`,
       webPreferences: {
         nodeIntegration: false,
-        contextIsolation: true
+        contextIsolation: true,
+        partition
       }
     })
 
@@ -162,12 +190,13 @@ export class ElectronLoginWindow {
 
   /**
    * 判断是否是关键登录cookie
+   * 注意：快手的 did 只是设备标识，不是登录标识
    */
   private isLoginCookie(name: string): boolean {
     const loginCookies: Record<string, string[]> = {
       douyin: ['sessionid', 'sessionid_ss', 'sid_guard', 'sid_tt'],
       xiaohongshu: ['a1', 'web_session', 'galaxy_creator_session_id'],
-      kuaishou: ['did', 'kpn', 'kuaishou_s_v3', 'userId'],
+      kuaishou: ['userId', 'kuaishou.web.cp.api_st'], // 只用真正的登录cookie，kpn和api_ph可能在页面加载时就设置
       'wechat-channels': ['bizuin', 'slave_sid', 'wxsess_ticket']
     }
     const keywords = loginCookies[this.platformId] || []

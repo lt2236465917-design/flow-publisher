@@ -260,7 +260,11 @@ export class KsApiAdapter extends BasePlatformAdapter {
     try {
       const cookie = client.getCookieString()
       const apiPh = this.extractApiPh(cookie)
+      logger.info(`[kuaishou] getAccountInfoAPI called, cookie length: ${cookie.length}, apiPh: ${apiPh ? 'yes' : 'no'}`)
 
+      const body = JSON.stringify({ 'kuaishou.web.cp.api_ph': apiPh })
+
+      // 直接调用 API，不使用签名
       const response = await client.post<{
         result: number
         data?: {
@@ -268,23 +272,28 @@ export class KsApiAdapter extends BasePlatformAdapter {
           user_avatar?: string
           user_id?: string
         }
+        error_msg?: string
+        message?: string
       }>(
         API.userInfo,
-        JSON.stringify({ 'kuaishou.web.cp.api_ph': apiPh }),
+        body,
         { referer: REFERER, Origin: ORIGIN, 'Content-Type': 'application/json' }
       )
+
+      logger.info(`[kuaishou] getAccountInfoAPI response: ${JSON.stringify(response.data).substring(0, 500)}`)
 
       if (response.data?.result === 1 && response.data?.data) {
         const data = response.data.data
         this.cachedDisplayName = data.user_name || ''
         this.cachedUserId = data.user_id || ''
-        logger.info(`[kuaishou] getAccountInfoAPI: name=${data.user_name}, userId=${data.user_id}`)
+        logger.info(`[kuaishou] getAccountInfoAPI success: name=${data.user_name}, userId=${data.user_id}`)
         return {
           displayName: data.user_name || undefined,
           avatarUrl: data.user_avatar || undefined
         }
       }
 
+      logger.warn(`[kuaishou] getAccountInfoAPI failed: result=${response.data?.result}, message=${response.data?.message}`)
       return null
     } catch (err) {
       logger.error('[kuaishou] getAccountInfoAPI error:', err)
