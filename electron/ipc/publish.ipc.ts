@@ -140,6 +140,9 @@ export function registerPublishIpcHandlers(): void {
     }
   }): Promise<IpcResponse> => {
     try {
+      // DEBUG: log incoming params to trace encoding issues
+      logger.info(`[publish] Submit params: title="${params.content.title}", hashtags=${JSON.stringify(params.content.hashtags)}, descLen=${params.content.description?.length}`)
+
       const adapter = getAdapter(params.platformId)
       if (!adapter) {
         return { success: false, error: `不支持的平台: ${params.platformId}` }

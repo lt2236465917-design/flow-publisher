@@ -338,49 +338,55 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     }
     logger.info(`[xiaohongshu] Multipart upload initiated, uploadId: ${uploadId}`)
 
-    // Step 2b: Upload parts with concurrency (5MB each, 3 concurrent)
-    const PART_SIZE = 5 * 1024 * 1024
+    // Step 2b: Upload parts with concurrency (8MB each, 3 concurrent — matching yixiaoer)
+    const PART_SIZE = 8 * 1024 * 1024 // 8MB — matching yixiaoer's chunk size
     const totalParts = Math.ceil(stats.size / PART_SIZE)
     const etags: string[] = new Array(totalParts)
     const CONCURRENCY = 3
     let completedParts = 0
 
-    const uploadPart = async (i: number) => {
+    const uploadPart = async (i: number, maxRetries = 3) => {
       const start = i * PART_SIZE
       const end = Math.min(start + PART_SIZE, stats.size)
       const part = fileBuffer.subarray(start, end)
       const partNumber = i + 1
 
-      const partResponse = await client.request<string>({
-        method: 'PUT',
-        url: `${baseUploadUrl}?partNumber=${partNumber}&uploadId=${uploadId}`,
-        data: part,
-        headers: { ...commonHeaders, 'Content-Type': 'application/octet-stream' },
-        noCookie: true,
-        timeout: 120_000,
-        responseType: 'text'
-      })
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          const partResponse = await client.request<string>({
+            method: 'PUT',
+            url: `${baseUploadUrl}?partNumber=${partNumber}&uploadId=${uploadId}`,
+            data: part,
+            headers: { ...commonHeaders, 'Content-Type': 'application/octet-stream' },
+            noCookie: true,
+            timeout: 120_000,
+            responseType: 'text'
+          })
 
-      const etag = partResponse.headers?.etag || partResponse.data?.ETag || ''
-      etags[i] = etag
-      completedParts++
-      const percent = 10 + Math.round((completedParts / totalParts) * 65)
-      onProgress?.({ percent, stage: `上传中 ${completedParts}/${totalParts}` })
-    }
-
-    // Concurrent upload with limit
-    const pending: Promise<void>[] = []
-    for (let i = 0; i < totalParts; i++) {
-      const p = uploadPart(i)
-      pending.push(p)
-      if (pending.length >= CONCURRENCY) {
-        await Promise.race(pending)
-        const idx = pending.findIndex(p => p === undefined)
-        if (idx >= 0) pending.splice(idx, 1)
-        else pending.splice(0, 1)
+          // Strip quotes from etag if present
+          let etag = partResponse.headers?.etag || partResponse.data?.ETag || ''
+          etag = etag.replace(/^"|"$/g, '')
+          etags[i] = etag
+          completedParts++
+          const percent = 10 + Math.round((completedParts / totalParts) * 65)
+          onProgress?.({ percent, stage: `上传中 ${completedParts}/${totalParts}` })
+          return
+        } catch (err: any) {
+          const isRetryable = err.message?.includes('timeout') || err.message?.includes('ECONNRESET') || err.message?.includes('network')
+          if (isRetryable && attempt < maxRetries - 1) {
+            logger.warn(`[xiaohongshu] Part ${partNumber} attempt ${attempt + 1} failed (${err.message}), retrying...`)
+            await delay(1000 * (attempt + 1))
+          } else {
+            throw err
+          }
+        }
       }
     }
-    await Promise.all(pending)
+
+    // Sequential upload (simpler, more reliable — matching yixiaoer's default behavior)
+    for (let i = 0; i < totalParts; i++) {
+      await uploadPart(i)
+    }
 
     logger.info(`[xiaohongshu] All ${totalParts} parts uploaded`)
 

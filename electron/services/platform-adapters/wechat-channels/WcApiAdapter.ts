@@ -657,7 +657,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
     uin?: string,
     onProgress?: (p: UploadProgress) => void
   ): Promise<string> {
-    const CHUNK_SIZE = 16 * 1024 * 1024 // 16MB — larger chunks for faster upload
+    const CHUNK_SIZE = 8 * 1024 * 1024 // 8MB — matching yixiaoer, more reliable on slow connections
     const totalChunks = Math.ceil(fileSize / CHUNK_SIZE)
     const fileBuffer = readFileSync(filePath)
     const weixinnum = uin || (this.cachedFinderUin ? String(this.cachedFinderUin) : '') || ''
@@ -874,22 +874,23 @@ export class WcApiAdapter extends BasePlatformAdapter {
     // Build location — yixiaoer sends {} by default, only populates if location data exists
     // location is a LocationResult object from LocationSearch component
     let location: Record<string, unknown> = {}
-    if (payload.platformFields?.location) {
-      const loc = payload.platformFields.location
-      if (typeof loc === 'object' && loc !== null && 'name' in loc) {
-        const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number; address?: string; extra?: Record<string, unknown> }
-        // yixiaoer format: uses poiClassifyId (not poiId), and includes city
-        location = {
-          latitude: locObj.lat || 0,
-          longitude: locObj.lng || 0,
-          city: (locObj.extra?.city as string) || '',
-          poiName: locObj.name,
-          address: locObj.address || '',
-          poiClassifyId: locObj.poi_id || ''
-        }
-        logger.info(`[wechat-channels] Added location: ${locObj.name}`)
-      }
-    }
+    // TEMPORARILY DISABLED: location data encoding issues causing errCode 300002
+    // TODO: fix Chinese encoding in location data
+    // if (payload.platformFields?.location) {
+    //   const loc = payload.platformFields.location
+    //   if (typeof loc === 'object' && loc !== null && 'name' in loc) {
+    //     const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number; address?: string; extra?: Record<string, unknown> }
+    //     location = {
+    //       latitude: locObj.lat || 0,
+    //       longitude: locObj.lng || 0,
+    //       city: (locObj.extra?.city as string) || '',
+    //       poiName: locObj.name,
+    //       address: locObj.address || '',
+    //       poiClassifyId: locObj.poi_id || ''
+    //     }
+    //     logger.info(`[wechat-channels] Added location: ${locObj.name}`)
+    //   }
+    // }
 
     // Use upload result data for media info
     const uploadResult = this.lastUploadResult
