@@ -559,64 +559,48 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       throw new Error(`获取上传凭证失败: ${err}`)
     }
 
-    // Step 3: Upload video to ByteDance VOD (chunked upload, matching yixiaoer)
+    // Step 3: Upload video to ByteDance VOD (matching yixiaoer's uploadVideoPart$9)
     const node = uploadNodes[0]
     const storeInfo = node.StoreInfos?.[0]
     if (!node.UploadHost || !storeInfo?.StoreUri) {
       throw new Error('上传地址无效')
     }
 
+    const uploadUrl = `https://${node.UploadHost}/upload/v1/${storeInfo.StoreUri}`
     const fileBuffer = readFileSync(filePath)
-    const CHUNK_SIZE = 4 * 1024 * 1024 // 4MB — matching yixiaoer
-    const totalChunks = Math.ceil(fileBuffer.length / CHUNK_SIZE)
-    const uploadId = node.SessionKey || ''
 
-    const uploadHeaders = {
-      Authorization: storeInfo.Auth || '',
-      'Content-Type': 'application/octet-stream',
-      'X-Storage-U': userId,
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      Referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page'
-    }
+    // Calculate CRC32 matching yixiaoer: crc.crc32(buf).toString(16).replace("-","")
+    const crc32 = require('crc-32')
+    const fileCrc = (crc32.buf(fileBuffer) >>> 0).toString(16)
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
     try {
-      // Upload each chunk with phase=transfer
-      for (let i = 0; i < totalChunks; i++) {
-        const start = i * CHUNK_SIZE
-        const end = Math.min(start + CHUNK_SIZE, fileBuffer.length)
-        const chunk = fileBuffer.subarray(start, end)
-        const partNumber = i + 1
-        const partOffset = i * CHUNK_SIZE
-
-        const chunkUrl = `https://${node.UploadHost}/upload/v1/${storeInfo.StoreUri}?uploadid=${uploadId}&part_number=${partNumber}&phase=transfer&part_offset=${partOffset}`
-
-        await client.request({
-          method: 'POST',
-          url: chunkUrl,
-          data: chunk,
-          headers: uploadHeaders,
-          timeout: 120_000,
-          noCookie: true
-        })
-
-        const percent = 10 + Math.round((partNumber / totalChunks) * 70)
-        onProgress?.({ percent, stage: `上传中 ${partNumber}/${totalChunks}` })
-      }
-
-      // Finish upload
-      const finishUrl = `https://${node.UploadHost}/upload/v1/${storeInfo.StoreUri}?uploadid=${uploadId}&phase=finish&uploadmode=part`
-      await client.request({
+      const vodUploadResponse = await client.request<{
+        code?: number
+        message?: string
+      }>({
         method: 'POST',
-        url: finishUrl,
-        data: '',
-        headers: { ...uploadHeaders, 'Content-Type': 'text/plain;charset=UTF-8' },
-        timeout: 60_000,
-        noCookie: true
+        url: uploadUrl,
+        data: fileBuffer,
+        headers: {
+          'Content-CRC32': fileCrc,
+          Authorization: storeInfo.Auth || '',
+          'Content-Type': 'application/octet-stream',
+          'X-Storage-U': userId,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          Referer: 'https://studio.ixigua.com/',
+          Origin: 'https://studio.ixigua.com/'
+        },
+        timeout: 300_000,
+        noCookie: true,
+        onUploadProgress: (progress) => {
+          const percent = 10 + Math.round(progress.percent * 0.7)
+          onProgress?.({ percent, stage: `上传中 ${progress.percent}%` })
+        }
       })
 
-      logger.info(`[douyin] Video uploaded to VOD (${totalChunks} chunks)`)
+      logger.info(`[douyin] VOD upload response: status=${vodUploadResponse.status}, crc32=${fileCrc}`)
       onProgress?.({ percent: 80, stage: '正在提交上传...' })
     } catch (err) {
       logger.error('[douyin] VOD upload error:', err)

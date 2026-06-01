@@ -30,6 +30,7 @@ export default function UnifiedEditor({ form, onChange, platforms }: Props) {
           placeholder="输入视频标题"
           maxLength={100}
           showCount
+          style={{ border: '1px solid #d9d9d9', borderRadius: 8 }}
         />
       </Form.Item>
 
@@ -41,6 +42,7 @@ export default function UnifiedEditor({ form, onChange, platforms }: Props) {
           autoSize={{ minRows: 2, maxRows: 6 }}
           maxLength={2000}
           showCount
+          style={{ border: '1px solid #d9d9d9', borderRadius: 8 }}
         />
       </Form.Item>
 

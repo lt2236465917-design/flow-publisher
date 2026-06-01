@@ -9,7 +9,7 @@
   --flow-surface: rgba(255, 255, 255, 0.78);
   --flow-surface-elevated: rgba(255, 255, 255, 0.82);
   --flow-border: rgba(255, 255, 255, 0.85);
-  --flow-border-strong: rgba(255, 255, 255, 0.92);
+  --flow-border-strong: #d9d9d9;
   --flow-divider: rgba(0, 0, 0, 0.04);
 
   /* Text */
