@@ -105,14 +105,19 @@ export function registerFileDialogIpcHandlers(): void {
   // Convert data URL to temp file on disk (for Playwright setInputFiles)
   ipcMain.handle(IPC_CHANNELS.FILE_DATA_URL_TO_TEMP, async (_event, dataUrl: string): Promise<IpcResponse> => {
     try {
+      logger.info(`[FILE_DATA_URL_TO_TEMP] called, dataUrl length: ${dataUrl?.length}, starts with: ${dataUrl?.substring(0, 50)}`)
       const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/)
-      if (!match) return { success: false, error: '无效的 data URL 格式' }
+      if (!match) {
+        logger.warn(`[FILE_DATA_URL_TO_TEMP] Invalid data URL format, first 100 chars: ${dataUrl?.substring(0, 100)}`)
+        return { success: false, error: '无效的 data URL 格式' }
+      }
 
       const ext = match[1] === 'jpeg' ? 'jpg' : match[1]
       const buf = Buffer.from(match[2], 'base64')
       const fileName = `cover-${randomBytes(8).toString('hex')}.${ext}`
       const filePath = join(tmpdir(), fileName)
       writeFileSync(filePath, buf)
+      logger.info(`[FILE_DATA_URL_TO_TEMP] Saved cover to: ${filePath}, size: ${buf.length} bytes`)
 
       return { success: true, data: { filePath } }
     } catch (err) {

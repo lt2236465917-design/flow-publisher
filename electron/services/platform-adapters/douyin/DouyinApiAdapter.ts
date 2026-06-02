@@ -22,7 +22,8 @@ const API = {
   collections: 'https://creator.douyin.com/aweme/v1/collection/list/',
   poiRecommend: 'https://creator.douyin.com/aweme/v1/poi/recommend/',
   poiSearch: 'https://creator.douyin.com/aweme/v1/life/video_api/search/poi/',
-  vodCommit: 'https://vod.bytedanceapi.com'
+  vodCommit: 'https://vod.bytedanceapi.com',
+  imagexCommit: 'https://imagex.bytedanceapi.com'
 }
 
 const COMMON_PARAMS = {
@@ -62,12 +63,10 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         label: '内容声明',
         maxSelections: 1,
         options: [
-          { label: '原创声明', value: '原创声明' },
-          { label: '转载声明', value: '转载声明' },
-          { label: '内容由 AI 生成', value: 'AI生成' },
-          { label: '可能引起不适', value: '可能引起不适' },
-          { label: '虚构演绎，仅供娱乐', value: '虚构演绎' },
-          { label: '危险行为，请勿模仿', value: '危险行为' }
+          { label: '内容由 AI 生成', value: 'aigc' },
+          { label: '可能引起不适', value: 'maybe_unsuitable' },
+          { label: '虚构演绎，仅供娱乐', value: 'only_fun_new' },
+          { label: '危险行为，请勿模仿', value: 'dangerous_behavior' }
         ]
       },
       {
@@ -466,6 +465,208 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     throw new Error('获取上传凭证失败：服务器未返回认证信息')
   }
 
+  /**
+   * Upload cover image via ByteDance ImageX service.
+   * Matches yixiaoer's uploadCover$d flow:
+   * 1. ApplyImageUpload -> get upload host + auth
+   * 2. POST image binary to upload host
+   * 3. CommitImageUpload -> get image URI
+   */
+  private async uploadCoverImage(
+    client: HttpClient,
+    coverPath: string
+  ): Promise<{ uri: string; width: number; height: number } | null> {
+    if (!existsSync(coverPath)) {
+      logger.warn(`[douyin] Cover file not found: ${coverPath}`)
+      return null
+    }
+
+    try {
+      const coverData = readFileSync(coverPath)
+      const userId = await this.getCreatorUserId(client)
+
+      // Step 1: ApplyImageUpload - matching yixiaoer's getImageUploadArgs$3
+      const applyParams = {
+        Action: 'ApplyImageUpload',
+        Version: '2018-08-01',
+        ServiceId: 'jm8ajry58r',
+        app_id: '2906',
+        user_id: userId,
+        s: Math.random().toString(36).substring(2)
+      }
+      const applyQs = new URLSearchParams(applyParams).toString()
+      const applySignOpts = {
+        host: 'imagex.bytedanceapi.com',
+        path: `/?${applyQs}`,
+        method: 'GET',
+        service: 'imagex',
+        region: 'cn-north-1',
+        signQuery: true
+      }
+      const stsAuth = await this.getUploadAuth(client)
+      aws4.sign(applySignOpts, {
+        accessKeyId: stsAuth.AccessKeyID,
+        secretAccessKey: stsAuth.SecretAccessKey,
+        sessionToken: stsAuth.SessionToken
+      })
+
+      const applyUrl = `https://imagex.bytedanceapi.com${applySignOpts.path}`
+      const applyResponse = await client.get<{
+        Result?: {
+          InnerUploadAddress?: {
+            UploadNodes?: Array<{
+              UploadHost?: string
+              StoreInfos?: Array<{ StoreUri: string; Auth?: string }>
+              SessionKey?: string
+            }>
+          }
+          UploadAddress?: {
+            UploadHosts?: string[]
+            StoreInfos?: Array<{ StoreUri: string; Auth: string }>
+            SessionKey?: string
+          }
+        }
+        ResponseMetadata?: { Error?: { Code?: string; Message?: string } }
+      }>(applyUrl, undefined, {
+        Referer: 'https://creator.douyin.com/',
+        Origin: 'https://creator.douyin.com'
+      }, true)
+
+      logger.info(`[douyin] ApplyImageUpload response: ${JSON.stringify(applyResponse.data).substring(0, 500)}`)
+
+      // Handle both response formats (InnerUploadAddress vs UploadAddress)
+      const innerAddr = applyResponse.data?.Result?.InnerUploadAddress
+      const outerAddr = applyResponse.data?.Result?.UploadAddress
+      const uploadNodes = innerAddr?.UploadNodes || []
+      const uploadHosts = outerAddr?.UploadHosts || []
+      const storeInfos = outerAddr?.StoreInfos || []
+
+      let uploadHost: string
+      let storeUri: string
+      let auth: string
+      let sessionKey: string
+
+      if (uploadNodes.length > 0) {
+        // InnerUploadAddress format (matching yixiaoer)
+        const node = uploadNodes[0]
+        uploadHost = node.UploadHost || ''
+        storeUri = node.StoreInfos?.[0]?.StoreUri || ''
+        auth = node.StoreInfos?.[0]?.Auth || ''
+        sessionKey = node.SessionKey || ''
+      } else if (uploadHosts.length > 0 && storeInfos.length > 0) {
+        // UploadAddress format
+        uploadHost = uploadHosts[0]
+        storeUri = storeInfos[0].StoreUri
+        auth = storeInfos[0].Auth
+        sessionKey = outerAddr?.SessionKey || ''
+      } else {
+        logger.error('[douyin] ApplyImageUpload failed:', JSON.stringify(applyResponse.data).substring(0, 500))
+        return null
+      }
+
+      // Step 2: Upload image binary - matching yixiaoer's uploadImage$b
+      // Uses Content-CRC32 (NOT Content-MD5), X-Storage-U, and referer
+      const crc32 = require('crc-32')
+      const fileCrc = (crc32.buf(coverData) >>> 0).toString(16)
+      const uploadUrl = `https://${uploadHost}/upload/v1/${storeUri}`
+
+      logger.info(`[douyin] Uploading cover to: ${uploadUrl}`)
+
+      const uploadResponse = await client.request<{
+        code?: number
+        message?: string
+      }>({
+        method: 'POST',
+        url: uploadUrl,
+        data: coverData,
+        headers: {
+          'Content-CRC32': fileCrc,
+          Authorization: auth,
+          'Content-Type': 'application/octet-stream',
+          'X-Storage-U': userId,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page'
+        },
+        timeout: 30_000,
+        noCookie: true
+      })
+
+      logger.info(`[douyin] Image upload response: status=${uploadResponse.status}, data=${JSON.stringify(uploadResponse.data).substring(0, 300)}`)
+
+      if (uploadResponse.status !== 200) {
+        logger.error(`[douyin] Image upload failed: status=${uploadResponse.status}, data=${JSON.stringify(uploadResponse.data)}`)
+        return null
+      }
+
+      // Step 3: CommitImageUpload - matching yixiaoer's getUploadedImageInfo$4
+      const commitBody = JSON.stringify({ SessionKey: sessionKey })
+      const commitParams = {
+        Action: 'CommitImageUpload',
+        Version: '2018-08-01',
+        ServiceId: 'jm8ajry58r',
+        app_id: '2906',
+        user_id: userId
+      }
+      const commitQs = new URLSearchParams(commitParams).toString()
+      const commitSignOpts = {
+        host: 'imagex.bytedanceapi.com',
+        path: `/?${commitQs}`,
+        method: 'POST',
+        service: 'imagex',
+        region: 'cn-north-1',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Amz-Content-Sha256': createHash('sha256').update(commitBody).digest('hex')
+        },
+        body: commitBody
+      }
+      aws4.sign(commitSignOpts, {
+        accessKeyId: stsAuth.AccessKeyID,
+        secretAccessKey: stsAuth.SecretAccessKey,
+        sessionToken: stsAuth.SessionToken
+      })
+
+      const commitUrl = `https://imagex.bytedanceapi.com${commitSignOpts.path}`
+      const commitResponse = await client.request<{
+        Result?: {
+          Results?: Array<{
+            Uri: string
+            ImageWidth?: number
+            ImageHeight?: number
+          }>
+        }
+        ResponseMetadata?: { Error?: { Code?: string; Message?: string } }
+      }>({
+        method: 'POST',
+        url: commitUrl,
+        data: commitBody,
+        headers: {
+          ...commitSignOpts.headers as Record<string, string>,
+          Accept: '*/*',
+          Origin: 'https://creator.douyin.com',
+          Referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page'
+        },
+        noCookie: true
+      })
+
+      const result = commitResponse.data?.Result?.Results?.[0]
+      if (!result?.Uri) {
+        logger.error('[douyin] CommitImageUpload failed:', JSON.stringify(commitResponse.data).substring(0, 500))
+        return null
+      }
+
+      logger.info(`[douyin] Cover uploaded: uri=${result.Uri}, ${result.ImageWidth}x${result.ImageHeight}`)
+      return {
+        uri: result.Uri,
+        width: result.ImageWidth || 335,
+        height: result.ImageHeight || 251
+      }
+    } catch (err) {
+      logger.error('[douyin] uploadCoverImage error:', err)
+      return null
+    }
+  }
+
   async uploadVideoAPI(
     client: HttpClient,
     filePath: string,
@@ -669,10 +870,76 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
   async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {
     const cookie = client.getCookieString()
 
+    logger.info(`[douyin] submitContentAPI called, payload.coverPath="${payload.coverPath}", videoId="${videoId}"`)
+    logger.info(`[douyin] payload keys: ${Object.keys(payload).join(', ')}`)
+    logger.info(`[douyin] payload.platformFields: ${JSON.stringify(payload.platformFields)}`)
+
+    // Upload cover image via ImageX if coverPath is provided
+    let coverResult: { uri: string; width: number; height: number } | null = null
+    // Guard against IPC serializing undefined as the string "undefined"
+    const coverPath = (payload.coverPath && payload.coverPath !== 'undefined') ? payload.coverPath : undefined
+    if (coverPath && existsSync(coverPath)) {
+      logger.info(`[douyin] Uploading cover image: ${coverPath}`)
+      coverResult = await this.uploadCoverImage(client, coverPath)
+      if (coverResult) {
+        logger.info(`[douyin] Cover uploaded successfully: ${coverResult.uri}`)
+      } else {
+        logger.warn('[douyin] Cover upload failed, proceeding without custom cover')
+      }
+    } else {
+      logger.warn(`[douyin] No cover to upload: coverPath="${coverPath}", exists=${coverPath ? existsSync(coverPath) : 'N/A'}`)
+    }
+
     // Build hashtags text_extra array and full text with inline hashtags
+    // Matching yixiaoer's buildPostData_v2: title markers (type 7/8) + hashtag markers (type 1)
     const textExtra: Array<Record<string, unknown>> = []
-    let fullText = `${payload.title || ''} ${payload.description || ''}`
-    let offset = (payload.title?.length || 0) + 1
+    const titleText = payload.title || ''
+    const descText = payload.description || ''
+    let fullText = ''
+    let offset = 0
+
+    // Add title marker if title exists (matching yixiaoer: type 7 = title start)
+    if (titleText) {
+      textExtra.push({
+        start: 0,
+        type: 7,
+        user_id: '',
+        hashtag_id: 0,
+        end: titleText.length
+      })
+      fullText += titleText
+      offset = titleText.length
+
+      // Add title separator marker (type 8)
+      textExtra.push({
+        start: offset,
+        type: 8,
+        user_id: '',
+        hashtag_id: 0,
+        end: offset + 1
+      })
+      fullText += ' '
+      offset += 1
+    }
+
+    // Add description
+    if (descText) {
+      fullText += descText
+      offset += descText.length
+    }
+
+    // If no title, add space before hashtags
+    if (!titleText && descText) {
+      // already added
+    } else if (!titleText && !descText) {
+      // no text at all, hashtags start at 0
+    }
+
+    // Build hashtag source string (matching yixiaoer: "search" repeated N times, joined by "/")
+    const hashtagSource = payload.hashtags.length > 0
+      ? payload.hashtags.map(() => 'search').join('/')
+      : ''
+
     for (const tag of payload.hashtags) {
       const tagText = `#${tag} `
       textExtra.push({
@@ -690,6 +957,9 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     }
 
     // Build the create_v2 request body (matching yixiaoer's buildPostData_v2 structure)
+    // chapter_type: 0 when body text has content, 1 otherwise (matching yixiaoer)
+    const hasBodyText = !!(payload.description && payload.description.trim())
+
     const postData: Record<string, unknown> = {
       item: {
         common: {
@@ -697,10 +967,10 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           caption: payload.description || '',
           item_title: payload.title || '',
           activity: '[]',
-          text_extra: textExtra.length > 0 ? JSON.stringify(textExtra) : '',
+          text_extra: textExtra.length > 0 ? JSON.stringify(textExtra) : '[]',
           challenges: payload.hashtags.length > 0 ? JSON.stringify(payload.hashtags.map((t) => ({ cha_name: t, cid: '', type: 1, view_count: 0 }))) : '[]',
           mentions: '[]',
-          hashtag_source: '',
+          hashtag_source: hashtagSource,
           hot_sentence: '',
           visibility_type: 0,
           download: 1,
@@ -714,14 +984,14 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         },
         cooperation: { co_info: '' },
         cover: {
-          custom_cover_image_height: 335,
-          custom_cover_image_width: 251,
-          poster: '',
+          custom_cover_image_height: coverResult?.height || 335,
+          custom_cover_image_width: coverResult?.width || 251,
+          poster: coverResult?.uri || '',
           poster_delay: 0,
-          horizontal_custom_cover_image_uri: '',
+          horizontal_custom_cover_image_uri: coverResult?.uri || '',
           horizontal_cover_tsp: 0,
-          horizontal_custom_cover_image_height: 335,
-          horizontal_custom_cover_image_width: 447,
+          horizontal_custom_cover_image_height: coverResult?.height || 335,
+          horizontal_custom_cover_image_width: coverResult?.width || 447,
           cover_tools_extend_info: '',
           cover_tools_info: ''
         },
@@ -730,7 +1000,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           chapter: JSON.stringify({
             chapter_abstract: '',
             chapter_details: [],
-            chapter_type: 1,
+            chapter_type: hasBodyText ? 0 : 1,
             chapter_tools_info: {
               chapter_recommend_detail: [],
               chapter_recommend_abstract: '',
@@ -755,44 +1025,59 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       }
     }
 
-    // Add platform-specific fields
+    // Add platform-specific fields (matching yixiaoer's buildPostData_v2)
+    const item = postData.item as Record<string, unknown>
+
     if (payload.platformFields) {
+      // Collection (合集): matching yixiaoer's mix format with mix_id and mix_order
       if (payload.platformFields.collection) {
-        ;(postData.item as Record<string, unknown>).collection_id = payload.platformFields.collection
+        item.mix = {
+          mix_id: payload.platformFields.collection as string,
+          mix_order: 0
+        }
+        logger.info(`[douyin] Added collection: ${payload.platformFields.collection}`)
       }
 
-      // Add POI location if provided
-      // poiLocation is a LocationResult object from LocationSearch component
+      // POI Location: matching yixiaoer's anchor format (NOT common.poi_info)
       if (payload.platformFields.poiLocation) {
         const loc = payload.platformFields.poiLocation
         if (typeof loc === 'object' && loc !== null && 'name' in loc) {
           const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number; address?: string }
-          const common = (postData.item as Record<string, unknown>).common as Record<string, unknown>
-          common.poi_info = JSON.stringify({
+          item.anchor = {
             poi_id: locObj.poi_id || '',
             poi_name: locObj.name,
-            address: locObj.address || '',
-            ...(locObj.lat ? { latitude: locObj.lat } : {}),
-            ...(locObj.lng ? { longitude: locObj.lng } : {})
-          })
-          logger.info(`[douyin] Added POI location: ${locObj.name}`)
+            anchor_content: JSON.stringify({ is_commerce_intention: false })
+          }
+          logger.info(`[douyin] Added POI location via anchor: ${locObj.name}`)
         }
       }
 
       // Download permission: ['allow'] = allow, ['deny'] = disallow
       if (Array.isArray(payload.platformFields.downloadPermission)) {
         const perm = payload.platformFields.downloadPermission as string[]
-        const common = (postData.item as Record<string, unknown>).common as Record<string, unknown>
+        const common = item.common as Record<string, unknown>
         common.download = perm.includes('deny') ? 0 : 1
       }
 
-      // Declarations: map selected options to Douyin's user_declare_info format
+      // Declarations: matching yixiaoer's DouYinStatementType format
+      // choose_value uses English enum values: "aigc", "maybe_unsuitable", "dangerous_behavior", "only_fun_new"
       if (Array.isArray(payload.platformFields.declarations) && payload.platformFields.declarations.length > 0) {
-        const declare = (postData.item as Record<string, unknown>).declare as Record<string, unknown>
-        declare.user_declare_info = JSON.stringify(
-          (payload.platformFields.declarations as string[]).map((d) => ({ protocol_name: d }))
-        )
-        logger.info(`[douyin] Added declarations: ${payload.platformFields.declarations.join(', ')}`)
+        const selectedValue = (payload.platformFields.declarations as string[])[0]
+        const common = item.common as Record<string, unknown>
+
+        // AI生成声明 → isAigc: true (matching yixiaoer)
+        if (selectedValue === 'aigc') {
+          common.isAigc = true
+          logger.info(`[douyin] Added AI declaration: isAigc=true`)
+        }
+
+        // Set user_declare_info with the correct choose_value
+        const declare = item.declare as Record<string, unknown>
+        declare.user_declare_info = JSON.stringify({
+          choose_value: selectedValue,
+          user_declare_place: ''
+        })
+        logger.info(`[douyin] Added declaration: choose_value=${selectedValue}`)
       }
     }
 
@@ -862,8 +1147,10 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         }
       )
 
+      logger.info(`[douyin] create_v2 response: ${JSON.stringify(response.data).substring(0, 1000)}`)
+
       if (response.data.status_code !== 0) {
-        throw new Error(`内容提交失败: ${response.data.status_msg || '未知错误'}`)
+        throw new Error(`内容提交失败: ${response.data.status_msg || JSON.stringify(response.data)}`)
       }
 
       logger.info(`[douyin] Content submitted, aweme_id: ${response.data.aweme_id}`)
@@ -1102,19 +1389,6 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         poi_id: poi.poi_id,
         extra: { city: poi.address_info?.city, district: poi.address_info?.district, city_code: poi.address_info?.city_code }
       }))
-
-      // Add city-level option as first result if not already present
-      if (options?.city && !results.some(r => r.name === options.city || r.name === options.city + '市')) {
-        results.unshift({
-          id: `city_${options.city}`,
-          name: options.city,
-          address: options.city,
-          lat: options.lat,
-          lng: options.lng,
-          poi_id: `city_${options.city}`,
-          extra: { city: options.city, isCityLevel: true }
-        })
-      }
 
       return results
     } catch (err) {

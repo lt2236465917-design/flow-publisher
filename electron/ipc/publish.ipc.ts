@@ -142,6 +142,13 @@ export function registerPublishIpcHandlers(): void {
     try {
       // DEBUG: log incoming params to trace encoding issues
       logger.info(`[publish] Submit params: title="${params.content.title}", hashtags=${JSON.stringify(params.content.hashtags)}, descLen=${params.content.description?.length}`)
+      logger.info(`[publish] Submit content keys: ${Object.keys(params.content).join(', ')}`)
+      logger.info(`[publish] coverPath="${params.content.coverPath}", platformFields=${JSON.stringify(params.content.platformFields)}`)
+
+      // Guard: IPC may serialize undefined as the string "undefined"
+      if (params.content.coverPath === 'undefined') {
+        params.content.coverPath = undefined
+      }
 
       const adapter = getAdapter(params.platformId)
       if (!adapter) {

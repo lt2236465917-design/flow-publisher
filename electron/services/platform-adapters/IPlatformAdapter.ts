@@ -43,6 +43,9 @@ export interface SubmitContentPayload {
   hashtags: string[]
   coverPath?: string
   declarations: string[]
+  /** Shared cover data from the form (horizontal/vertical data URLs) */
+  cover?: { horizontal_4_3: string | null; vertical_3_4: string | null; recommended: string[] }
+  /** Platform-specific field overrides (e.g. collection, poiLocation, declarations, downloadPermission) */
   platformFields?: Record<string, unknown>
 }
 

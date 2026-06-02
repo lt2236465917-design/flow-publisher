@@ -109,12 +109,13 @@ export function usePublishFlow() {
     }
     const frames = usePublishStore.getState().frames
     if (index >= 0 && index < frames.length) {
+      const frameDataUrl = frames[index].dataUrl
       store.updateForm({
         coverFrameIndex: index,
         coverPath: null,
-        horizontalCover: null,
-        verticalCover: null,
-        cover: { horizontal_4_3: null, vertical_3_4: null, recommended: [] }
+        horizontalCover: frameDataUrl,
+        verticalCover: frameDataUrl,
+        cover: { horizontal_4_3: frameDataUrl, vertical_3_4: frameDataUrl, recommended: [] }
       })
     }
   }, [store])
@@ -157,17 +158,27 @@ export function usePublishFlow() {
     if (!confirmed) return
 
     // Convert cover data URL to temp file (new cover format + legacy fallback)
-    const coverSource = form.cover.horizontal_4_3 || form.horizontalCover
+    const coverSource = form.cover.horizontal_4_3 || form.horizontalCover || form.coverPath
     let coverFilePath: string | undefined
-    if (coverSource) {
+    console.log(`[usePublishFlow] cover.horizontal_4_3: ${form.cover.horizontal_4_3 ? `len=${form.cover.horizontal_4_3.length}` : 'null'}`)
+    console.log(`[usePublishFlow] horizontalCover: ${form.horizontalCover ? `len=${form.horizontalCover.length}` : 'null'}`)
+    console.log(`[usePublishFlow] coverPath: ${form.coverPath}`)
+    console.log(`[usePublishFlow] coverSource: ${coverSource ? `${coverSource.substring(0, 60)}... (len=${coverSource.length})` : 'null/empty'}`)
+    if (coverSource && coverSource.startsWith('data:')) {
       const coverRes = await ipcInvoke<{ filePath: string }>(
         IPC_CHANNELS.FILE_DATA_URL_TO_TEMP,
         coverSource
       )
+      console.log(`[usePublishFlow] FILE_DATA_URL_TO_TEMP result:`, JSON.stringify(coverRes))
       if (coverRes.success && coverRes.data?.filePath) {
         coverFilePath = coverRes.data.filePath
       }
+    } else if (coverSource && !coverSource.startsWith('data:')) {
+      // It's a file path, use directly
+      coverFilePath = coverSource
+      console.log(`[usePublishFlow] Using cover as file path: ${coverFilePath}`)
     }
+    console.log(`[usePublishFlow] Final coverFilePath: ${coverFilePath}`)
 
     const tasks = form.platforms.map((p) => ({
       id: `task-${p}-${Date.now()}`,
@@ -211,15 +222,19 @@ export function usePublishFlow() {
         const mergedContent = mergeSharedWithOverrides(form, platformId)
 
         store.updateTask(task.id, { status: 'submitting', progress: 90 })
+        const contentPayload: Record<string, unknown> = {
+          ...mergedContent,
+          platformFields: form.platformOverrides[platformId as PlatformId] || {}
+        }
+        // Only include coverPath if it's a valid file path (avoid IPC converting undefined to "undefined")
+        if (coverFilePath) {
+          contentPayload.coverPath = coverFilePath
+        }
         const submitRes = await ipcInvoke<{ recordId: string }>(IPC_CHANNELS.PUBLISH_SUBMIT, {
           recordId,
           platformId,
           videoId,
-          content: {
-            ...mergedContent,
-            coverPath: coverFilePath,
-            platformFields: form.platformOverrides[platformId as PlatformId] || {}
-          }
+          content: contentPayload
         })
 
         if (submitRes.success) {

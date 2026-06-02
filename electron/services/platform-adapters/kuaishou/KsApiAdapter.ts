@@ -1009,20 +1009,6 @@ export class KsApiAdapter extends BasePlatformAdapter {
         extra: { city: poi.city }
       }))
 
-      // Add city-level option as first result if not already present
-      const cityDisplayName = cityName.replace('市', '')
-      if (cityDisplayName && !results.some(r => r.name === cityDisplayName || r.name === cityName)) {
-        results.unshift({
-          id: `city_${cityDisplayName}`,
-          name: cityDisplayName,
-          address: cityName,
-          lat: options?.lat,
-          lng: options?.lng,
-          poi_id: `city_${cityDisplayName}`,
-          extra: { city: cityDisplayName, isCityLevel: true }
-        })
-      }
-
       return results
     } catch (err) {
       logger.error('[kuaishou] getRecommendLocations error:', err)

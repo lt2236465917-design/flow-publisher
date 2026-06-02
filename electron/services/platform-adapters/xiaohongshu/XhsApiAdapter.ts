@@ -867,19 +867,6 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         extra: { city: item.city, poi_type: item.poi_type }
       }))
 
-      // Add city-level option as first result if not already present
-      if (options?.city && !results.some(r => r.name === options.city || r.name === options.city + '市')) {
-        results.unshift({
-          id: `city_${options.city}`,
-          name: options.city,
-          address: options.city,
-          lat: options.lat,
-          lng: options.lng,
-          poi_id: `city_${options.city}`,
-          extra: { city: options.city, isCityLevel: true }
-        })
-      }
-
       return results
     } catch (err) {
       logger.error('[xiaohongshu] getRecommendLocations error:', err)

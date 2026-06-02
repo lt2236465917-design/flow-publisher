@@ -103,7 +103,7 @@ export class HttpClient {
       logger.info(`[HttpClient] ${options.method} ${options.url}`)
       logger.info(`[HttpClient] Headers: ${JSON.stringify(config.headers)}`)
       if (typeof options.data === 'string') {
-        logger.info(`[HttpClient] Body (string, first 500): ${options.data.substring(0, 500)}`)
+        logger.info(`[HttpClient] Body (string, first 3000): ${options.data.substring(0, 3000)}`)
       }
 
       const response: AxiosResponse<T> = await axios(config)

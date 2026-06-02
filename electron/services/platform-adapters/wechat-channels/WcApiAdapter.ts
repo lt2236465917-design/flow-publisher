@@ -1414,17 +1414,6 @@ export class WcApiAdapter extends BasePlatformAdapter {
           poi_id: addressData.poiCheckSum,
           extra: { city: addressData.city, region: addressData.province, checkSum: addressData.poiCheckSum }
         })
-      } else if (options?.city) {
-        // Fallback: add city-level option from IP location
-        results.push({
-          id: `city_${options.city}`,
-          name: options.city,
-          address: options.city,
-          lat: options.lat,
-          lng: options.lng,
-          poi_id: `city_${options.city}`,
-          extra: { city: options.city, isCityLevel: true }
-        })
       }
 
       // Add all list items
