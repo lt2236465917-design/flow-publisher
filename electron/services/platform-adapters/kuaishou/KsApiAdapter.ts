@@ -659,7 +659,197 @@ export class KsApiAdapter extends BasePlatformAdapter {
     return String(fileId || photoId || token)
   }
 
-  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {
+  /**
+   * Upload custom cover image to Kuaishou.
+   * Uses the same CDN fragment upload flow as video:
+   *   1. upload/pre → get token
+   *   2. Upload image as single fragment to CDN
+   *   3. CDN upload/complete
+   *   4. REST upload/finish → get coverKey
+   * Returns the coverKey to use in submitContentAPI.
+   */
+  async uploadCoverImageAPI(
+    client: HttpClient,
+    imagePath: string,
+    onProgress?: (p: UploadProgress) => void
+  ): Promise<string> {
+    if (!existsSync(imagePath)) {
+      throw new Error(`封面图片不存在: ${imagePath}`)
+    }
+
+    const stats = statSync(imagePath)
+    const coverData = readFileSync(imagePath)
+    logger.info(`[kuaishou] Uploading cover image: ${imagePath}, size=${stats.size} bytes`)
+
+    onProgress?.({ percent: 0, stage: '正在获取封面上传凭证...' })
+
+    const cookie = client.getCookieString()
+    const apiPh = this.extractApiPh(cookie)
+    const https = require('https')
+    const agent = new https.Agent({ keepAlive: true, maxSockets: 3, rejectUnauthorized: false })
+
+    try {
+      // Step 1: Get upload token (reuse video upload/pre endpoint)
+      const preBody = JSON.stringify({ uploadType: 1, 'kuaishou.web.cp.api_ph': apiPh })
+      let token = ''
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const preResponse = await client.post<any>(
+            API.uploadPre,
+            preBody,
+            { referer: REFERER, Origin: ORIGIN, 'Content-Type': 'application/json' }
+          )
+          logger.info(`[kuaishou] Cover upload/pre response: ${JSON.stringify(preResponse.data).substring(0, 300)}`)
+          if (preResponse.data?.result === 1 && preResponse.data?.data?.token) {
+            token = preResponse.data.data.token
+            break
+          }
+        } catch (err: any) {
+          logger.warn(`[kuaishou] Cover upload/pre attempt ${attempt + 1} error: ${err.message}`)
+        }
+        if (attempt < 2) await delay(1000 * (attempt + 1))
+      }
+      if (!token) throw new Error('获取封面上传凭证失败')
+
+      onProgress?.({ percent: 20, stage: '正在上传封面图片...' })
+
+      // Step 2: Upload image as single fragment to CDN
+      const uploadHost = 'upload.kuaishouzt.com'
+      await new Promise<void>((resolve, reject) => {
+        const req = https.request({
+          hostname: uploadHost,
+          port: 443,
+          path: `/api/upload/fragment?upload_token=${encodeURIComponent(token)}&fragment_id=0`,
+          method: 'POST',
+          agent,
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'Content-Length': coverData.length,
+            'Referer': REFERER,
+            'Origin': ORIGIN
+          }
+        }, (res: any) => {
+          let data = ''
+          res.on('data', (c: Buffer) => { data += c.toString() })
+          res.on('end', () => {
+            if (res.statusCode === 200) {
+              try {
+                const json = JSON.parse(data)
+                if (json.result === 1) { resolve() }
+                else { reject(new Error(`Cover fragment upload failed: ${data.substring(0, 200)}`)) }
+              } catch { reject(new Error(`Cover fragment non-JSON: ${data.substring(0, 200)}`)) }
+            } else {
+              reject(new Error(`Cover fragment HTTP ${res.statusCode}: ${data.substring(0, 200)}`))
+            }
+          })
+        })
+        req.on('error', reject)
+        req.setTimeout(60_000, () => { req.destroy(); reject(new Error('Cover fragment timeout')) })
+        req.write(coverData)
+        req.end()
+      })
+
+      logger.info('[kuaishou] Cover fragment uploaded to CDN')
+      onProgress?.({ percent: 60, stage: '正在完成封面上传...' })
+
+      // Step 3: CDN upload/complete
+      const completeBody = JSON.stringify({ upload_token: token, fragment_count: 1 })
+      await new Promise<void>((resolve, reject) => {
+        const req = https.request({
+          hostname: uploadHost,
+          port: 443,
+          path: `/api/upload/complete?upload_token=${encodeURIComponent(token)}&fragment_count=1`,
+          method: 'POST',
+          agent,
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(completeBody),
+            'Referer': REFERER,
+            'Origin': ORIGIN
+          }
+        }, (res: any) => {
+          let data = ''
+          res.on('data', (c: Buffer) => { data += c.toString() })
+          res.on('end', () => {
+            logger.info(`[kuaishou] Cover CDN complete response: ${data.substring(0, 300)}`)
+            resolve() // CDN complete is best-effort
+          })
+        })
+        req.on('error', (e: Error) => { logger.warn(`[kuaishou] Cover CDN complete error: ${e.message}`); resolve() })
+        req.setTimeout(30_000, () => { req.destroy(); resolve() })
+        req.write(completeBody)
+        req.end()
+      })
+
+      // Step 4: REST upload/finish — get coverKey
+      onProgress?.({ percent: 80, stage: '正在确认封面上传...' })
+      await delay(3000) // Brief wait for server processing
+
+      const ext = require('path').extname(imagePath).toLowerCase()
+      const mimeType = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg'
+      const finishBodyObj: Record<string, unknown> = {
+        token,
+        fileName: require('path').basename(imagePath),
+        fileTyp: mimeType,
+        fileLength: stats.size,
+        'kuaishou.web.cp.api_ph': apiPh
+      }
+      const finishBody = JSON.stringify(finishBodyObj)
+
+      const signService = getSignService()
+      const sigPath = '/rest/cp/works/v2/video/pc/upload/finish'
+      let finishSig3 = await signService.getSignature(
+        'kuaishou', cookie,
+        JSON.stringify({ url: sigPath, body: finishBody }),
+        finishBody
+      )
+      let finishUrl = finishSig3
+        ? `${API.uploadFinish}?__NS_sig3=${finishSig3}`
+        : API.uploadFinish
+
+      let coverKey = ''
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const res = await client.post<any>(
+          finishUrl,
+          finishBody,
+          { referer: REFERER, Origin: ORIGIN, 'Content-Type': 'application/json' }
+        )
+        logger.info(`[kuaishou] Cover upload/finish response (attempt ${attempt + 1}): ${JSON.stringify(res.data).substring(0, 500)}`)
+
+        if (res.data?.result === 1 && res.data?.data) {
+          // Extract coverKey from the finish response
+          coverKey = res.data.data.coverKey || res.data.data.photoIdStr || String(res.data.data.fileId || '')
+          break
+        }
+
+        if (res.data?.result === 500002) {
+          logger.info('[kuaishou] Cover upload/finish returned 500002, waiting...')
+        }
+
+        if (attempt < 2) {
+          finishSig3 = await signService.getSignature(
+            'kuaishou', cookie,
+            JSON.stringify({ url: sigPath, body: finishBody }),
+            finishBody
+          )
+          if (finishSig3) finishUrl = `${API.uploadFinish}?__NS_sig3=${finishSig3}`
+          await delay(3000 * (attempt + 1))
+        }
+      }
+
+      if (!coverKey) {
+        throw new Error('封面上传完成但未获取到coverKey')
+      }
+
+      logger.info(`[kuaishou] Cover uploaded successfully: coverKey=${coverKey}`)
+      onProgress?.({ percent: 100, stage: '封面上传完成' })
+      return coverKey
+    } finally {
+      agent.destroy()
+    }
+  }
+
+  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<void> {
     const uploadResult = this.lastUploadResult
     const fileId = uploadResult?.fileId || Number(videoId) || 0
 
@@ -696,13 +886,14 @@ export class KsApiAdapter extends BasePlatformAdapter {
     }
 
     // Interaction settings — default all enabled
-    // Field names match yixiaoer (快手创作者平台实际接受的字段名)
+    // IMPORTANT: Kuaishou API expects BOOLEAN values, not numbers!
+    // Verified from real browser capture: allowSameFrame=true, downloadType=1, disableNearbyShow=false
     const interactionSettings = Array.isArray(payload.platformFields?.interactionSettings)
       ? (payload.platformFields.interactionSettings as string[])
       : ['allowSameFrame', 'allowDownload', 'showInLocal']
-    const allowSameFrame = interactionSettings.includes('allowSameFrame') ? 1 : 0
-    const downloadType = interactionSettings.includes('allowDownload') ? 2 : 0
-    const disableNearbyShow = interactionSettings.includes('showInLocal') ? 0 : 1
+    const allowSameFrame = interactionSettings.includes('allowSameFrame')  // boolean
+    const downloadType = interactionSettings.includes('allowDownload') ? 1 : 0  // 1=allowed, 0=disabled
+    const disableNearbyShow = !interactionSettings.includes('showInLocal')  // boolean, inverted
 
     // Author declaration — supplementary text
     const authorDeclaration = payload.platformFields?.authorDeclaration
@@ -753,12 +944,15 @@ export class KsApiAdapter extends BasePlatformAdapter {
 
     const params: Record<string, unknown> = {
       fileId,
-      coverKey: uploadResult?.coverKey || '',
+      // Priority: uploaded custom cover > auto-generated cover from video upload
+      coverKey: coverFileId || uploadResult?.coverKey || '',
       coverTimeStamp: 0,
       caption: caption.trim(),
       photoStatus: 1,
-      coverType: 1,
+      // coverType: 2 = custom cover uploaded by user, 1 = auto-generated from video
+      coverType: coverFileId ? 2 : 1,
       coverTitle: '',
+      coverCropped: !!coverFileId,
       photoType: 0,
       privacyType,
       width: videoWidth,
@@ -783,7 +977,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
       disableNearbyShow
     }
 
-    logger.info(`[kuaishou] Submitting: fileId=${fileId}, caption=${caption.substring(0, 80)}`)
+    logger.info(`[kuaishou] Submitting: fileId=${fileId}, coverKey=${coverFileId || uploadResult?.coverKey || 'auto'}, caption=${caption.substring(0, 80)}`)
 
     // Submit via HttpClient + SignService with __NS_sig3
     const submitBody = JSON.stringify(params)
