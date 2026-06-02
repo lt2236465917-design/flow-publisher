@@ -73,13 +73,8 @@ export class WcApiAdapter extends BasePlatformAdapter {
         label: '添加合集',
         placeholder: '选择合集',
         dynamicKey: 'collections'
-      },
-      {
-        name: 'originalDeclaration',
-        type: 'checkbox',
-        label: '声明原创',
-        defaultValue: false
       }
+      // originalDeclaration removed — yixiaoer does not implement this for WeChat Channels
     ]
   }
 
@@ -873,24 +868,29 @@ export class WcApiAdapter extends BasePlatformAdapter {
 
     // Build location — yixiaoer sends {} by default, only populates if location data exists
     // location is a LocationResult object from LocationSearch component
+    // yixiaoer format: { latitude, longitude, city, poiName, address, poiClassifyId: uid }
+    // NOTE: latitude/longitude must be valid (not 0) — API rejects zero coordinates
     let location: Record<string, unknown> = {}
-    // TEMPORARILY DISABLED: location data encoding issues causing errCode 300002
-    // TODO: fix Chinese encoding in location data
-    // if (payload.platformFields?.location) {
-    //   const loc = payload.platformFields.location
-    //   if (typeof loc === 'object' && loc !== null && 'name' in loc) {
-    //     const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number; address?: string; extra?: Record<string, unknown> }
-    //     location = {
-    //       latitude: locObj.lat || 0,
-    //       longitude: locObj.lng || 0,
-    //       city: (locObj.extra?.city as string) || '',
-    //       poiName: locObj.name,
-    //       address: locObj.address || '',
-    //       poiClassifyId: locObj.poi_id || ''
-    //     }
-    //     logger.info(`[wechat-channels] Added location: ${locObj.name}`)
-    //   }
-    // }
+    if (payload.platformFields?.location) {
+      const loc = payload.platformFields.location
+      if (typeof loc === 'object' && loc !== null && 'name' in loc) {
+        const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number; address?: string; extra?: Record<string, unknown> }
+        // Only include location if we have valid coordinates (not 0)
+        if (locObj.lat && locObj.lng) {
+          location = {
+            latitude: locObj.lat,
+            longitude: locObj.lng,
+            city: (locObj.extra?.city as string) || '',
+            poiName: locObj.name,
+            address: locObj.address || '',
+            poiClassifyId: locObj.poi_id || ''
+          }
+          logger.info(`[wechat-channels] Added location: ${locObj.name}, lat=${locObj.lat}, lng=${locObj.lng}`)
+        } else {
+          logger.info(`[wechat-channels] Skipping location (no coordinates): ${locObj.name}`)
+        }
+      }
+    }
 
     // Use upload result data for media info
     const uploadResult = this.lastUploadResult
@@ -998,28 +998,54 @@ export class WcApiAdapter extends BasePlatformAdapter {
     const handleFlag = videoDuration > 60 ? 2 : 1
 
     // Generate finderTopicInfo XML matching yixiaoer's XMLWriter output
-    // yixiaoer's XMLWriter escapes < and >, then .replace(/&lt;/g,"<").replace(/&gt;/g,">") converts back
-    // So the final output uses actual CDATA: <![CDATA[desc]]>
-    // Topics are wrapped in <topic> child elements
-    const valueCount = 1 + topics.length
-    const atPos = topics.length > 0 ? (topics.length + 2).toString() : '2'
-    let topicXml = `<finder><version>1</version><valuecount>${valueCount}</valuecount><style><at>${atPos}</at></style>`
-    topicXml += `<value0><![CDATA[${desc}]]></value0>`
+    // yixiaoer's XMLWriter: each topic gets TWO value nodes (topic + empty separator)
+    // Structure: <finder><version>1</version><valuecount>N</valuecount><style><at>pos</at></style>
+    //   <value0><![CDATA[desc]]></value0>
+    //   <value1><topic><![CDATA[#topic1#]]></topic></value1>
+    //   <value2><![CDATA[ ]]></value2>   ← separator
+    //   ...
+    // </finder>
+    const xmlParts: string[] = []
+    const topicPositions: number[] = []
+    let xmlValueIndex = 0
+    const xmlValueCount = 1 + topics.length * 2
+
+    // value0 = description
+    xmlParts.push(`<value${xmlValueIndex}><![CDATA[${desc}]]></value${xmlValueIndex}>`)
+    xmlValueIndex++
+
+    // Each topic: topic node + empty separator node
     for (let i = 0; i < topics.length; i++) {
-      topicXml += `<value${i + 1}><topic><![CDATA[#${topics[i]}#]]></topic></value${i + 1}>`
+      topicPositions.push(xmlValueIndex)
+      xmlParts.push(`<value${xmlValueIndex}><topic><![CDATA[#${topics[i]}#]]></topic></value${xmlValueIndex}>`)
+      xmlValueIndex++
+      xmlParts.push(`<value${xmlValueIndex}><![CDATA[ ]]></value${xmlValueIndex}>`)
+      xmlValueIndex++
     }
-    topicXml += '</finder>'
+
+    const atValue = topicPositions.length > 0 ? topicPositions.join(',') : '2'
+    const topicXml = `<finder><version>1</version><valuecount>${xmlValueCount}</valuecount>` +
+      `<style><at>${atValue}</at></style>` +
+      xmlParts.join('') +
+      '</finder>'
 
     // Build collection — from platformFields.collection (dynamic-select value)
     // yixiaoer puts collection inside objectDesc.topic as collectionId/collectionName
     const collectionId = (payload.platformFields?.collection as string) || ''
+
+    // Build shortTitle array (matching yixiaoer)
+    const shortTitleArr: Array<{ shortTitle: string }> = []
+    if (payload.title) {
+      shortTitleArr.push({ shortTitle: payload.title })
+    }
 
     const postReq: Record<string, unknown> = {
       longitude: 0,
       latitude: 0,
       feedLongitude: 0,
       feedLatitude: 0,
-      originalFlag: payload.platformFields?.originalDeclaration ? 1 : 0,
+      // TODO: test originalFlag=1 separately — yixiaoer always sends 0
+      originalFlag: 0,
       objectType: 0,
       postFlag: 0,
       isFullPost,
@@ -1047,7 +1073,8 @@ export class WcApiAdapter extends BasePlatformAdapter {
           urlCdnTaskId: draftId,
           videoPlayLen: videoDuration,
           width: videoWidth
-        }]
+        }],
+        shortTitle: shortTitleArr
       },
       report: {
         _log_finder_id: finderUsername || '',
@@ -1329,10 +1356,15 @@ export class WcApiAdapter extends BasePlatformAdapter {
    */
   async getRecommendLocations(client: HttpClient, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
+      // Ensure we have the finderUsername from auth_data (required for _log_finder_id)
+      if (!this.cachedFinderUsername) {
+        await this.checkSessionAPI(client)
+      }
+
       const rawCookie = client.getCookieString()
       // Filter to only WeChat cookies — the API rejects requests with foreign cookies
       const cookie = this.filterWechatCookies(rawCookie)
-      const finderId = this.extractFinderId(rawCookie) || this.cachedFinderUsername || ''
+      const finderId = this.cachedFinderUsername || this.extractFinderId(rawCookie) || ''
 
       logger.info(`[wechat-channels] getRecommendLocations called with finderId: ${finderId}, options:`, options)
       logger.info(`[wechat-channels] Filtered cookies: "${cookie}"`)
@@ -1402,32 +1434,20 @@ export class WcApiAdapter extends BasePlatformAdapter {
 
       const results: import('../IPlatformAdapter').LocationResult[] = []
 
-      // yixiaoer also adds the default address as a location option (when no query)
-      const addressData = response.data?.data?.address
-      if (addressData?.poiCheckSum) {
-        results.push({
-          id: addressData.poiCheckSum,
-          name: addressData.city || '',
-          address: (addressData.province || '') + (addressData.city || ''),
-          lat: undefined,
-          lng: undefined,
-          poi_id: addressData.poiCheckSum,
-          extra: { city: addressData.city, region: addressData.province, checkSum: addressData.poiCheckSum }
-        })
-      }
-
-      // Add all list items
+      // Only add list items that have valid coordinates (API rejects lat=0/lng=0)
       const list = response.data?.data?.list || []
       for (const poi of list) {
-        results.push({
-          id: poi.uid || '',
-          name: poi.name || '',
-          address: poi.fullAddress || poi.address || poi.city || '',
-          lat: poi.latitude,
-          lng: poi.longitude,
-          poi_id: poi.uid,
-          extra: { city: poi.city, region: poi.region, checkSum: poi.poiCheckSum }
-        })
+        if (poi.latitude && poi.longitude) {
+          results.push({
+            id: poi.uid || '',
+            name: poi.name || '',
+            address: poi.fullAddress || poi.address || poi.city || '',
+            lat: poi.latitude,
+            lng: poi.longitude,
+            poi_id: poi.uid,
+            extra: { city: poi.city, region: poi.region, checkSum: poi.poiCheckSum }
+          })
+        }
       }
 
       return results
@@ -1443,9 +1463,14 @@ export class WcApiAdapter extends BasePlatformAdapter {
    */
   async searchLocation(client: HttpClient, keyword: string, options?: { lat?: number; lng?: number; count?: number }): Promise<import('../IPlatformAdapter').LocationResult[]> {
     try {
+      // Ensure we have the finderUsername from auth_data (required for _log_finder_id)
+      if (!this.cachedFinderUsername) {
+        await this.checkSessionAPI(client)
+      }
+
       const rawCookie = client.getCookieString()
       const cookie = this.filterWechatCookies(rawCookie)
-      const finderId = this.extractFinderId(rawCookie) || this.cachedFinderUsername || ''
+      const finderId = this.cachedFinderUsername || this.extractFinderId(rawCookie) || ''
 
       // Use the same endpoint and body format as recommend (matching yixiaoer)
       const body = {
@@ -1518,6 +1543,11 @@ export class WcApiAdapter extends BasePlatformAdapter {
    */
   async getCollections(client: HttpClient): Promise<Array<{ label: string; value: string }>> {
     try {
+      // Ensure we have the finderUsername from auth_data (required for session validation)
+      if (!this.cachedFinderUsername) {
+        await this.checkSessionAPI(client)
+      }
+
       const response = await client.post<{
         errCode?: number
         data?: {
