@@ -1,7 +1,7 @@
 import type { BrowserContext, Page } from 'playwright-core'
 import axios from 'axios'
 import { BasePlatformAdapter } from '../BasePlatformAdapter'
-import type { UploadProgress, SubmitContentPayload, VideoConstraints } from '../IPlatformAdapter'
+import type { UploadProgress, SubmitContentPayload, VideoConstraints, VideoMetadata } from '../IPlatformAdapter'
 import type { PlatformFieldDefinition } from '../../../shared/types/platform-fields'
 import { HttpClient } from '../../http/HttpClient'
 import { XHS_URLS } from './xhs-urls'
@@ -30,7 +30,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
   getVideoConstraints(): VideoConstraints {
     return {
-      maxFileSizeMB: 4096,
+      maxFileSizeMB: 500,
       maxDurationSec: 900,
       supportedFormats: ['mp4', 'mov', 'avi', 'flv']
     }
@@ -59,9 +59,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         options: [
           { label: '虚构演绎，仅供娱乐', value: '虚构演绎' },
           { label: '笔记含AI合成内容', value: 'AI合成' },
-          { label: '内容包含营销广告', value: '营销广告' },
-          { label: '自主拍摄', value: '自主拍摄' },
-          { label: '来源转载', value: '来源转载' }
+          { label: '内容包含营销广告', value: '营销广告' }
         ]
       },
       {
@@ -424,7 +422,78 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     return fileId
   }
 
-  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {
+  /**
+   * Upload cover image to Xiaohongshu via Tencent COS.
+   * Uses the same permit API as video but with scene=image.
+   * Reference: yixiaoer uploadCoverProcess$6 / uploadImage$8
+   */
+  async uploadCoverImageAPI(
+    client: HttpClient,
+    imagePath: string,
+    onProgress?: (p: UploadProgress) => void
+  ): Promise<string> {
+    if (!existsSync(imagePath)) {
+      throw new Error(`封面图片不存在: ${imagePath}`)
+    }
+
+    onProgress?.({ percent: 85, stage: '正在上传封面...' })
+
+    // Step 1: Get upload permit for image (scene=image)
+    const permitResponse = await client.get<{
+      data?: {
+        uploadTempPermits?: Array<{
+          uploadAddr?: string
+          fileIds?: string[]
+          token?: string
+        }>
+      }
+    }>(
+      `${API.uploadPermit}?biz_name=spectrum&scene=image&file_count=1&version=1&source=web`,
+      undefined,
+      {
+        referer: 'https://creator.xiaohongshu.com/publish/publish',
+        Authorization: ''
+      }
+    )
+
+    const permit = permitResponse.data?.data?.uploadTempPermits?.[0]
+    if (!permit?.uploadAddr || !permit?.fileIds?.length) {
+      throw new Error('获取封面上传凭证失败')
+    }
+
+    const fileId = permit.fileIds[0]
+    const uploadAddr = permit.uploadAddr
+    const token = permit.token || ''
+
+    logger.info(`[xiaohongshu] Cover upload permit: host=${uploadAddr}, fileId=${fileId}`)
+
+    // Step 2: PUT image to COS (matching yixiaoer's uploadImage$8)
+    const imageBuffer = readFileSync(imagePath)
+    const uploadUrl = `https://${uploadAddr}/${fileId}`
+
+    await client.request({
+      method: 'PUT',
+      url: uploadUrl,
+      data: imageBuffer,
+      headers: {
+        'x-cos-security-token': token,
+        referer: 'https://creator.xiaohongshu.com/',
+        Origin: 'https://creator.xiaohongshu.com',
+        Authorization: '',
+        'Content-Type': ''
+      },
+      noCookie: true,
+      timeout: 60_000,
+      responseType: 'text'
+    })
+
+    logger.info(`[xiaohongshu] Cover image uploaded, fileId: ${fileId}`)
+    onProgress?.({ percent: 90, stage: '封面上传完成' })
+
+    return fileId
+  }
+
+  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<void> {
     // XiaoHongShuStatementType enum (from yixiaoer)
     const XiaoHongShuStatementType = {
       ONLY_FOR_FUN: 1,  // 虚构演绎，仅供娱乐
@@ -466,12 +535,19 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       logger.info(`[xiaohongshu] Added original declaration`)
     }
 
+    // Build description with embedded topics (matching yixiaoer format: #topicName[话题]#)
+    let descText = payload.description || ''
+    if (payload.hashtags.length > 0) {
+      const topicSuffix = payload.hashtags.map((tag) => ` #${tag}[话题]# `).join('')
+      descText = descText + topicSuffix
+    }
+
     // Build common object
     const commonObj: Record<string, unknown> = {
       type: 'video',
       title: payload.title || '',
       note_id: '',
-      desc: payload.description || '',
+      desc: descText,
       source: JSON.stringify({ type: 'web', ids: '', extraInfo: JSON.stringify({ systemId: 'web' }) }),
       business_binds: JSON.stringify(businessBinds),
       ats: [],
@@ -486,20 +562,27 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     }
 
     // Add location if provided (through post_loc)
+    // Format matching yixiaoer: { poi_id, name, poi_type, subname }
     if (payload.platformFields?.location) {
       const loc = payload.platformFields.location
       if (typeof loc === 'object' && loc !== null && 'name' in loc) {
-        const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number }
+        const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number; poi_type?: number; extra?: Record<string, unknown> }
+        const poiType = locObj.poi_type ?? (locObj.extra?.poi_type as number) ?? 3
         commonObj.post_loc = {
           poi_id: locObj.poi_id || '',
           name: locObj.name,
-          ...(locObj.lat ? { latitude: locObj.lat } : {}),
-          ...(locObj.lng ? { longitude: locObj.lng } : {})
+          poi_type: poiType,
+          subname: ''
         }
+        logger.info(`[xiaohongshu] Location: poi_id=${locObj.poi_id}, name=${locObj.name}, poi_type=${poiType}, raw_extra=${JSON.stringify(locObj.extra)}`)
       } else if (typeof loc === 'string') {
-        commonObj.post_loc = { poi_id: '', name: loc }
+        commonObj.post_loc = { poi_id: '', name: loc, poi_type: 3, subname: '' }
       }
+    } else {
+      logger.info(`[xiaohongshu] No location provided, platformFields.location=${JSON.stringify(payload.platformFields?.location)}`)
     }
+
+    logger.info(`[xiaohongshu] post_loc=${JSON.stringify(commonObj.post_loc)}, desc (first 200)=${descText.substring(0, 200)}, hash_tag count=${payload.hashtags.length}`)
 
     // Add content type declaration if provided (through userDeclarationBind)
     const contentTypeDeclarations = payload.platformFields?.contentTypeDeclaration as string[] || []
@@ -549,6 +632,23 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       }
     }
 
+    // Use actual video metadata if available, otherwise use defaults (matching yixiaoer)
+    const meta = payload.videoMetadata
+    const vidWidth = meta?.width || 720
+    const vidHeight = meta?.height || 1280
+    const vidDuration = meta?.duration || 0
+    const vidFps = meta?.fps || 30
+    const vidBitrate = meta?.bitrate || 0
+
+    // Build cover object (matching yixiaoer's buildPostData$K structure)
+    const coverObj: Record<string, unknown> = {
+      height: vidHeight,
+      file_id: coverFileId || '',
+      fileid: coverFileId || '',
+      width: vidWidth,
+      frame: { ts: 0, is_user_select: !!coverFileId, is_upload: !!coverFileId }
+    }
+
     // Build body
     const body: Record<string, unknown> = {
       common: commonObj,
@@ -556,25 +656,25 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       video_info: {
         file_id: videoId || '',
         fileid: videoId || '',
-        format_width: 720,
-        format_height: 1280,
+        format_width: vidWidth,
+        format_height: vidHeight,
         composite_metadata: {
           video: {
-            bitrate: 0,
+            bitrate: vidBitrate,
             colour_primaries: 'BT.709',
-            duration: 0,
+            duration: vidDuration,
             format: 'AVC',
-            frame_rate: 30,
-            height: 1280,
+            frame_rate: vidFps,
+            height: vidHeight,
             matrix_coefficients: 'BT.709',
             rotation: 0,
             transfer_characteristics: 'BT.709',
-            width: 720
+            width: vidWidth
           },
-          audio: { bitrate: 0, channels: 1, duration: 0, format: 'AAC', sampling_rate: 0 }
+          audio: { bitrate: 0, channels: 1, duration: vidDuration, format: 'AAC', sampling_rate: 0 }
         },
         timelines: [],
-        cover: { height: 1280, file_id: '', fileid: '', width: 720, frame: { ts: 0, is_user_select: false, is_upload: false } },
+        cover: coverObj,
         chapters: [],
         chapter_sync_text: false,
         segments: { count: 1, need_slice: false, items: [] },
@@ -595,6 +695,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       }
 
       logger.info(`[xiaohongshu] Submit headers: X-s=${signHeaders['X-s'] ? 'yes' : 'no'}, X-t=${signHeaders['X-t'] ? 'yes' : 'no'}, X-S-Common=${signHeaders['X-S-Common'] ? 'yes' : 'no'}, a1_replaced=${!!a1}`)
+      logger.info(`[xiaohongshu] Submit common.desc (first 300)=${(commonObj.desc as string)?.substring(0, 300)}`)
+      logger.info(`[xiaohongshu] Submit common.post_loc=${JSON.stringify(commonObj.post_loc)}`)
+      logger.info(`[xiaohongshu] Submit common.hash_tag=${JSON.stringify(commonObj.hash_tag)}`)
 
       // Use axios directly with realistic 2026 browser headers
       // 所有版本号必须与最新真实浏览器一致，避免被检测为自动化工具

@@ -9,6 +9,7 @@ import { ffmpegService } from '../services/ffmpeg/FFmpegService'
 import { validateVideo } from '../services/ffmpeg/VideoValidator'
 import { ipLocationService } from '../services/location/IPLocationService'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
+import type { VideoMetadata } from '../services/platform-adapters/IPlatformAdapter'
 import { logger } from '../utils/logger'
 
 const cookieStore = new CookieStore()
@@ -187,7 +188,44 @@ export function registerPublishIpcHandlers(): void {
         accountId: record.account_id
       }
       const client = new HttpClient(context)
-      await adapter.submitContentAPI(client, params.content, params.videoId)
+
+      // Probe video metadata to pass actual values (width, height, duration, fps)
+      let videoMetadata: VideoMetadata | undefined
+      try {
+        const probe = await ffmpegService.probeVideo(record.video_path)
+        videoMetadata = {
+          width: probe.width,
+          height: probe.height,
+          duration: Math.round(probe.duration),
+          fps: probe.fps,
+          bitrate: probe.bitrate,
+          format: probe.format
+        }
+        logger.info(`[publish] Video metadata: ${JSON.stringify(videoMetadata)}`)
+      } catch (e) {
+        logger.warn(`[publish] Failed to probe video metadata: ${e}`)
+      }
+
+      // Upload cover image if provided (for platforms that support it, e.g. XHS)
+      let coverFileId: string | undefined
+      if (params.content.coverPath && adapter.uploadCoverImageAPI) {
+        try {
+          mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
+            recordId: params.recordId,
+            percent: 85,
+            stage: '正在上传封面...'
+          })
+          coverFileId = await adapter.uploadCoverImageAPI(client, params.content.coverPath)
+          logger.info(`[publish] Cover uploaded, fileId: ${coverFileId}`)
+        } catch (e) {
+          logger.warn(`[publish] Cover upload failed (non-fatal): ${e}`)
+          // Non-fatal: continue without cover
+        }
+      }
+
+      // Merge video metadata into content payload
+      const contentWithMeta = { ...params.content, videoMetadata }
+      await adapter.submitContentAPI(client, contentWithMeta, params.videoId, coverFileId)
 
       recordRepo.updateStatus(params.recordId, 'done', 100)
       const now = new Date().toISOString()

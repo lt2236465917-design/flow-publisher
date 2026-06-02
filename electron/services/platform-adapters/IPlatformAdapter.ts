@@ -37,6 +37,15 @@ export interface LocationSearchOptions {
   city?: string
 }
 
+export interface VideoMetadata {
+  width: number
+  height: number
+  duration: number
+  fps: number
+  bitrate: number
+  format: string
+}
+
 export interface SubmitContentPayload {
   title: string
   description: string
@@ -47,6 +56,8 @@ export interface SubmitContentPayload {
   cover?: { horizontal_4_3: string | null; vertical_3_4: string | null; recommended: string[] }
   /** Platform-specific field overrides (e.g. collection, poiLocation, declarations, downloadPermission) */
   platformFields?: Record<string, unknown>
+  /** Actual video metadata from ffmpeg probe (width, height, duration, fps, etc.) */
+  videoMetadata?: VideoMetadata
 }
 
 export interface IPlatformAdapter {
@@ -57,7 +68,8 @@ export interface IPlatformAdapter {
   // Publish — API mode (HTTP-based, no browser automation)
   getVideoConstraints?(): VideoConstraints
   uploadVideoAPI?(client: HttpClient, filePath: string, onProgress?: (p: UploadProgress) => void): Promise<string | void>
-  submitContentAPI?(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void>
+  uploadCoverImageAPI?(client: HttpClient, imagePath: string, onProgress?: (p: UploadProgress) => void): Promise<string>
+  submitContentAPI?(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<void>
   checkSessionAPI?(client: HttpClient): Promise<boolean>
   getPlatformFields?(): PlatformFieldDefinition[]
   getAccountInfoAPI?(client: HttpClient): Promise<{ displayName?: string; avatarUrl?: string } | null>
