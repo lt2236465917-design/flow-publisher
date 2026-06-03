@@ -1,14 +1,20 @@
 import { useState, useRef } from 'react'
-import { Tag, Input, Tooltip } from 'antd'
+import { Tag, Input, Tooltip, message } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
 
 interface Props {
   value: string[]
   onChange: (tags: string[]) => void
   maxTags?: number
+  maxTagLength?: number
 }
 
-export default function HashtagInput({ value, onChange, maxTags = 10 }: Props) {
+export default function HashtagInput({
+  value,
+  onChange,
+  maxTags = 10,
+  maxTagLength = 30,
+}: Props) {
   const [inputVisible, setInputVisible] = useState(false)
   const [inputValue, setInputValue] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -24,15 +30,40 @@ export default function HashtagInput({ value, onChange, maxTags = 10 }: Props) {
 
   const handleInputConfirm = () => {
     const trimmed = inputValue.trim()
-    if (trimmed && !value.includes(trimmed) && value.length < maxTags) {
-      onChange([...value, trimmed])
+    if (!trimmed) {
+      setInputVisible(false)
+      setInputValue('')
+      return
     }
+
+    if (value.includes(trimmed)) {
+      message.warning('标签已存在')
+      setInputVisible(false)
+      setInputValue('')
+      return
+    }
+
+    if (trimmed.length > maxTagLength) {
+      message.warning(`标签不能超过${maxTagLength}个字`)
+      return
+    }
+
+    if (value.length >= maxTags) {
+      message.warning(`最多添加${maxTags}个标签`)
+      setInputVisible(false)
+      setInputValue('')
+      return
+    }
+
+    onChange([...value, trimmed])
     setInputVisible(false)
     setInputValue('')
   }
 
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+    <div
+      style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}
+    >
       {value.map((tag) => (
         <Tag
           key={tag}
@@ -60,6 +91,8 @@ export default function HashtagInput({ value, onChange, maxTags = 10 }: Props) {
           onBlur={handleInputConfirm}
           onPressEnter={handleInputConfirm}
           placeholder="输入标签"
+          maxLength={maxTagLength}
+          showCount={false}
         />
       ) : value.length < maxTags ? (
         <Tooltip title={`最多 ${maxTags} 个标签`}>

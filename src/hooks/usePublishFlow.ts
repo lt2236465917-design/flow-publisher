@@ -5,6 +5,11 @@ import { useUIStore } from '@/stores/uiStore'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import { ipcInvoke } from '@/utils/ipc'
 import { toChineseMessage } from '@/utils/errorMessages'
+import {
+  validateTitle,
+  validateDescription,
+  validateHashtags,
+} from '@/constants/platform-limits'
 import type { PlatformId } from '@/constants/platforms'
 import type { PublishFormData } from '@/types/publish.types'
 
@@ -135,9 +140,24 @@ export function usePublishFlow() {
       return
     }
 
-    // 视频号标题至少6个字
-    if (form.platforms.includes('wechat-channels') && form.title.trim().length < 6) {
-      message.error('视频号标题至少需要6个字')
+    // 验证标题是否符合平台限制
+    const titleResult = validateTitle(form.title, form.platforms)
+    if (!titleResult.valid) {
+      message.error(titleResult.message)
+      return
+    }
+
+    // 验证描述是否符合平台限制
+    const descResult = validateDescription(form.description, form.platforms)
+    if (!descResult.valid) {
+      message.error(descResult.message)
+      return
+    }
+
+    // 验证话题标签是否符合平台限制
+    const hashtagResult = validateHashtags(form.hashtags, form.platforms)
+    if (!hashtagResult.valid) {
+      message.error(hashtagResult.message)
       return
     }
 
