@@ -13,8 +13,7 @@ import { useUIStore } from '@/stores/uiStore'
 const menuItems = [
   { key: '/account', icon: <UserOutlined />, label: '账号' },
   { key: '/publish', icon: <SendOutlined />, label: '发布' },
-  { key: '/records', icon: <UnorderedListOutlined />, label: '记录' },
-  { key: '/analytics', icon: <BarChartOutlined />, label: '统计' },
+  { key: '/records', icon: <BarChartOutlined />, label: '数据' },
   { key: '/settings', icon: <SettingOutlined />, label: '设置' }
 ]
 

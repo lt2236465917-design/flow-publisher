@@ -34,6 +34,12 @@ export const IPC_CHANNELS = {
   // Analytics
   ANALYTICS_FETCH: 'analytics:fetch',
   ANALYTICS_COMPARE: 'analytics:compare',
+  ANALYTICS_COLLECT: 'analytics:collect',
+  ANALYTICS_COLLECT_ALL: 'analytics:collect-all',
+  ANALYTICS_COLLECT_GROUP: 'analytics:collect-group',
+  ANALYTICS_VIDEO_GROUPS: 'analytics:video-groups',
+  ANALYTICS_VIDEO_DETAIL: 'analytics:video-detail',
+  ANALYTICS_RECORD_TREND: 'analytics:record-trend',
 
   // File
   FILE_SELECT_VIDEO: 'file:select-video',

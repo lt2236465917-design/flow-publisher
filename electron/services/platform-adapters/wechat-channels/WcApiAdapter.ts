@@ -2,6 +2,7 @@ import type { BrowserContext, Page } from 'playwright-core'
 import { BasePlatformAdapter } from '../BasePlatformAdapter'
 import type { UploadProgress, SubmitContentPayload, VideoConstraints } from '../IPlatformAdapter'
 import type { PlatformFieldDefinition } from '../../../shared/types/platform-fields'
+import type { SubmitResult, VideoListResult } from '../../../../shared/types/analytics'
 import type { HttpClient } from '../../http/HttpClient'
 import { WC_URLS } from './wc-urls'
 import { WC_SELECTORS } from './wc-selectors'
@@ -853,7 +854,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
     return downloadUrl
   }
 
-  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {
+  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<SubmitResult> {
     const cookie = client.getCookieString()
     // finderId: the finder_id from cookie, fallback to finderUsername (used in outer envelope)
     const finderId = this.extractFinderId(cookie) || this.cachedFinderUsername || ''
@@ -1154,10 +1155,127 @@ export class WcApiAdapter extends BasePlatformAdapter {
 
       const feedId = respData?.data?.feedId
       logger.info(`[wechat-channels] Content submitted successfully, feedId: ${feedId}`)
+
+      return {
+        contentId: feedId,
+        publishUrl: feedId ? `https://channels.weixin.qq.com/platform/post/${feedId}` : undefined
+      }
     } catch (err) {
       logger.error('[wechat-channels] submitContentAPI error:', err)
       throw err
     }
+  }
+
+  /**
+   * 获取视频列表（含统计数据）
+   * 使用视频号统计数据 API (参考蚁小二)
+   * POST https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/statistic/post_list
+   */
+  async getVideoList(client: HttpClient, options?: { cursor?: string; pageSize?: number }): Promise<VideoListResult> {
+    const cookie = client.getCookieString()
+    const currentPage = options?.cursor ? parseInt(options.cursor) : 1
+    const pageSize = options?.pageSize || 20
+
+    // 提取 finder_id 和 finderUsername
+    const finderId = this.extractFinderId(cookie) || this.cachedFinderUsername || ''
+    const finderUsername = this.cachedFinderUsername || ''
+
+    const now = Date.now()
+    const startTime = Math.floor((now - 30 * 24 * 60 * 60 * 1000) / 1000) // 30天前
+    const endTime = Math.floor(now / 1000)
+
+    const body = {
+      currentPage,
+      pageSize,
+      timestamp: String(now).substring(0, 13),
+      sort: 0,
+      order: 0,
+      startTime,
+      endTime,
+      _log_finder_uin: '',
+      _log_finder_id: finderUsername,
+      rawKeyBuff: null,
+      pluginSessionId: null,
+      scene: 7,
+      reqScene: 7
+    }
+
+    const response = await client.post<{
+      errCode: number
+      errMsg: string
+      data?: {
+        list: Array<{
+          objectId: string
+          exportId: string
+          createTime: number
+          visibleType: number
+          desc: {
+            mediaType: number
+            description: string
+            media: Array<{ thumbUrl: string; fullThumbUrl: string; coverUrl: string }>
+            finderNewlifeDesc?: { richTextTitle?: string }
+          }
+          readCount: number
+          likeCount: number
+          commentCount: number
+          forwardAggregationCount: number
+          favCount: number
+          followCount: number
+          fullPlayRate: number
+          avgPlayTimeSec: number
+        }>
+        totalCount: number
+      }
+    }>(
+      'https://channels.weixin.qq.com/cgi-bin/mmfinderassistant-bin/statistic/post_list',
+      body,
+      {
+        headers: {
+          referer: 'https://channels.weixin.qq.com/platform/statistic/post',
+          Origin: 'https://channels.weixin.qq.com',
+          'Content-Type': 'application/json',
+          'X-WECHAT-UIN': finderId,
+          'finger-print-device-id': this.generateDeviceId()
+        }
+      }
+    )
+
+    logger.info(`[wechat-channels] getVideoList response: errCode=${response.data?.errCode}, count=${response.data?.data?.list?.length || 0}`)
+
+    if (response.data?.errCode !== 0) {
+      throw new Error(`获取视频列表失败: ${response.data?.errMsg || response.data?.errCode}`)
+    }
+
+    const list = response.data.data?.list || []
+
+    const items = list.map((item) => ({
+      contentId: item.objectId,
+      title: item.desc?.finderNewlifeDesc?.richTextTitle || item.desc?.description || '',
+      coverUrl: item.desc?.media?.[0]?.coverUrl || item.desc?.media?.[0]?.thumbUrl,
+      publishTime: item.createTime,
+      views: item.readCount || 0,
+      likes: item.likeCount || 0,
+      comments: item.commentCount || 0,
+      shares: item.forwardAggregationCount || 0,
+      favorites: item.likeCount || 0 // 视频号没有明确的收藏，用红心数作为收藏
+    }))
+
+    const totalPages = Math.ceil((response.data.data?.totalCount || 0) / pageSize)
+
+    return {
+      items,
+      cursor: String(currentPage + 1),
+      hasMore: currentPage < totalPages
+    }
+  }
+
+  private generateDeviceId(): string {
+    // 生成随机 GUID 作为设备ID
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0
+      const v = c === 'x' ? r : (r & 0x3) | 0x8
+      return v.toString(16)
+    })
   }
 
   private async computeFileMd5(filePath: string): Promise<string> {

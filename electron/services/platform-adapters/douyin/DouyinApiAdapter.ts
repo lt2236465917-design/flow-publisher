@@ -2,6 +2,7 @@ import type { BrowserContext, Page } from 'playwright-core'
 import { BasePlatformAdapter } from '../BasePlatformAdapter'
 import type { UploadProgress, SubmitContentPayload, VideoConstraints } from '../IPlatformAdapter'
 import type { PlatformFieldDefinition } from '../../../shared/types/platform-fields'
+import type { SubmitResult, VideoListResult } from '../../../../shared/types/analytics'
 import type { HttpClient } from '../../http/HttpClient'
 import { getSignService } from '../../sign/SignService'
 import { DOUYIN_URLS } from './douyin-urls'
@@ -867,7 +868,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     }
   }
 
-  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<void> {
+  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<SubmitResult> {
     const cookie = client.getCookieString()
 
     logger.info(`[douyin] submitContentAPI called, payload.coverPath="${payload.coverPath}", videoId="${videoId}"`)
@@ -1153,10 +1154,101 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         throw new Error(`内容提交失败: ${response.data.status_msg || JSON.stringify(response.data)}`)
       }
 
-      logger.info(`[douyin] Content submitted, aweme_id: ${response.data.aweme_id}`)
+      const awemeId = response.data.aweme_id
+      logger.info(`[douyin] Content submitted, aweme_id: ${awemeId}`)
+
+      return {
+        contentId: awemeId,
+        publishUrl: awemeId ? `https://www.douyin.com/video/${awemeId}` : undefined
+      }
     } catch (err) {
       logger.error('[douyin] submitContentAPI error:', err)
       throw err
+    }
+  }
+
+  /**
+   * 获取视频列表（含统计数据）
+   * 使用抖音创作者内容管理 API (参考蚁小二)
+   * GET https://creator.douyin.com/web/api/media/aweme/post/
+   */
+  async getVideoList(client: HttpClient, options?: { cursor?: string; pageSize?: number }): Promise<VideoListResult> {
+    const cookie = client.getCookieString()
+    const cursor = options?.cursor || '0'
+    const count = options?.pageSize || 12
+
+    // 从 cookie 中提取 msToken
+    const msTokenMatch = cookie.match(/msToken=([^;]+)/)
+    const msToken = msTokenMatch ? msTokenMatch[1] : ''
+
+    const params = new URLSearchParams({
+      scene: 'star_atlas',
+      device_platform: 'web',
+      status: '0', // 0=all
+      count: String(count),
+      max_cursor: cursor,
+      cookie_enabled: 'true',
+      screen_width: '1536',
+      screen_height: '864',
+      browser_language: 'zh-CN',
+      browser_platform: 'Win32',
+      browser_name: 'Mozilla',
+      browser_version: '5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      browser_online: 'true',
+      timezone_name: 'Asia/Shanghai',
+      aid: '1128',
+      msToken
+    })
+
+    const response = await client.get<{
+      status_code: number
+      aweme_list: Array<{
+        aweme_id: string
+        desc: string
+        create_time: number
+        aweme_type: number
+        cover: { url_list: string[] }
+        statistics: {
+          play_count: number
+          digg_count: number
+          comment_count: number
+          share_count: number
+          collect_count: number
+        }
+      }>
+      has_more: boolean
+      max_cursor: string
+    }>(
+      `https://creator.douyin.com/web/api/media/aweme/post/?${params.toString()}`,
+      {
+        headers: {
+          referer: 'https://creator.douyin.com/creator-micro/content/manage'
+        }
+      }
+    )
+
+    logger.info(`[douyin] getVideoList response: status=${response.data.status_code}, count=${response.data.aweme_list?.length || 0}`)
+
+    if (response.data.status_code !== 0) {
+      throw new Error(`获取视频列表失败: status_code=${response.data.status_code}`)
+    }
+
+    const items = (response.data.aweme_list || []).map((aweme) => ({
+      contentId: aweme.aweme_id,
+      title: aweme.desc,
+      coverUrl: aweme.cover?.url_list?.[0],
+      publishTime: aweme.create_time,
+      views: aweme.statistics?.play_count || 0,
+      likes: aweme.statistics?.digg_count || 0,
+      comments: aweme.statistics?.comment_count || 0,
+      shares: aweme.statistics?.share_count || 0,
+      favorites: aweme.statistics?.collect_count || 0
+    }))
+
+    return {
+      items,
+      cursor: response.data.max_cursor || '0',
+      hasMore: response.data.has_more || false
     }
   }
 

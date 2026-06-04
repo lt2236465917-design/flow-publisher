@@ -3,6 +3,7 @@ import axios from 'axios'
 import { BasePlatformAdapter } from '../BasePlatformAdapter'
 import type { UploadProgress, SubmitContentPayload, VideoConstraints, VideoMetadata } from '../IPlatformAdapter'
 import type { PlatformFieldDefinition } from '../../../shared/types/platform-fields'
+import type { SubmitResult } from '../../../../shared/types/analytics'
 import { HttpClient } from '../../http/HttpClient'
 import { XHS_URLS } from './xhs-urls'
 import { XHS_SELECTORS } from './xhs-selectors'
@@ -493,7 +494,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     return fileId
   }
 
-  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<void> {
+  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<SubmitResult> {
     // XiaoHongShuStatementType enum (from yixiaoer)
     const XiaoHongShuStatementType = {
       ONLY_FOR_FUN: 1,  // 虚构演绎，仅供娱乐
@@ -739,7 +740,13 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         throw new Error(`内容提交失败: ${response.data.msg || JSON.stringify(response.data).substring(0, 200)}`)
       }
 
-      logger.info(`[xiaohongshu] Content submitted, note_id: ${response.data.data?.note_id}`)
+      const noteId = response.data.data?.note_id
+      logger.info(`[xiaohongshu] Content submitted, note_id: ${noteId}`)
+
+      return {
+        contentId: noteId,
+        publishUrl: noteId ? `https://www.xiaohongshu.com/explore/${noteId}` : undefined
+      }
     } catch (err: any) {
       if (axios.isAxiosError(err)) {
         const status = err.response?.status
@@ -760,6 +767,85 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       stream.on('end', () => resolve(hash.digest('hex')))
       stream.on('error', reject)
     })
+  }
+
+  /**
+   * 获取笔记列表（含统计数据）
+   * 使用小红书创作者笔记列表 API (参考蚁小二)
+   * GET https://edith.xiaohongshu.com/web_api/sns/v5/creator/note/user/posted?tab=0&page=${page}
+   * 需要 X-s 和 X-t 签名 headers
+   */
+  async getVideoList(client: HttpClient, options?: { cursor?: string; pageSize?: number }): Promise<VideoListResult> {
+    const page = options?.cursor || '0'
+    const urlPath = `/web_api/sns/v5/creator/note/user/posted?tab=0&page=${page}`
+
+    const cookie = client.getCookieString()
+
+    // 获取签名 headers (参考蚁小二的 getSign$6)
+    const { headers: signHeaders } = await this.getXhsSignHeaders(urlPath, cookie)
+
+    const response = await axios.get<{
+      code: number
+      success: boolean
+      msg: string
+      data: {
+        notes: Array<{
+          id: string
+          display_title: string
+          title?: string
+          type: string
+          view_count: number
+          likes: number
+          comments_count: number
+          shared_count: number
+          collected_count: number
+          images_list?: Array<{ url: string }>
+          time?: string
+          sticky?: boolean
+        }>
+        has_more?: boolean
+      }
+    }>(
+      `https://edith.xiaohongshu.com${urlPath}`,
+      {
+        headers: {
+          cookie,
+          referer: 'https://creator.xiaohongshu.com/publish/publish',
+          Origin: 'https://creator.xiaohongshu.com/',
+          Accept: 'application/json, text/plain, */*',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14',
+          ...signHeaders
+        },
+        timeout: 30_000,
+        responseType: 'json'
+      }
+    )
+
+    logger.info(`[xiaohongshu] getVideoList response: success=${response.data.success}, notes count=${response.data.data?.notes?.length || 0}`)
+
+    if (!response.data.success) {
+      throw new Error(`获取笔记列表失败: ${response.data.msg}`)
+    }
+
+    const noteInfos = response.data.data?.notes || []
+
+    const items = noteInfos.map((note) => ({
+      contentId: note.id,
+      title: note.display_title || note.title || '',
+      coverUrl: note.images_list?.[0]?.url,
+      publishTime: 0, // API 不返回时间戳
+      views: note.view_count || 0,
+      likes: note.likes || 0,
+      comments: note.comments_count || 0,
+      shares: note.shared_count || 0,
+      favorites: note.collected_count || 0
+    }))
+
+    return {
+      items,
+      cursor: String(Number(page) + 1),
+      hasMore: response.data.data?.has_more || false
+    }
   }
 
   /**

@@ -10,6 +10,7 @@ import { validateVideo } from '../services/ffmpeg/VideoValidator'
 import { ipLocationService } from '../services/location/IPLocationService'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import type { VideoMetadata } from '../services/platform-adapters/IPlatformAdapter'
+import type { SubmitResult } from '../../shared/types/analytics'
 import { logger } from '../utils/logger'
 
 const cookieStore = new CookieStore()
@@ -225,13 +226,24 @@ export function registerPublishIpcHandlers(): void {
 
       // Merge video metadata into content payload
       const contentWithMeta = { ...params.content, videoMetadata }
-      await adapter.submitContentAPI(client, contentWithMeta, params.videoId, coverFileId)
+      const submitResult = await adapter.submitContentAPI(client, contentWithMeta, params.videoId, coverFileId)
 
       recordRepo.updateStatus(params.recordId, 'done', 100)
       const now = new Date().toISOString()
+
+      // 保存 contentId 和 publishUrl（如果有的话）
+      if (submitResult?.contentId) {
+        recordRepo.updateContentId(params.recordId, submitResult.contentId)
+        logger.info(`[publish] Saved contentId: ${submitResult.contentId} for record: ${params.recordId}`)
+      }
+      if (submitResult?.publishUrl) {
+        recordRepo.updateStatus(params.recordId, 'done', 100, undefined, submitResult.publishUrl)
+      }
+
+      // 更新标题、描述、封面等字段
       recordRepo['db'].run(
-        'UPDATE publish_records SET title = ?, description = ?, hashtags = ?, declarations = ?, updated_at = ? WHERE id = ?',
-        [params.content.title, params.content.description, JSON.stringify(params.content.hashtags), JSON.stringify(params.content.declarations), now, params.recordId]
+        'UPDATE publish_records SET title = ?, description = ?, hashtags = ?, declarations = ?, cover_path = ?, updated_at = ? WHERE id = ?',
+        [params.content.title, params.content.description, JSON.stringify(params.content.hashtags), JSON.stringify(params.content.declarations), params.content.coverPath || null, now, params.recordId]
       )
       saveDatabase()
 

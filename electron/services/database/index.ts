@@ -5,6 +5,7 @@ import { runMigration } from './migrations/001_accounts'
 import { runMigration002 } from './migrations/002_publish_records'
 import { runMigration003 } from './migrations/003_scheduled_tasks'
 import { runMigration004 } from './migrations/004_analytics_snapshots'
+import { runMigration005 } from './migrations/005_content_analytics'
 import { AccountRepository } from './repositories/account.repo'
 import { PublishRecordRepository } from './repositories/publish-record.repo'
 import { ScheduledTaskRepository } from './repositories/scheduled-task.repo'
@@ -73,6 +74,7 @@ export async function initDatabase(): Promise<void> {
   runMigration002(dbInstance)
   runMigration003(dbInstance)
   runMigration004(dbInstance)
+  runMigration005(dbInstance)
   saveDatabase()
 
   accountRepoInstance = new AccountRepository(dbInstance)

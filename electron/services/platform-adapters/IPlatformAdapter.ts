@@ -1,5 +1,10 @@
-import type { PlatformFieldDefinition } from '../../shared/types/platform-fields'
+import type { PlatformFieldDefinition } from '../../../shared/types/platform-fields'
 import type { HttpClient } from '../http/HttpClient'
+import type {
+  SubmitResult,
+  VideoListResult,
+  VideoDetailResult
+} from '../../../shared/types/analytics'
 
 export interface LoginResult {
   success: boolean
@@ -69,11 +74,17 @@ export interface IPlatformAdapter {
   getVideoConstraints?(): VideoConstraints
   uploadVideoAPI?(client: HttpClient, filePath: string, onProgress?: (p: UploadProgress) => void): Promise<string | void>
   uploadCoverImageAPI?(client: HttpClient, imagePath: string, onProgress?: (p: UploadProgress) => void): Promise<string>
-  submitContentAPI?(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<void>
+  submitContentAPI?(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<SubmitResult>
   checkSessionAPI?(client: HttpClient): Promise<boolean>
   getPlatformFields?(): PlatformFieldDefinition[]
   getAccountInfoAPI?(client: HttpClient): Promise<{ displayName?: string; avatarUrl?: string } | null>
   searchLocation?(client: HttpClient, keyword: string, options?: LocationSearchOptions): Promise<LocationResult[]>
   getRecommendLocations?(client: HttpClient, options?: LocationSearchOptions): Promise<LocationResult[]>
   getCollections?(client: HttpClient): Promise<Array<{ label: string; value: string }>>
+
+  // ---- Analytics (数据采集) ----
+  /** 获取视频列表（含统计数据） */
+  getVideoList?(client: HttpClient, options?: { cursor?: string; pageSize?: number }): Promise<VideoListResult>
+  /** 获取单个视频详情 */
+  getVideoDetail?(client: HttpClient, contentId: string): Promise<VideoDetailResult | null>
 }

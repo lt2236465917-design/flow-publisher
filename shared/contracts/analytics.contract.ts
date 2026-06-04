@@ -50,3 +50,94 @@ export interface PlatformCompareItem {
 }
 
 export type AnalyticsCompareResult = PlatformCompareItem[]
+
+// ---- 视频分组相关类型 ----
+
+export interface VideoGroupQuery {
+  timeRange?: TimeRange
+  platform?: string
+  sortBy?: 'created_at' | 'total_views'
+  sortOrder?: 'asc' | 'desc'
+  page?: number
+  pageSize?: number
+}
+
+export interface VideoGroupPlatformSummary {
+  platform: string
+  recordId: string
+  contentId?: string
+  status: string
+  views: number
+  likes: number
+  comments: number
+  shares: number
+  lastSnapshotAt?: string
+}
+
+export interface VideoGroupSummary {
+  groupId: string
+  title: string
+  videoPath: string
+  coverPath?: string
+  createdAt: string
+  platforms: VideoGroupPlatformSummary[]
+  totalViews: number
+  totalLikes: number
+  totalComments: number
+  totalShares: number
+}
+
+export interface VideoGroupListResult {
+  groups: VideoGroupSummary[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface TrendPoint {
+  views: number
+  likes: number
+  comments: number
+  shares: number
+  followers: number
+  snapshotAt: string
+}
+
+export interface VideoGroupRecordDetail {
+  recordId: string
+  platform: string
+  accountId: string
+  contentId?: string
+  title: string
+  description: string
+  status: string
+  publishUrl?: string
+  createdAt: string
+  latestSnapshot?: {
+    views: number
+    likes: number
+    comments: number
+    shares: number
+    followers: number
+    snapshotAt: string
+  }
+  trend: TrendPoint[]
+}
+
+export interface VideoGroupDetail {
+  groupId: string
+  title: string
+  videoPath: string
+  coverPath?: string
+  createdAt: string
+  records: VideoGroupRecordDetail[]
+}
+
+// ---- 采集结果 ----
+
+export interface CollectResult {
+  totalRecords: number
+  updatedRecords: number
+  newSnapshots: number
+  errors: string[]
+}

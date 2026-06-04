@@ -17,6 +17,8 @@ export interface PublishRecordRow {
   error: string | null
   created_at: string
   updated_at: string
+  content_id: string | null
+  group_id: string | null
 }
 
 export class PublishRecordRepository {
@@ -128,5 +130,13 @@ export class PublishRecordRepository {
 
   deleteById(id: string): void {
     this.db.run('DELETE FROM publish_records WHERE id = ?', [id])
+  }
+
+  updateContentId(id: string, contentId: string): void {
+    this.db.run('UPDATE publish_records SET content_id = ?, updated_at = datetime(\'now\') WHERE id = ?', [contentId, id])
+  }
+
+  updateGroupId(id: string, groupId: string): void {
+    this.db.run('UPDATE publish_records SET group_id = ?, updated_at = datetime(\'now\') WHERE id = ?', [groupId, id])
   }
 }

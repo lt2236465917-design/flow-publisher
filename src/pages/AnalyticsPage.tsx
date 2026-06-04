@@ -1,128 +1,184 @@
-import { useEffect } from 'react'
-import { Card, Row, Col, Statistic, Segmented, Table, Empty, Spin } from 'antd'
+import { useEffect, useState } from 'react'
 import {
-  CheckCircleOutlined,
-  CloseCircleOutlined,
-  BarChartOutlined,
-  SendOutlined
+  Table,
+  Empty,
+  Spin,
+  Button,
+  Tag,
+  Space,
+  Tooltip,
+  message
+} from 'antd'
+import {
+  SyncOutlined,
+  EyeOutlined,
+  LikeOutlined,
+  MessageOutlined,
+  ShareAltOutlined,
+  ArrowLeftOutlined
 } from '@ant-design/icons'
-import { Line, Column, Pie } from '@ant-design/charts'
+import { Line, Column } from '@ant-design/charts'
 import { useAnalyticsStore } from '@/stores/analyticsStore'
 import { PLATFORMS } from '@/constants/platforms'
 import type { PlatformId } from '@/constants/platforms'
-import type { TimeRange } from '../../shared/contracts/analytics.contract'
-
-const TIME_RANGE_OPTIONS = [
-  { label: '7天', value: '7d' },
-  { label: '30天', value: '30d' },
-  { label: '90天', value: '90d' },
-  { label: '全部', value: 'all' }
-]
-
-const STATUS_LABELS: Record<string, string> = {
-  done: '成功',
-  error: '失败',
-  pending: '待处理',
-  uploading: '上传中',
-  uploaded: '已上传',
-  submitting: '提交中'
-}
-
-const STATUS_COLORS: Record<string, string> = {
-  done: '#34c759',
-  error: '#ff3b30',
-  pending: '#ff9500',
-  uploading: '#0071e3',
-  uploaded: '#5ac8fa',
-  submitting: '#af52de'
-}
+import type {
+  VideoGroupSummary,
+  VideoGroupDetail,
+  VideoGroupRecordDetail
+} from '../../shared/contracts/analytics.contract'
 
 function getPlatformName(platform: string): string {
   const info = PLATFORMS[platform as PlatformId]
   return info ? `${info.icon} ${info.displayName}` : platform
 }
 
-// Note: For image icons, use getPlatformIcon component instead
+function getPlatformColor(platform: string): string {
+  const colors: Record<string, string> = {
+    douyin: '#000000',
+    kuaishou: '#ff4906',
+    xiaohongshu: '#ff2442',
+    'wechat-channels': '#07c160'
+  }
+  return colors[platform] || '#666'
+}
+
+function formatNumber(num: number): string {
+  if (num >= 10000) {
+    return (num / 10000).toFixed(1) + '万'
+  }
+  if (num >= 1000) {
+    return (num / 1000).toFixed(1) + 'k'
+  }
+  return num.toString()
+}
 
 export default function AnalyticsPage() {
-  const { overview, compareResult, timeRange, loading, setTimeRange, fetchOverview, fetchCompare } = useAnalyticsStore()
+  const {
+    videoGroups,
+    videoGroupsTotal,
+    videoGroupsPage,
+    videoGroupsLoading,
+    videoDetail,
+    videoDetailLoading,
+    collecting,
+    collectResult,
+    fetchVideoGroups,
+    fetchVideoDetail,
+    collectAll,
+    clearVideoDetail
+  } = useAnalyticsStore()
+
+  const [selectedGroup, setSelectedGroup] = useState<string | null>(null)
 
   useEffect(() => {
-    fetchOverview()
-    fetchCompare()
-  }, [fetchOverview, fetchCompare])
+    fetchVideoGroups()
+  }, [fetchVideoGroups])
 
-  const handleTimeRangeChange = (val: string | number) => {
-    setTimeRange(val as TimeRange)
-  }
-
-  const trendData: { date: string; type: string; count: number }[] = []
-  if (overview?.dailyTrends) {
-    for (const d of overview.dailyTrends) {
-      trendData.push({ date: d.date, type: '发布总数', count: d.total })
-      trendData.push({ date: d.date, type: '成功', count: d.success })
-      trendData.push({ date: d.date, type: '失败', count: d.failed })
+  const handleCollect = async () => {
+    try {
+      await collectAll()
+      if (collectResult?.errors.length) {
+        message.warning(`采集完成，但有 ${collectResult.errors.length} 个错误`)
+      } else {
+        message.success('数据采集完成')
+      }
+    } catch {
+      message.error('数据采集失败')
     }
   }
 
-  const platformBarData: { platform: string; type: string; count: number }[] = []
-  if (overview?.platformStats) {
-    for (const p of overview.platformStats) {
-      platformBarData.push({ platform: getPlatformName(p.platform), type: '成功', count: p.success })
-      platformBarData.push({ platform: getPlatformName(p.platform), type: '失败', count: p.failed })
-      platformBarData.push({ platform: getPlatformName(p.platform), type: '待处理', count: p.pending })
-    }
+  const handleViewDetail = (groupId: string) => {
+    setSelectedGroup(groupId)
+    fetchVideoDetail(groupId)
   }
 
-  const pieData: { status: string; count: number }[] = []
-  if (overview?.statusDistribution) {
-    for (const s of overview.statusDistribution) {
-      pieData.push({ status: STATUS_LABELS[s.status] || s.status, count: s.count })
-    }
+  const handleBack = () => {
+    setSelectedGroup(null)
+    clearVideoDetail()
   }
 
-  const compareColumns = [
+  // 视频列表列定义
+  const videoColumns = [
+    {
+      title: '视频标题',
+      dataIndex: 'title',
+      key: 'title',
+      ellipsis: true,
+      width: 200,
+      render: (title: string, record: VideoGroupSummary) => (
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 13 }}>{title || '无标题'}</div>
+          <div style={{ fontSize: 11, color: '#86868b', marginTop: 2 }}>
+            {new Date(record.createdAt).toLocaleDateString('zh-CN')}
+          </div>
+        </div>
+      )
+    },
     {
       title: '平台',
-      dataIndex: 'platform',
-      key: 'platform',
-      render: (platform: string) => getPlatformName(platform)
+      dataIndex: 'platforms',
+      key: 'platforms',
+      width: 180,
+      render: (_: unknown, record: VideoGroupSummary) => (
+        <Space size={4} wrap>
+          {record.platforms.map((p) => (
+            <Tooltip
+              key={p.platform}
+              title={`${getPlatformName(p.platform)}: ${formatNumber(p.views)}播放`}
+            >
+              <Tag
+                color={getPlatformColor(p.platform)}
+                style={{ margin: 0, fontSize: 11, borderRadius: 4 }}
+              >
+                {getPlatformName(p.platform).split(' ')[0]}
+              </Tag>
+            </Tooltip>
+          ))}
+        </Space>
+      )
     },
     {
-      title: '总发布',
-      dataIndex: 'total',
-      key: 'total',
-      sorter: (a: { total: number }, b: { total: number }) => a.total - b.total
-    },
-    {
-      title: '成功',
-      dataIndex: 'success',
-      key: 'success',
-      render: (v: number) => <span style={{ color: '#34c759', fontWeight: 600 }}>{v}</span>
-    },
-    {
-      title: '失败',
-      dataIndex: 'failed',
-      key: 'failed',
-      render: (v: number) => <span style={{ color: '#ff3b30', fontWeight: 600 }}>{v}</span>
-    },
-    {
-      title: '成功率',
-      dataIndex: 'successRate',
-      key: 'successRate',
+      title: '总播放',
+      dataIndex: 'totalViews',
+      key: 'totalViews',
+      width: 100,
+      sorter: (a: VideoGroupSummary, b: VideoGroupSummary) => a.totalViews - b.totalViews,
       render: (v: number) => (
-        <span style={{ fontWeight: 600, color: v >= 80 ? '#34c759' : '#ff9500' }}>
-          {v}%
-        </span>
-      ),
-      sorter: (a: { successRate: number }, b: { successRate: number }) => a.successRate - b.successRate
+        <span style={{ fontWeight: 600, color: '#0071e3' }}>{formatNumber(v)}</span>
+      )
+    },
+    {
+      title: '总点赞',
+      dataIndex: 'totalLikes',
+      key: 'totalLikes',
+      width: 80,
+      render: (v: number) => <span>{formatNumber(v)}</span>
+    },
+    {
+      title: '总评论',
+      dataIndex: 'totalComments',
+      key: 'totalComments',
+      width: 80,
+      render: (v: number) => <span>{formatNumber(v)}</span>
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 80,
+      render: (_: unknown, record: VideoGroupSummary) => (
+        <Button
+          type="link"
+          size="small"
+          onClick={() => handleViewDetail(record.groupId)}
+        >
+          详情
+        </Button>
+      )
     }
   ]
 
-  const hasData = overview && overview.totalPublishes > 0
-
   return (
-    <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+    <div style={{ maxWidth: 1200, margin: '0 auto' }}>
       {/* Page Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 28 }}>
         <div>
@@ -139,163 +195,62 @@ export default function AnalyticsPage() {
             数据统计
           </h1>
           <p style={{ fontSize: 14, color: '#86868b', margin: 0 }}>
-            各平台发布数据与跨平台对比分析
+            视频表现数据与跨平台对比分析
           </p>
         </div>
-        <Segmented
-          options={TIME_RANGE_OPTIONS}
-          value={timeRange}
-          onChange={handleTimeRangeChange}
-        />
+        <Button
+          type="primary"
+          icon={<SyncOutlined spin={collecting} />}
+          loading={collecting}
+          onClick={handleCollect}
+        >
+          采集数据
+        </Button>
       </div>
 
-      <Spin spinning={loading}>
-        {/* Summary Cards */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(4, 1fr)',
-            gap: 14,
-            marginBottom: 24,
-          }}
-        >
-          <SummaryCard
-            title="总发布"
-            value={overview?.totalPublishes || 0}
-            icon={<SendOutlined />}
-            color="#0071e3"
+      <Spin spinning={videoGroupsLoading}>
+        {selectedGroup && videoDetail ? (
+          <VideoDetailView
+            detail={videoDetail}
+            loading={videoDetailLoading}
+            onBack={handleBack}
           />
-          <SummaryCard
-            title="成功"
-            value={overview?.successCount || 0}
-            icon={<CheckCircleOutlined />}
-            color="#34c759"
-          />
-          <SummaryCard
-            title="失败"
-            value={overview?.failedCount || 0}
-            icon={<CloseCircleOutlined />}
-            color="#ff3b30"
-          />
-          <SummaryCard
-            title="成功率"
-            value={overview?.successRate || 0}
-            suffix="%"
-            icon={<BarChartOutlined />}
-            color={overview && overview.successRate >= 80 ? '#34c759' : '#ff9500'}
-          />
-        </div>
-
-        {!hasData ? (
-          <div
-            style={{
-              background: '#ffffff',
-              borderRadius: 14,
-              border: '1px solid rgba(0, 0, 0, 0.06)',
-              padding: '48px 0',
-            }}
-          >
-            <Empty description="发布视频后即可查看统计数据" />
-          </div>
         ) : (
           <>
-            {/* Charts */}
-            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 14, marginBottom: 14 }}>
-              <ChartCard title="发布趋势">
-                <Line
-                  data={trendData}
-                  xField="date"
-                  yField="count"
-                  colorField="type"
-                  height={260}
-                  point={{ size: 3 }}
-                  axis={{
-                    x: { label: { autoRotate: false } },
-                    y: { title: '数量' }
-                  }}
-                  scale={{
-                    color: {
-                      domain: ['发布总数', '成功', '失败'],
-                      range: ['#0071e3', '#34c759', '#ff3b30']
-                    }
-                  }}
-                  legend={{ position: 'top' }}
-                />
-              </ChartCard>
-              <ChartCard title="状态分布">
-                <Pie
-                  data={pieData}
-                  angleField="count"
-                  colorField="status"
-                  height={260}
-                  innerRadius={0.55}
-                  legend={{ position: 'bottom' }}
-                  scale={{
-                    color: {
-                      domain: pieData.map((d) => d.status),
-                      range: pieData.map((d) => {
-                        const key = Object.entries(STATUS_LABELS).find(([, v]) => v === d.status)?.[0]
-                        return STATUS_COLORS[key || ''] || '#999'
-                      })
-                    }
-                  }}
-                  labels={[{ text: 'count', position: 'outside', style: { fontSize: 12 } }]}
-                  style={{ stroke: '#fff', lineWidth: 2 }}
-                />
-              </ChartCard>
-            </div>
-
-            {/* Platform Bar Chart */}
-            <div style={{ marginBottom: 14 }}>
-              <ChartCard title="平台发布统计">
-                <Column
-                  data={platformBarData}
-                  xField="platform"
-                  yField="count"
-                  colorField="type"
-                  group={{ title: true }}
-                  height={240}
-                  scale={{
-                    color: {
-                      domain: ['成功', '失败', '待处理'],
-                      range: ['#34c759', '#ff3b30', '#ff9500']
-                    }
-                  }}
-                  axis={{ y: { title: '数量' } }}
-                  legend={{ position: 'top' }}
-                />
-              </ChartCard>
-            </div>
-
-            {/* Comparison Table */}
-            <div
-              style={{
-                background: '#ffffff',
-                borderRadius: 14,
-                border: '1px solid rgba(0, 0, 0, 0.06)',
-                padding: 20,
-              }}
-            >
-              <h3
+            {videoGroups.length === 0 ? (
+              <div
                 style={{
-                  fontFamily: "'Sora', sans-serif",
-                  fontSize: 14,
-                  fontWeight: 600,
-                  color: '#1d1d1f',
-                  marginBottom: 16,
-                  letterSpacing: '-0.01em',
+                  background: '#ffffff',
+                  borderRadius: 14,
+                  border: '1px solid rgba(0, 0, 0, 0.06)',
+                  padding: '48px 0',
                 }}
               >
-                跨平台对比
-              </h3>
-              <Table
-                dataSource={compareResult}
-                columns={compareColumns}
-                rowKey="platform"
-                pagination={false}
-                size="middle"
-              />
-            </div>
+                <Empty description="暂无视频数据，点击「采集数据」获取" />
+              </div>
+            ) : (
+              <div
+                style={{
+                  background: '#ffffff',
+                  borderRadius: 14,
+                  border: '1px solid rgba(0, 0, 0, 0.06)',
+                  padding: 20,
+                }}
+              >
+                <Table
+                  dataSource={videoGroups}
+                  columns={videoColumns}
+                  rowKey="groupId"
+                  pagination={{
+                    current: videoGroupsPage,
+                    total: videoGroupsTotal,
+                    pageSize: 20,
+                    onChange: (page) => fetchVideoGroups({ page })
+                  }}
+                  size="middle"
+                />
+              </div>
+            )}
           </>
         )}
       </Spin>
@@ -303,82 +258,207 @@ export default function AnalyticsPage() {
   )
 }
 
-function SummaryCard({ title, value, suffix, icon, color }: {
-  title: string
-  value: number
-  suffix?: string
-  icon: React.ReactNode
-  color: string
+// ---- 视频详情组件 ----
+
+function VideoDetailView({
+  detail,
+  loading,
+  onBack
+}: {
+  detail: VideoGroupDetail
+  loading: boolean
+  onBack: () => void
 }) {
   return (
-    <div
-      style={{
-        background: 'rgba(255, 255, 255, 0.78)',
-        backdropFilter: 'blur(20px) saturate(180%)',
-        WebkitBackdropFilter: 'blur(20px) saturate(180%)',
-        borderRadius: 16,
-        border: '0.5px solid rgba(255, 255, 255, 0.85)',
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02), 0 12px 40px rgba(0, 0, 0, 0.02)',
-        padding: '20px 22px',
-        transition: 'all 0.2s ease',
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-        <span
-          style={{
-            fontSize: 11,
-            fontWeight: 600,
-            color: '#86868b',
-            textTransform: 'uppercase',
-            letterSpacing: '0.06em',
-          }}
-        >
-          {title}
-        </span>
-        <span style={{ fontSize: 16, color, opacity: 0.7 }}>{icon}</span>
-      </div>
+    <Spin spinning={loading}>
+      {/* 返回按钮 */}
+      <Button
+        type="text"
+        icon={<ArrowLeftOutlined />}
+        onClick={onBack}
+        style={{ marginBottom: 16 }}
+      >
+        返回列表
+      </Button>
+
+      {/* 视频标题 */}
       <div
         style={{
-          fontFamily: "'Sora', sans-serif",
-          fontSize: 30,
-          fontWeight: 700,
-          color: '#1d1d1f',
-          letterSpacing: '-0.03em',
-          lineHeight: 1,
+          background: '#ffffff',
+          borderRadius: 14,
+          border: '1px solid rgba(0, 0, 0, 0.06)',
+          padding: 20,
+          marginBottom: 14
         }}
       >
-        {value}
-        {suffix && (
-          <span style={{ fontSize: 16, fontWeight: 500, color: '#86868b', marginLeft: 2 }}>{suffix}</span>
-        )}
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>{detail.title || '无标题'}</h2>
+        <p style={{ margin: '8px 0 0', color: '#86868b', fontSize: 13 }}>
+          发布时间: {new Date(detail.createdAt).toLocaleString('zh-CN')}
+        </p>
       </div>
-    </div>
+
+      {/* 各平台数据卡片 */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: `repeat(${detail.records.length}, 1fr)`,
+          gap: 14,
+          marginBottom: 14
+        }}
+      >
+        {detail.records.map((record) => (
+          <PlatformCard key={record.recordId} record={record} />
+        ))}
+      </div>
+
+      {/* 跨平台对比图表 */}
+      {detail.records.length > 1 && (
+        <div
+          style={{
+            background: '#ffffff',
+            borderRadius: 14,
+            border: '1px solid rgba(0, 0, 0, 0.06)',
+            padding: 20,
+            marginBottom: 14
+          }}
+        >
+          <h3
+            style={{
+              fontFamily: "'Sora', sans-serif",
+              fontSize: 14,
+              fontWeight: 600,
+              color: '#1d1d1f',
+              marginBottom: 16,
+            }}
+          >
+            跨平台数据对比
+          </h3>
+          <Column
+            data={detail.records.flatMap((r) => [
+              { platform: getPlatformName(r.platform), metric: '播放量', value: r.latestSnapshot?.views || 0 },
+              { platform: getPlatformName(r.platform), metric: '点赞数', value: r.latestSnapshot?.likes || 0 },
+              { platform: getPlatformName(r.platform), metric: '评论数', value: r.latestSnapshot?.comments || 0 },
+              { platform: getPlatformName(r.platform), metric: '分享数', value: r.latestSnapshot?.shares || 0 }
+            ])}
+            xField="platform"
+            yField="value"
+            colorField="metric"
+            group={{ title: true }}
+            height={300}
+            axis={{ y: { title: '数量' } }}
+            legend={{ position: 'top' }}
+          />
+        </div>
+      )}
+
+      {/* 趋势图表 */}
+      {detail.records.some((r) => r.trend.length > 0) && (
+        <div
+          style={{
+            background: '#ffffff',
+            borderRadius: 14,
+            border: '1px solid rgba(0, 0, 0, 0.06)',
+            padding: 20
+          }}
+        >
+          <h3
+            style={{
+              fontFamily: "'Sora', sans-serif",
+              fontSize: 14,
+              fontWeight: 600,
+              color: '#1d1d1f',
+              marginBottom: 16,
+            }}
+          >
+            数据趋势
+          </h3>
+          {detail.records.map((record) => (
+            record.trend.length > 0 && (
+              <div key={record.recordId} style={{ marginBottom: 24 }}>
+                <h4 style={{ fontSize: 13, color: '#666', marginBottom: 8 }}>
+                  {getPlatformName(record.platform)} - 播放量趋势
+                </h4>
+                <Line
+                  data={record.trend.map((t) => ({
+                    date: new Date(t.snapshotAt).toLocaleDateString('zh-CN'),
+                    播放量: t.views,
+                    点赞数: t.likes
+                  }))}
+                  xField="date"
+                  yField="播放量"
+                  height={200}
+                  point={{ size: 3 }}
+                  axis={{ x: { label: { autoRotate: false } } }}
+                />
+              </div>
+            )
+          ))}
+        </div>
+      )}
+    </Spin>
   )
 }
 
-function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
+// ---- 平台数据卡片 ----
+
+function PlatformCard({ record }: { record: VideoGroupRecordDetail }) {
+  const snapshot = record.latestSnapshot
+  const platformColor = getPlatformColor(record.platform)
+
   return (
     <div
       style={{
         background: '#ffffff',
         borderRadius: 14,
-        border: '1px solid rgba(0, 0, 0, 0.06)',
+        border: `1px solid ${platformColor}20`,
         padding: 20,
+        borderTop: `3px solid ${platformColor}`
       }}
     >
-      <h3
-        style={{
-          fontFamily: "'Sora', sans-serif",
-          fontSize: 14,
-          fontWeight: 600,
-          color: '#1d1d1f',
-          marginBottom: 16,
-          letterSpacing: '-0.01em',
-        }}
-      >
-        {title}
-      </h3>
-      {children}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
+        <span style={{ fontSize: 16 }}>{getPlatformName(record.platform).split(' ')[0]}</span>
+        <Tag color={platformColor} style={{ margin: 0, fontSize: 11 }}>
+          {getPlatformName(record.platform).split(' ')[1] || record.platform}
+        </Tag>
+      </div>
+
+      {snapshot ? (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <MetricItem icon={<EyeOutlined />} label="播放量" value={snapshot.views} color="#0071e3" />
+          <MetricItem icon={<LikeOutlined />} label="点赞数" value={snapshot.likes} color="#ff3b30" />
+          <MetricItem icon={<MessageOutlined />} label="评论数" value={snapshot.comments} color="#ff9500" />
+          <MetricItem icon={<ShareAltOutlined />} label="分享数" value={snapshot.shares} color="#34c759" />
+        </div>
+      ) : (
+        <div style={{ textAlign: 'center', color: '#86868b', padding: '20px 0' }}>
+          暂无数据
+        </div>
+      )}
+
+      {snapshot?.snapshotAt && (
+        <div style={{ fontSize: 11, color: '#86868b', marginTop: 12, textAlign: 'right' }}>
+          更新于: {new Date(snapshot.snapshotAt).toLocaleString('zh-CN')}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MetricItem({ icon, label, value, color }: {
+  icon: React.ReactNode
+  label: string
+  value: number
+  color: string
+}) {
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 4 }}>
+        <span style={{ color, fontSize: 12 }}>{icon}</span>
+        <span style={{ fontSize: 11, color: '#86868b' }}>{label}</span>
+      </div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: '#1d1d1f' }}>
+        {formatNumber(value)}
+      </div>
     </div>
   )
 }

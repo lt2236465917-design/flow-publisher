@@ -2,6 +2,7 @@ import type { BrowserContext, Page } from 'playwright-core'
 import { BasePlatformAdapter } from '../BasePlatformAdapter'
 import type { UploadProgress, SubmitContentPayload, VideoConstraints } from '../IPlatformAdapter'
 import type { PlatformFieldDefinition } from '../../../shared/types/platform-fields'
+import type { SubmitResult, VideoListResult } from '../../../../shared/types/analytics'
 import type { HttpClient } from '../../http/HttpClient'
 import { KS_URLS } from './ks-urls'
 import { KS_SELECTORS } from './ks-selectors'
@@ -849,7 +850,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
     }
   }
 
-  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<void> {
+  async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<SubmitResult> {
     const uploadResult = this.lastUploadResult
     const fileId = uploadResult?.fileId || Number(videoId) || 0
 
@@ -1013,8 +1014,12 @@ export class KsApiAdapter extends BasePlatformAdapter {
       logger.info(`[kuaishou] Submit response (attempt ${attempt + 1}): ${JSON.stringify(response.data).substring(0, 500)}`)
 
       if (response.data?.result === 1) {
-        logger.info(`[kuaishou] Content submitted successfully`)
-        return
+        const submittedPhotoId = response.data?.data?.photoId || this.lastUploadResult?.photoId
+        logger.info(`[kuaishou] Content submitted successfully, photoId: ${submittedPhotoId}`)
+        return {
+          contentId: submittedPhotoId,
+          publishUrl: submittedPhotoId ? `https://www.kuaishou.com/short-video/${submittedPhotoId}` : undefined
+        }
       }
 
       lastSubmitError = response.data?.error_msg || response.data?.message || `result=${response.data?.result}`
@@ -1040,6 +1045,96 @@ export class KsApiAdapter extends BasePlatformAdapter {
     }
 
     throw new Error(`内容提交失败: ${lastSubmitError}`)
+  }
+
+  /**
+   * 获取视频列表（含统计数据）
+   * 使用快手创作者数据分析 API (参考蚁小二)
+   * POST https://cp.kuaishou.com/rest/cp/creator/analysis/pc/photo/list
+   */
+  async getVideoList(client: HttpClient, options?: { cursor?: string; pageSize?: number }): Promise<VideoListResult> {
+    const cookie = client.getCookieString()
+    const page = options?.cursor ? parseInt(options.cursor) : 0
+    const count = options?.pageSize || 10
+
+    // 提取 api_ph token
+    const apiPh = this.extractApiPh(cookie)
+
+    const body = {
+      orderType: 2,
+      sortType: 1,
+      type: 0,
+      count,
+      page,
+      'kuaishou.web.cp.api_ph': apiPh
+    }
+
+    // 计算签名
+    const signService = getSignService()
+    const bodyStr = JSON.stringify(body)
+    const sig3 = await signService.getSignature('kuaishou', cookie, bodyStr, bodyStr)
+
+    const url = sig3
+      ? `https://cp.kuaishou.com/rest/cp/creator/analysis/pc/photo/list?__NS_sig3=${sig3}`
+      : 'https://cp.kuaishou.com/rest/cp/creator/analysis/pc/photo/list'
+
+    const response = await client.post<{
+      result: number
+      data?: {
+        photoList?: {
+          photoItems: Array<{
+            photoId: string
+            cover: string
+            title: string
+            publishTime: number
+            video: boolean
+            playCount: number
+            fpr: number
+            commentCount: number
+            likeCount: number
+            collectCount: number
+            followCount: number
+          }>
+        }
+      }
+    }>(
+      url,
+      body,
+      {
+        headers: {
+          referer: 'https://cp.kuaishou.com/article/manage/video',
+          Origin: 'https://cp.kuaishou.com',
+          'Content-Type': 'application/json;charset=UTF-8',
+          'X-Requested-With': 'XMLHttpRequest'
+        }
+      }
+    )
+
+    logger.info(`[kuaishou] getVideoList response: result=${response.data?.result}, count=${response.data?.data?.photoList?.photoItems?.length || 0}`)
+
+    if (response.data?.result !== 1) {
+      throw new Error(`获取视频列表失败: result=${response.data?.result}`)
+    }
+
+    const photoItems = response.data.data?.photoList?.photoItems || []
+
+    const items = photoItems.map((photo) => ({
+      contentId: photo.photoId,
+      title: photo.title,
+      coverUrl: photo.cover,
+      publishTime: photo.publishTime,
+      views: photo.playCount || 0,
+      likes: photo.likeCount || 0,
+      comments: photo.commentCount || 0,
+      shares: 0, // 快手API不返回分享数
+      favorites: photo.collectCount || 0
+    }))
+
+    return {
+      items,
+      cursor: String(page + 1),
+      hasMore: photoItems.length >= count
+    }
   }
 
   private extractApiPh(cookie: string): string {
