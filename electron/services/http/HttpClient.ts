@@ -2,14 +2,24 @@ import axios, { type AxiosRequestConfig, type AxiosResponse } from 'axios'
 import { logger } from '../../utils/logger'
 import { Agent as HttpsAgent } from 'https'
 import { getAccountRepository, saveDatabase } from '../database'
+import { encryptString, decryptString } from '../../utils/crypto-store'
 
 const DEFAULT_TIMEOUT = 30_000
 const UPLOAD_TIMEOUT = 300_000
+
+/** Callback invoked when Set-Cookie response headers update the cookie store */
+export type CookieRefreshCallback = (
+  accountId: string,
+  cookies: string,
+  platform: string
+) => void
 
 export interface CookieContext {
   cookies: string
   platform: string
   accountId: string
+  /** Optional callback for cookie persistence — decouples HttpClient from DB (M13 fix) */
+  onCookiesRefreshed?: CookieRefreshCallback
 }
 
 export interface HttpRequestOptions {
@@ -24,6 +34,8 @@ export interface HttpRequestOptions {
   noCookie?: boolean
   /** When true, only send explicitly provided headers + Cookie (no browser-like defaults) */
   minimalHeaders?: boolean
+  /** When true, enforce proper TLS certificate validation. Default false for backward compat with CDN endpoints. */
+  secureTls?: boolean
 }
 
 export interface ApiResponse<T = unknown> {
@@ -51,7 +63,36 @@ const BROWSER_HEADERS: Record<string, string> = {
   'Sec-Fetch-Dest': 'empty'
 }
 
-const HTTPS_AGENT = new HttpsAgent({ rejectUnauthorized: false })
+// CDN upload endpoints use self-signed or non-standard certificates.
+// This agent is ONLY for known CDN domains.
+const HTTPS_AGENT_CDN = new HttpsAgent({ rejectUnauthorized: false })
+
+// Secure agent for platform API calls — proper TLS certificate validation.
+const HTTPS_AGENT_SECURE = new HttpsAgent({ rejectUnauthorized: true })
+
+// Domains known to have certificate issues (CDN upload endpoints).
+// Calls to these domains use the CDN agent; everything else uses the secure agent.
+const CDN_DOMAINS = [
+  'bytedanceapi.com',      // ByteDance VOD / ImageX
+  'kuaishouzt.com',        // Kuaishou CDN upload
+]
+
+function isCdnDomain(url: string): boolean {
+  try {
+    const host = new URL(url).hostname
+    return CDN_DOMAINS.some(d => host === d || host.endsWith('.' + d))
+  } catch {
+    return false
+  }
+}
+
+function selectAgent(url: string, options: { secureTls?: boolean }): HttpsAgent {
+  // Explicit secureTls flag always wins
+  if (options.secureTls === true) return HTTPS_AGENT_SECURE
+  if (options.secureTls === false) return HTTPS_AGENT_CDN
+  // Auto-detect: CDN domains get the permissive agent, everything else gets secure
+  return isCdnDomain(url) ? HTTPS_AGENT_CDN : HTTPS_AGENT_SECURE
+}
 
 export class HttpClient {
   private context: CookieContext
@@ -68,6 +109,22 @@ export class HttpClient {
     return this.context.accountId
   }
 
+  /**
+   * Verify a cookie domain is valid for the current platform.
+   * Prevents Set-Cookie injection from attacker-controlled servers (M3 fix).
+   */
+  private isDomainAllowedForPlatform(domain: string): boolean {
+    const platformDomains: Record<string, string[]> = {
+      douyin: ['douyin.com', 'bytedanceapi.com'],
+      xiaohongshu: ['xiaohongshu.com'],
+      kuaishou: ['kuaishou.com', 'kuaishouzt.com'],
+      'wechat-channels': ['weixin.qq.com', 'qq.com', 'wechat.com']
+    }
+    const allowed = platformDomains[this.context.platform]
+    if (!allowed) return true // unknown platform — allow (conservative)
+    return allowed.some(d => domain === d || domain.endsWith('.' + d))
+  }
+
   async request<T = unknown>(options: HttpRequestOptions): Promise<ApiResponse<T>> {
     const baseHeaders = options.minimalHeaders
       ? { Accept: 'application/json, text/plain, */*' }
@@ -78,7 +135,7 @@ export class HttpClient {
       data: options.data,
       params: options.params,
       adapter: 'http',
-      httpsAgent: HTTPS_AGENT,
+      httpsAgent: selectAgent(options.url, options),
       headers: {
         ...baseHeaders,
         ...(options.noCookie ? {} : { Cookie: this.context.cookies }),
@@ -114,6 +171,22 @@ export class HttpClient {
       const response: AxiosResponse<T> = await axios(config)
 
       logger.info(`[HttpClient] Response: status=${response.status}, url=${response.request?.res?.responseUrl || response.config?.url || 'unknown'}`)
+
+      // Detect 401/403 — likely session expired. Mark account as expired so the user gets a clear notification.
+      if (response.status === 401 || response.status === 403) {
+        logger.warn(`[HttpClient] ${response.status} response for ${this.context.platform} — session may be expired`)
+        try {
+          const repo = getAccountRepository()
+          const account = repo.getById(this.context.accountId)
+          if (account && account.session_status === 'logged_in') {
+            repo.updateSession(this.context.accountId, 'expired', this.context.cookies)
+            saveDatabase()
+            logger.info(`[HttpClient] Marked account ${this.context.accountId} as expired due to ${response.status}`)
+          }
+        } catch (e) {
+          logger.warn('[HttpClient] Failed to update session expiry:', e)
+        }
+      }
 
       // Refresh cookies from Set-Cookie response headers
       this.refreshCookiesFromResponse(response)
@@ -181,15 +254,21 @@ export class HttpClient {
         .join('; ')
       this.context.cookies = newCookieStr
 
-      // Save to database
+      // Persist updated cookies — prefer callback (decoupled from DB) over direct DB access (M13 fix)
       if (this.context.accountId) {
-        const repo = getAccountRepository()
-        const account = repo.getById(this.context.accountId)
-        if (account) {
+        if (this.context.onCookiesRefreshed) {
+          // New path: delegate to caller-provided callback
+          this.context.onCookiesRefreshed(this.context.accountId, newCookieStr, this.context.platform)
+        } else {
+          // Legacy path: direct DB access (will be removed once all callers provide the callback)
+          const repo = getAccountRepository()
+          const account = repo.getById(this.context.accountId)
+          if (account) {
           // Update the stored cookie JSON with new values
           let storedCookies: Array<{ name: string; value: string; domain: string; path: string; expires: number; httpOnly: boolean; secure: boolean; sameSite: string }> = []
           try {
-            storedCookies = JSON.parse(account.cookies || '[]')
+            // Decrypt first — cookies may be encrypted after M1 fix
+            storedCookies = JSON.parse(decryptString(account.cookies || '[]'))
           } catch { /* ignore */ }
 
           // Merge new cookies into stored cookies
@@ -207,6 +286,13 @@ export class HttpClient {
             for (let i = 1; i < parts.length; i++) {
               const [attrName, ...attrRest] = parts[i].split('=')
               attrs[attrName.toLowerCase()] = attrRest.join('=') || 'true'
+            }
+
+            // Validate Domain attribute — reject cookies for foreign domains (M3 fix)
+            const cookieDomain = attrs.domain || response.request?.host || ''
+            if (cookieDomain && !this.isDomainAllowedForPlatform(cookieDomain)) {
+              logger.warn(`[HttpClient] Rejected Set-Cookie for foreign domain: ${cookieName} @ ${cookieDomain}`)
+              continue
             }
 
             const existingIdx = storedCookies.findIndex(c => c.name === cookieName)
@@ -230,11 +316,12 @@ export class HttpClient {
             }
           }
 
-          repo.updateSession(this.context.accountId, 'logged_in', JSON.stringify(storedCookies))
+          repo.updateSession(this.context.accountId, 'logged_in', encryptString(JSON.stringify(storedCookies)))
           saveDatabase()
           logger.info(`[HttpClient] Cookies refreshed from Set-Cookie: ${setCookies.length} headers, total: ${storedCookies.length} cookies`)
-        }
-      }
+          } // end if (account)
+        } // end else (legacy DB path)
+      } // end if (this.context.accountId)
     } catch (e) {
       // Cookie refresh is non-fatal
       logger.warn('[HttpClient] Failed to refresh cookies from response:', e)

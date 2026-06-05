@@ -8,7 +8,7 @@ import { getSignService } from '../../sign/SignService'
 import { DOUYIN_URLS } from './douyin-urls'
 import { DOUYIN_SELECTORS } from './douyin-selectors'
 import { logger } from '../../../utils/logger'
-import { delay } from '../../../utils/delays'
+import { delay, retry } from '../../../utils/delays'
 import { existsSync, statSync, createReadStream, readFileSync } from 'fs'
 import { createHash, createPrivateKey, createSign, randomBytes, createHmac } from 'crypto'
 import aws4 from 'aws4'
@@ -690,8 +690,8 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
 
     onProgress?.({ percent: 5, stage: '正在获取上传凭证...' })
 
-    // Step 1: Get STS credentials from Douyin
-    const stsAuth = await this.getUploadAuth(client)
+    // Step 1: Get STS credentials from Douyin (with retry)
+    const stsAuth = await retry(() => this.getUploadAuth(client), { maxAttempts: 3, delayMs: 2000, backoff: 2 })
     logger.info(`[douyin] STS credentials obtained, AccessKeyID: ${stsAuth.AccessKeyID.substring(0, 10)}...`)
 
     // Step 2: Call ApplyUploadInner with AWS4 signing
@@ -705,6 +705,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     }> = []
 
     try {
+      const applyResult = await retry(async () => {
       // Build AWS4-signed request for VOD API
       const vodParams = {
         Action: 'ApplyUploadInner',
@@ -760,6 +761,9 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
 
       uploadNodes = innerAddress.UploadNodes
       logger.info(`[douyin] Upload address obtained, host: ${uploadNodes[0].UploadHost}`)
+      return uploadNodes
+      }, { maxAttempts: 3, delayMs: 2000, backoff: 2 })
+      uploadNodes = applyResult
     } catch (err) {
       logger.error('[douyin] ApplyUploadInner error:', err)
       throw new Error(`获取上传凭证失败: ${err}`)
@@ -807,10 +811,10 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           if (readBuf.length > 0) {
             const chunkCrc = this.computeCrc32FromBuffer(readBuf)
             const chunkUrl = `${uploadBase}?uploadid=${uploadId}&part_number=1&phase=transfer&part_offset=0`
-            const result = await this.httpPostBuffer(chunkUrl, readBuf, {
+            const result = await retry(() => this.httpPostBuffer(chunkUrl, readBuf, {
               ...uploadHeaders,
               'Content-CRC32': chunkCrc
-            }, chunkTimeout)
+            }, chunkTimeout), { maxAttempts: 3, delayMs: 2000, backoff: 2 })
             if (!result?.data?.crc32) {
               throw new Error(`分片上传失败: ${result?.message || 'no crc32 in response'}`)
             }
@@ -841,10 +845,10 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
               const chunkCrc = this.computeCrc32FromBuffer(readBuf)
               const chunkUrl = `${uploadBase}?uploadid=${uploadId}&part_number=${currentPartNum}&phase=transfer&part_offset=${(currentPartNum - 1) * chunkSize}`
 
-              const result = await this.httpPostBuffer(chunkUrl, readBuf, {
+              const result = await retry(() => this.httpPostBuffer(chunkUrl, readBuf, {
                 ...uploadHeaders,
                 'Content-CRC32': chunkCrc
-              }, chunkTimeout)
+              }, chunkTimeout), { maxAttempts: 3, delayMs: 2000, backoff: 2 })
 
               if (!result?.data?.crc32) {
                 throw new Error(`分片 ${currentPartNum} 上传失败: ${result?.message || 'no crc32 in response'}`)
@@ -887,10 +891,10 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       }
       const crcBody = crcParts.join(',')
       const finishUrl = `${uploadBase}?uploadid=${uploadId}&phase=finish&uploadmode=part`
-      const finishResult = await this.httpPostBuffer(finishUrl, Buffer.from(crcBody), {
+      const finishResult = await retry(() => this.httpPostBuffer(finishUrl, Buffer.from(crcBody), {
         ...uploadHeaders,
         'Content-Type': 'text/plain'
-      }, 60_000)
+      }, 60_000), { maxAttempts: 3, delayMs: 2000, backoff: 2 })
       logger.info(`[douyin] Upload finish response: ${JSON.stringify(finishResult).substring(0, 300)}`)
 
     } catch (err) {
@@ -934,7 +938,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       })
 
       const commitUrl = `https://vod.bytedanceapi.com${commitSignOpts.path}`
-      const commitResponse = await client.request<{
+      const commitResponse = await retry(() => client.request<{
         Result?: { Results?: Array<{ Vid: string }> }
         ResponseMetadata?: { Error?: { Code?: string; Message?: string } }
       }>({
@@ -946,7 +950,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           Referer: 'https://studio.ixigua.com/'
         },
         noCookie: true
-      })
+      }), { maxAttempts: 3, delayMs: 2000, backoff: 2 })
 
       const vid = commitResponse.data?.Result?.Results?.[0]?.Vid
       logger.info(`[douyin] Upload committed, vid: ${vid}`)
@@ -1218,7 +1222,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       const baseUrl = `${API.awemeCreate}?${queryParams.toString()}`
       const signedUrl = await this.signUrl(baseUrl, cookie, JSON.stringify(postData))
 
-      const response = await client.post<{
+      const response = await retry(() => client.post<{
         status_code: number
         status_msg?: string
         aweme_id?: string
@@ -1237,7 +1241,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           Referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page',
           Origin: 'https://creator.douyin.com/'
         }
-      )
+      ), { maxAttempts: 2, delayMs: 5000, backoff: 2 }) // Only 2 attempts — duplicate submissions are worse than failures
 
       logger.info(`[douyin] create_v2 response: ${JSON.stringify(response.data).substring(0, 1000)}`)
 

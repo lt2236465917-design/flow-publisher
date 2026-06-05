@@ -1,6 +1,6 @@
-import { ipcMain, dialog, BrowserWindow } from 'electron'
-import { readFileSync, existsSync, writeFileSync } from 'fs'
-import { extname, join } from 'path'
+import { ipcMain, dialog, BrowserWindow, app } from 'electron'
+import { readFileSync, existsSync, writeFileSync, statSync } from 'fs'
+import { extname, join, resolve } from 'path'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
@@ -66,6 +66,14 @@ export function registerFileDialogIpcHandlers(): void {
         return { success: false, error: '文件不存在' }
       }
 
+      // Guard against accidentally loading huge files (e.g. video mislabeled as .jpg)
+      const MAX_IMAGE_SIZE = 50 * 1024 * 1024 // 50 MB
+      const fileSize = statSync(filePath).size
+      if (fileSize > MAX_IMAGE_SIZE) {
+        logger.warn(`[FILE_SELECT_IMAGE] file too large: ${fileSize} bytes`)
+        return { success: false, error: '图片文件过大（最大50MB）' }
+      }
+
       const ext = extname(filePath).replace('.', '').toLowerCase()
       const mimeMap: Record<string, string> = {
         jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
@@ -88,6 +96,20 @@ export function registerFileDialogIpcHandlers(): void {
     try {
       if (!filePath || typeof filePath !== 'string') return { success: false, error: '无效的文件路径' }
       if (!existsSync(filePath)) return { success: false, error: '文件不存在' }
+
+      // Validate path is within allowed directories (same as local-file protocol)
+      const allowedRoots = [app.getPath('userData'), app.getPath('temp')]
+      const resolvedPath = resolve(filePath)
+      const isAllowed = allowedRoots.some(root => {
+        const sep = require('path').sep
+        const normalizedRoot = resolvedPath.endsWith(sep) ? resolvedPath : resolvedPath + sep
+        return normalizedRoot.startsWith(resolve(root) + sep)
+      })
+      if (!isAllowed) {
+        logger.warn(`[FILE_READ_DATA_URL] Blocked access to path outside allowed directories: ${resolvedPath}`)
+        return { success: false, error: '禁止访问的文件路径' }
+      }
+
       const ext = extname(filePath).replace('.', '').toLowerCase()
       const mimeMap: Record<string, string> = {
         jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',

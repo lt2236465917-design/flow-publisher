@@ -58,14 +58,13 @@ export class ScheduledTaskRepository {
   }
 
   getDueTasks(): ScheduledTaskRow[] {
-    // Use datetime('now') to get current UTC time and compare with stored ISO timestamps
-    // The stored scheduled_at is in ISO format (e.g., "2026-05-30T10:00:00.000Z")
-    // SQLite datetime('now') returns "YYYY-MM-DD HH:MM:SS" format
-    // We need to normalize the comparison
+    // Use strftime('%s') to compare as Unix timestamps — format-independent.
+    // This avoids ISO-8601 vs "YYYY-MM-DD HH:MM:SS" format mismatch between
+    // the stored scheduled_at and SQLite's datetime('now') output.
     const stmt = this.db.prepare(
       `SELECT * FROM scheduled_tasks
        WHERE status = 'pending'
-       AND datetime(scheduled_at) <= datetime('now')
+       AND strftime('%s', scheduled_at) <= strftime('%s', 'now')
        ORDER BY scheduled_at ASC`
     )
     const rows: ScheduledTaskRow[] = []
@@ -112,7 +111,9 @@ export class ScheduledTaskRepository {
         now
       ]
     )
-    return this.getById(id)!
+    const row = this.getById(id)
+    if (!row) throw new Error(`Failed to create scheduled task: INSERT succeeded but getById returned null`)
+    return row
   }
 
   updateStatus(id: string, status: string, error?: string): void {

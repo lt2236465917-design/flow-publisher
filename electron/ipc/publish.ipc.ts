@@ -108,7 +108,14 @@ export function registerPublishIpcHandlers(): void {
           ...progress
         })
       })
-      const videoId = typeof result === 'string' ? result : undefined
+      // Handle both legacy string return and new UploadResult (H7 + H11 fix)
+      const videoId = typeof result === 'string' ? result
+        : (result && typeof result === 'object' && 'videoId' in result) ? (result as { videoId: string; meta: Record<string, unknown> }).videoId
+        : undefined
+      // Persist upload metadata so submit can recover from crashes
+      if (result && typeof result === 'object' && 'meta' in result) {
+        recordRepo.saveUploadMeta(record.id, (result as { meta: Record<string, unknown> }).meta)
+      }
 
       recordRepo.updateStatus(record.id, 'uploaded', 100)
       saveDatabase()
@@ -116,6 +123,18 @@ export function registerPublishIpcHandlers(): void {
       return { success: true, data: { recordId: record.id, videoId } }
     } catch (err) {
       logger.error('PUBLISH_UPLOAD error:', err)
+      // Mark the publish record as 'error' so it doesn't remain orphaned as 'pending'
+      try {
+        const recordRepo = getPublishRecordRepository()
+        const allRecords = recordRepo.getAll()
+        const pendingRecord = allRecords.find(r => r.status === 'pending' && r.account_id === params.accountId)
+        if (pendingRecord) {
+          recordRepo.updateStatus(pendingRecord.id, 'error', undefined, String(err))
+          saveDatabase()
+        }
+      } catch (cleanupErr) {
+        logger.warn('Failed to mark orphaned record as error:', cleanupErr)
+      }
       return { success: false, error: String(err) }
     }
   })
@@ -226,7 +245,9 @@ export function registerPublishIpcHandlers(): void {
 
       // Merge video metadata into content payload
       const contentWithMeta = { ...params.content, videoMetadata }
-      const submitResult = await adapter.submitContentAPI(client, contentWithMeta, params.videoId, coverFileId)
+      // Pass recordId so adapter can read upload metadata from DB (H7 + H11 fix)
+      const contentWithRecord = { ...contentWithMeta, recordId: params.recordId }
+      const submitResult = await adapter.submitContentAPI(client, contentWithRecord, params.videoId, coverFileId)
 
       recordRepo.updateStatus(params.recordId, 'done', 100)
       const now = new Date().toISOString()

@@ -103,7 +103,9 @@ export class PublishRecordRepository {
         now
       ]
     )
-    return this.getById(id)!
+    const row = this.getById(id)
+    if (!row) throw new Error(`Failed to create publish record: INSERT succeeded but getById returned null`)
+    return row
   }
 
   updateStatus(id: string, status: string, progress?: number, error?: string, publishUrl?: string): void {
@@ -138,5 +140,32 @@ export class PublishRecordRepository {
 
   updateGroupId(id: string, groupId: string): void {
     this.db.run('UPDATE publish_records SET group_id = ?, updated_at = datetime(\'now\') WHERE id = ?', [groupId, id])
+  }
+
+  /**
+   * Store upload result metadata after successful upload.
+   * Persists dimensions, md5, downloadUrl, etc. for recovery on crash (H7 fix)
+   * and eliminates the need for mutable instance fields on adapters (H11 fix).
+   */
+  saveUploadMeta(id: string, meta: Record<string, unknown>): void {
+    this.db.run('UPDATE publish_records SET upload_meta = ?, updated_at = datetime(\'now\') WHERE id = ?',
+      [JSON.stringify(meta), id])
+  }
+
+  /**
+   * Retrieve upload metadata previously stored by saveUploadMeta.
+   */
+  getUploadMeta(id: string): Record<string, unknown> | null {
+    const stmt = this.db.prepare('SELECT upload_meta FROM publish_records WHERE id = ?')
+    stmt.bind([id])
+    if (stmt.step()) {
+      const row = stmt.getAsObject() as { upload_meta: string | null }
+      stmt.free()
+      if (row.upload_meta) {
+        try { return JSON.parse(row.upload_meta) } catch { return null }
+      }
+    }
+    stmt.free()
+    return null
   }
 }

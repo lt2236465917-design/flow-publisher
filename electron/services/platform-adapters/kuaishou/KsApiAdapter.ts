@@ -1,6 +1,7 @@
 import type { BrowserContext, Page } from 'playwright-core'
 import { BasePlatformAdapter } from '../BasePlatformAdapter'
-import type { UploadProgress, SubmitContentPayload, VideoConstraints } from '../IPlatformAdapter'
+import type { UploadProgress, SubmitContentPayload, VideoConstraints, UploadResult } from '../IPlatformAdapter'
+import { getPublishRecordRepository } from '../../database'
 import type { PlatformFieldDefinition } from '../../../shared/types/platform-fields'
 import type { SubmitResult, VideoListResult } from '../../../../shared/types/analytics'
 import type { HttpClient } from '../../http/HttpClient'
@@ -9,8 +10,9 @@ import { KS_SELECTORS } from './ks-selectors'
 import { logger } from '../../../utils/logger'
 import { delay } from '../../../utils/delays'
 import { existsSync, statSync, readFileSync } from 'fs'
-import { createHash } from 'crypto'
 import { ffmpegService } from '../../ffmpeg/FFmpegService'
+import { computeFileMd5 } from '../../../utils/file-hash'
+import { openChunkedReader } from '../../../utils/chunked-reader'
 import { getSignService } from '../../sign/SignService'
 
 // Kuaishou Creator API endpoints (reverse-engineered from browser)
@@ -35,21 +37,8 @@ export class KsApiAdapter extends BasePlatformAdapter {
   private cachedDisplayName: string = ''
   private cachedUserId: string = ''
 
-  // Last upload result for submitContentAPI
-  private lastUploadResult: {
-    photoId: string
-    fileId: number
-    token: string
-    fileSize: number
-    videoWidth: number
-    videoHeight: number
-    videoDuration: number
-    md5sum: string
-    mediaId: string
-    coverMediaId: string
-    coverKey: string
-    videoFrameRate: number
-  } | null = null
+  // H11 fix: lastUploadResult moved to DB-backed upload_meta column.
+  // submitContentAPI now reads metadata from publish_records.upload_meta.
 
   private loginCheckCount = 0
 
@@ -355,7 +344,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
       logger.warn(`[kuaishou] Video probe failed, using defaults: ${e}`)
     }
 
-    const md5sum = await this.computeFileMd5(filePath)
+    const md5sum = await computeFileMd5(filePath)
     const cookie = client.getCookieString()
     const apiPh = this.extractApiPh(cookie)
 
@@ -404,18 +393,19 @@ export class KsApiAdapter extends BasePlatformAdapter {
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
     // Step 2: Upload fragments (4MB each, matching browser behavior)
-    const fileBuffer = readFileSync(filePath)
-    const totalChunks = Math.ceil(stats.size / CHUNK_SIZE)
+    // Use chunked reader — reads each chunk on-demand, never loads the entire file into memory
+    const reader = await openChunkedReader(filePath, CHUNK_SIZE)
+    const totalChunks = reader.totalChunks
     const https = require('https')
     const agent = new https.Agent({ keepAlive: true, maxSockets: 3, rejectUnauthorized: false })
 
     let completedChunks = 0
     const uploadHost = 'upload.kuaishouzt.com'
 
+    try {
+
     for (let i = 0; i < totalChunks; i++) {
-      const start = i * CHUNK_SIZE
-      const end = Math.min(start + CHUNK_SIZE, stats.size)
-      const chunk = fileBuffer.subarray(start, end)
+      const chunk = await reader.readChunk(i)
 
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -532,7 +522,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
       logger.warn('[kuaishou] CDN upload/complete failed after all retries — upload/finish may fail')
     }
 
-    agent.destroy()
+    } finally {
+      await reader.close()
+      agent.destroy()
+    }
 
     // Step 3b: REST API finish — requires __NS_sig3 URL signature
     const FINISH_INITIAL_DELAY = 8000
@@ -637,10 +630,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
     const photoId = finishResponse.data?.photoIdStr || finishResponse.data?.photoId || ''
     const d = finishResponse.data
 
-    // Store for submitContentAPI
-    this.lastUploadResult = {
-      photoId,
+    // Build structured upload result (H11 fix — no mutable instance state)
+    const uploadMeta: Record<string, unknown> = {
       fileId: fileId || 0,
+      photoId,
       token,
       fileSize: stats.size,
       videoWidth: d?.width || videoWidth,
@@ -656,7 +649,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
     logger.info(`[kuaishou] Video uploaded, fileId: ${fileId}, photoId: ${photoId}`)
     onProgress?.({ percent: 90, stage: '视频上传完成' })
 
-    return String(fileId || photoId || token)
+    return { videoId: String(fileId || photoId || token), meta: uploadMeta }
   }
 
   /**
@@ -850,8 +843,13 @@ export class KsApiAdapter extends BasePlatformAdapter {
   }
 
   async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<SubmitResult> {
-    const uploadResult = this.lastUploadResult
-    const fileId = uploadResult?.fileId || Number(videoId) || 0
+    // Read upload metadata from DB (H11 fix — no mutable instance state; H7 fix — survives crash)
+    let uploadMeta: Record<string, unknown> | null = null
+    if (payload.recordId) {
+      uploadMeta = getPublishRecordRepository().getUploadMeta(payload.recordId)
+    }
+
+    const fileId = (uploadMeta?.fileId as number) || Number(videoId) || 0
 
     if (!fileId) {
       throw new Error('缺少视频ID (fileId)，请先上传视频')
@@ -900,9 +898,9 @@ export class KsApiAdapter extends BasePlatformAdapter {
       ? String(payload.platformFields.authorDeclaration)
       : ''
 
-    const videoWidth = uploadResult?.videoWidth || 1920
-    const videoHeight = uploadResult?.videoHeight || 1080
-    const videoDuration = uploadResult?.videoDuration || 0
+    const videoWidth = (uploadMeta?.videoWidth as number) || 1920
+    const videoHeight = (uploadMeta?.videoHeight as number) || 1080
+    const videoDuration = (uploadMeta?.videoDuration as number) || 0
 
     // Build declareInfo with author declaration
     // Kuaishou author declaration options: AI生成, 演绎情节, 个人观点, 素材来源于网络
@@ -945,7 +943,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
     const params: Record<string, unknown> = {
       fileId,
       // Priority: uploaded custom cover > auto-generated cover from video upload
-      coverKey: coverFileId || uploadResult?.coverKey || '',
+      coverKey: coverFileId || (uploadMeta?.coverKey as string) || '',
       coverTimeStamp: 0,
       caption: caption.trim(),
       photoStatus: 1,
@@ -967,17 +965,17 @@ export class KsApiAdapter extends BasePlatformAdapter {
       secondDomain: '',
       coverUrl: '',
       'kuaishou.web.cp.api_ph': apiPh,
-      mediaId: uploadResult?.mediaId || '',
-      coverMediaId: uploadResult?.coverMediaId || '',
+      mediaId: (uploadMeta?.mediaId as string) || '',
+      coverMediaId: (uploadMeta?.coverMediaId as string) || '',
       videoDuration: videoDuration,
-      videoFrameRate: uploadResult?.videoFrameRate || 0,
+      videoFrameRate: (uploadMeta?.videoFrameRate as number) || 0,
       declareInfo,
       allowSameFrame,
       downloadType,
       disableNearbyShow
     }
 
-    logger.info(`[kuaishou] Submitting: fileId=${fileId}, coverKey=${coverFileId || uploadResult?.coverKey || 'auto'}, caption=${caption.substring(0, 80)}`)
+    logger.info(`[kuaishou] Submitting: fileId=${fileId}, coverKey=${coverFileId || (uploadMeta?.coverKey as string) || 'auto'}, caption=${caption.substring(0, 80)}`)
 
     // Submit via HttpClient + SignService with __NS_sig3
     const submitBody = JSON.stringify(params)
@@ -1141,16 +1139,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
     return match ? match[1] : ''
   }
 
-  private async computeFileMd5(filePath: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const hash = createHash('md5')
-      const { createReadStream } = require('fs')
-      const stream = createReadStream(filePath)
-      stream.on('data', (data: Buffer) => hash.update(data))
-      stream.on('end', () => resolve(hash.digest('hex')))
-      stream.on('error', reject)
-    })
-  }
+  // computeFileMd5 moved to electron/utils/file-hash.ts (shared utility)
 
   /**
    * Get recommended POI locations on Kuaishou.

@@ -273,7 +273,7 @@ export default function DataPage() {
           >
             {record.coverPath ? (
               <img
-                src={`file:///${record.coverPath.replace(/\\/g, '/')}`}
+                src={`local-file:///${record.coverPath.replace(/\\/g, '/')}`}
                 alt="cover"
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 onError={(e) => {
@@ -521,7 +521,7 @@ function VideoDetailView({
             >
               {detail.coverPath ? (
                 <img
-                  src={`file:///${detail.coverPath}`}
+                  src={`local-file:///${detail.coverPath.replace(/\\/g, '/')}`}
                   alt="cover"
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   onError={(e) => {

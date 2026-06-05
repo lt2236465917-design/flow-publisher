@@ -55,7 +55,9 @@ export class AccountRepository {
       'INSERT INTO accounts (id, platform, display_name, cookies, session_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
       [id, data.platform, data.displayName, data.cookies ?? '[]', 'not_logged_in', now, now]
     )
-    return this.getById(id)!
+    const row = this.getById(id)
+    if (!row) throw new Error(`Failed to create account: INSERT succeeded but getById returned null`)
+    return row
   }
 
   updateSession(id: string, status: string, cookies?: string, displayName?: string): void {

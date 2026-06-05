@@ -52,40 +52,43 @@ const api = {
   getPathForFile: (file: File): string => webUtils.getPathForFile(file)
 }
 
-if (process.contextIsolated) {
-  try {
-    contextBridge.exposeInMainWorld('electron', {
-      ipcRenderer: {
-        invoke: (channel: string, ...args: unknown[]) => {
-          if (!ALLOWED_INVOKE_CHANNELS.has(channel)) {
-            return Promise.reject(new Error(`[preload] Blocked invoke on unauthorized channel: ${channel}`))
-          }
-          return ipcRenderer.invoke(channel, ...args)
-        },
-        on: (channel: string, listener: (...args: unknown[]) => void) => {
-          if (!ALLOWED_LISTENER_CHANNELS.has(channel)) {
-            console.error(`[preload] Blocked listener on unauthorized channel: ${channel}`)
-            return () => {} // no-op unsubscribe
-          }
-          ipcRenderer.on(channel, (_event, ...args) => listener(...args))
-          return () => { ipcRenderer.removeListener(channel, listener) }
-        },
-        once: (channel: string, listener: (...args: unknown[]) => void) => {
-          if (!ALLOWED_LISTENER_CHANNELS.has(channel)) {
-            console.error(`[preload] Blocked once-listener on unauthorized channel: ${channel}`)
-            return
-          }
-          ipcRenderer.once(channel, (_event, ...args) => listener(...args))
+// contextIsolation is REQUIRED for security. The allowlist-based IPC gateway
+// MUST NOT be bypassed — exposing raw ipcRenderer grants unrestricted access
+// to all main-process handlers (file read, cookie access, publish, etc.).
+if (!process.contextIsolated) {
+  throw new Error(
+    '[preload] FATAL: contextIsolation must be enabled. ' +
+    'Set contextIsolation: true in webPreferences.'
+  )
+}
+
+try {
+  contextBridge.exposeInMainWorld('electron', {
+    ipcRenderer: {
+      invoke: (channel: string, ...args: unknown[]) => {
+        if (!ALLOWED_INVOKE_CHANNELS.has(channel)) {
+          return Promise.reject(new Error(`[preload] Blocked invoke on unauthorized channel: ${channel}`))
         }
+        return ipcRenderer.invoke(channel, ...args)
+      },
+      on: (channel: string, listener: (...args: unknown[]) => void) => {
+        if (!ALLOWED_LISTENER_CHANNELS.has(channel)) {
+          console.error(`[preload] Blocked listener on unauthorized channel: ${channel}`)
+          return () => {} // no-op unsubscribe
+        }
+        ipcRenderer.on(channel, (_event, ...args) => listener(...args))
+        return () => { ipcRenderer.removeListener(channel, listener) }
+      },
+      once: (channel: string, listener: (...args: unknown[]) => void) => {
+        if (!ALLOWED_LISTENER_CHANNELS.has(channel)) {
+          console.error(`[preload] Blocked once-listener on unauthorized channel: ${channel}`)
+          return
+        }
+        ipcRenderer.once(channel, (_event, ...args) => listener(...args))
       }
-    })
-    contextBridge.exposeInMainWorld('api', api)
-  } catch (error) {
-    console.error(error)
-  }
-} else {
-  // @ts-ignore fallback for non-isolated context
-  window.electron = { ipcRenderer }
-  // @ts-ignore
-  window.api = api
+    }
+  })
+  contextBridge.exposeInMainWorld('api', api)
+} catch (error) {
+  console.error(error)
 }

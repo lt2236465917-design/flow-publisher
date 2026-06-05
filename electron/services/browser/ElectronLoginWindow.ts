@@ -208,7 +208,7 @@ export class ElectronLoginWindow {
       'wechat-channels': ['bizuin', 'slave_sid', 'wxsess_ticket']
     }
     const keywords = loginCookies[this.platformId] || []
-    return keywords.some(k => name === k || name.includes(k))
+    return keywords.some(k => name === k)
   }
 
   /**

@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { message, Modal } from 'antd'
 import { usePublishStore, probeAndUpdate, extractFramesAndUpdate, validateForPlatform } from '@/stores/publishStore'
 import { useUIStore } from '@/stores/uiStore'
@@ -56,6 +56,7 @@ function mergeSharedWithOverrides(
 export function usePublishFlow() {
   const store = usePublishStore()
   const { confirm } = useUIStore()
+  const publishingRef = useRef(false)
 
   useEffect(() => {
     const unsubscribe = window.electron.ipcRenderer.on(IPC_CHANNELS.PUBLISH_PROGRESS, (...args: unknown[]) => {
@@ -73,6 +74,8 @@ export function usePublishFlow() {
     return () => { if (typeof unsubscribe === 'function') unsubscribe() }
   }, [])
 
+  const currentFilePathRef = useRef<string | null>(null)
+
   const selectVideo = useCallback(async () => {
     const res = await ipcInvoke<{ filePath: string }>(IPC_CHANNELS.FILE_SELECT_VIDEO)
     if (!res.success || !res.data?.filePath) return null
@@ -83,7 +86,13 @@ export function usePublishFlow() {
       message.error('无法解析视频文件，请检查文件格式')
       return null
     }
-    extractFramesAndUpdate(filePath)
+    // Track current file path — discard frame results if user switches videos mid-extraction
+    currentFilePathRef.current = filePath
+    extractFramesAndUpdate(filePath).then((frames) => {
+      if (currentFilePathRef.current === filePath && frames.length > 0) {
+        usePublishStore.getState().setFrames(frames)
+      }
+    })
     return meta
   }, [])
 
@@ -93,7 +102,12 @@ export function usePublishFlow() {
       message.error('无法解析视频文件，请检查文件格式')
       return
     }
-    extractFramesAndUpdate(filePath)
+    currentFilePathRef.current = filePath
+    extractFramesAndUpdate(filePath).then((frames) => {
+      if (currentFilePathRef.current === filePath && frames.length > 0) {
+        usePublishStore.getState().setFrames(frames)
+      }
+    })
   }, [])
 
   const selectCover = useCallback(async () => {
@@ -125,7 +139,40 @@ export function usePublishFlow() {
     }
   }, [store])
 
+  /**
+   * Re-read latest form state after async gap (e.g. confirmation dialog).
+   * Prevents stale closures from publishing outdated content (M7 fix).
+   */
+  const readLatestForm = useCallback(() => usePublishStore.getState().form, [])
+
+  /**
+   * Convert cover data URL to a temp file path. Returns undefined if no cover is set.
+   */
+  const resolveCoverFilePath = useCallback(async (form: PublishFormData): Promise<string | undefined> => {
+    const coverSource = form.cover.horizontal_4_3 || form.horizontalCover || form.coverPath
+    if (coverSource && coverSource.startsWith('data:')) {
+      const coverRes = await ipcInvoke<{ filePath: string }>(
+        IPC_CHANNELS.FILE_DATA_URL_TO_TEMP,
+        coverSource
+      )
+      if (coverRes.success && coverRes.data?.filePath) {
+        return coverRes.data.filePath
+      }
+    } else if (coverSource && !coverSource.startsWith('data:')) {
+      return coverSource
+    }
+    return undefined
+  }, [])
+
   const publish = useCallback(async () => {
+    // Prevent re-entry — user could double-click or press Ctrl+Enter twice
+    if (publishingRef.current) {
+      message.warning('发布正在进行中，请稍候')
+      return
+    }
+    publishingRef.current = true
+
+    try {
     const { video, form } = usePublishStore.getState()
     if (!video) {
       message.error('请先选择视频')
@@ -169,29 +216,16 @@ export function usePublishFlow() {
       }
     }
 
-    // Confirmation dialog
+    // Confirmation dialog — re-read form after dialog in case of async state changes (M7 fix)
     const confirmed = await confirm({
       title: '确认发布',
       content: `即将发布到 ${form.platforms.length} 个平台，标题：「${form.title}」`,
       okText: '确认发布'
     })
     if (!confirmed) return
+    const latestForm = readLatestForm()
 
-    // Convert cover data URL to temp file (new cover format + legacy fallback)
-    const coverSource = form.cover.horizontal_4_3 || form.horizontalCover || form.coverPath
-    let coverFilePath: string | undefined
-    if (coverSource && coverSource.startsWith('data:')) {
-      const coverRes = await ipcInvoke<{ filePath: string }>(
-        IPC_CHANNELS.FILE_DATA_URL_TO_TEMP,
-        coverSource
-      )
-      if (coverRes.success && coverRes.data?.filePath) {
-        coverFilePath = coverRes.data.filePath
-      }
-    } else if (coverSource && !coverSource.startsWith('data:')) {
-      // It's a file path, use directly
-      coverFilePath = coverSource
-    }
+    const coverFilePath = await resolveCoverFilePath(latestForm)
 
     const tasks = form.platforms.map((p) => ({
       id: `task-${p}-${Date.now()}`,
@@ -231,13 +265,13 @@ export function usePublishFlow() {
         const recordId = uploadRes.data!.recordId
         const videoId = uploadRes.data!.videoId
 
-        // Merge shared fields with platform overrides (方案A+方案C pattern)
-        const mergedContent = mergeSharedWithOverrides(form, platformId)
+        // Merge shared fields with platform overrides — use latest form after dialog (M7 fix)
+        const mergedContent = mergeSharedWithOverrides(latestForm, platformId)
 
         store.updateTask(task.id, { status: 'submitting', progress: 90 })
         const contentPayload: Record<string, unknown> = {
           ...mergedContent,
-          platformFields: form.platformOverrides[platformId as PlatformId] || {}
+          platformFields: latestForm.platformOverrides[platformId as PlatformId] || {}
         }
         // Only include coverPath if it's a valid file path (avoid IPC converting undefined to "undefined")
         if (coverFilePath) {
@@ -271,6 +305,9 @@ export function usePublishFlow() {
     } else {
       message.warning(`发布完成，${errorCount} 个平台失败`)
     }
+    } finally {
+      publishingRef.current = false
+    }
   }, [store, confirm])
 
   return {
@@ -279,6 +316,7 @@ export function usePublishFlow() {
     handleDropFile,
     selectCover,
     selectFrameAsCover,
-    publish
+    publish,
+    resolveCoverFilePath
   }
 }

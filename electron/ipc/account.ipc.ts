@@ -13,6 +13,7 @@ import { WcApiAdapter } from '../services/platform-adapters/wechat-channels/WcAp
 import { KsApiAdapter } from '../services/platform-adapters/kuaishou/KsApiAdapter'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import { HttpClient } from '../services/http/HttpClient'
+import { encryptString } from '../utils/crypto-store'
 import { logger } from '../utils/logger'
 
 const cookieStore = new CookieStore()
@@ -133,7 +134,8 @@ export function registerAccountIpcHandlers(): void {
             douyin: ['.douyin.com', 'creator.douyin.com'],
             xiaohongshu: ['.xiaohongshu.com', 'edith.xiaohongshu.com', 'creator.xiaohongshu.com'],
             kuaishou: ['.kuaishou.com', 'cp.kuaishou.com'],
-            'wechat-channels': ['.qq.com', 'weixin.qq.com', 'channels.weixin.qq.com', '.weixin.qq.com', 'finderassistancea.video.qq.com']
+            'wechat-channels': ['.weixin.qq.com', 'channels.weixin.qq.com', 'finderassistancea.video.qq.com']
+            // Note: removed .qq.com — too broad, would capture mail.qq.com, docs.qq.com, etc.
           }
           const domains = platformDomains[platformId] || []
           const filteredCookies = cookies.filter(c => {
@@ -152,15 +154,9 @@ export function registerAccountIpcHandlers(): void {
             logger.info(`[account] Filtered cookie domains: ${[...new Set(filteredCookies.map(c => c.domain))].join(', ')}`)
           }
 
-          // 使用CookieStore保存cookies
+          // 使用CookieStore保存cookies（内部加密存储 + 更新session状态）
           await cookieStore.saveCookies(accountId!, filteredCookies)
-          logger.info(`[account] Cookies saved: ${filteredCookies.length} cookies`)
-
-          // 登录成功，先将session_status更新为'logged_in'
-          // 这样前端才能找到已登录的账号来获取合集等动态数据
-          repo.updateSession(accountId!, 'logged_in', JSON.stringify(cookies))
-          saveDatabase()
-          logger.info(`[account] Session status updated to logged_in`)
+          logger.info(`[account] Cookies saved: ${filteredCookies.length} cookies (encrypted)`)
 
           // 获取账号名称：先尝试从页面DOM提取，再尝试API
           let displayName: string | undefined
@@ -210,9 +206,10 @@ export function registerAccountIpcHandlers(): void {
             }
           }
 
-          // 更新账号名称
+          // 更新账号名称（使用加密存储的 filtered cookies，不覆盖为未过滤的原始 cookies）
           if (displayName) {
-            repo.updateSession(accountId!, 'logged_in', JSON.stringify(cookies), displayName)
+            const encrypted = encryptString(JSON.stringify(filteredCookies))
+            repo.updateSession(accountId!, 'logged_in', encrypted, displayName)
             saveDatabase()
             logger.info(`[account] Account name updated: ${displayName}`)
           } else {

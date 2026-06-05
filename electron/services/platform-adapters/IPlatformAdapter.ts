@@ -51,7 +51,18 @@ export interface VideoMetadata {
   format: string
 }
 
+/**
+ * Structured upload result — returned by uploadVideoAPI, consumed by submitContentAPI.
+ * Eliminates mutable instance fields (H11 fix) and survives app crashes (H7 fix).
+ */
+export interface UploadResult {
+  videoId: string
+  meta: Record<string, unknown>
+}
+
 export interface SubmitContentPayload {
+  /** DB record ID — used to read upload metadata persisted by the caller (H7 + H11 fix) */
+  recordId?: string
   title: string
   description: string
   hashtags: string[]
@@ -65,26 +76,78 @@ export interface SubmitContentPayload {
   videoMetadata?: VideoMetadata
 }
 
+// ---- Focused sub-interfaces for capability-based type safety (M9 fix) ----
+
+/** Adapters that support API-based video publishing */
+export interface IPublishable {
+  uploadVideoAPI(client: HttpClient, filePath: string, onProgress?: (p: UploadProgress) => void): Promise<string | UploadResult | void>
+  submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<SubmitResult>
+  getVideoConstraints(): VideoConstraints
+}
+
+/** Adapters that support session validity checks */
+export interface ISessionCheckable {
+  checkSessionAPI(client: HttpClient): Promise<boolean>
+  getAccountInfoAPI(client: HttpClient): Promise<{ displayName?: string; avatarUrl?: string } | null>
+}
+
+/** Adapters that support analytics data collection */
+export interface IAnalyticsCapable {
+  getVideoList(client: HttpClient, options?: { cursor?: string; pageSize?: number }): Promise<VideoListResult>
+  getVideoDetail?(client: HttpClient, contentId: string): Promise<VideoDetailResult | null>
+}
+
+/** Adapters that support location search/recommendation */
+export interface ILocationCapable {
+  searchLocation(client: HttpClient, keyword: string, options?: LocationSearchOptions): Promise<LocationResult[]>
+  getRecommendLocations(client: HttpClient, options?: LocationSearchOptions): Promise<LocationResult[]>
+}
+
+/** Adapters that support collection/album listing */
+export interface ICollectionCapable {
+  getCollections(client: HttpClient): Promise<Array<{ label: string; value: string }>>
+}
+
+// ---- Capability check helpers ----
+
+export function canPublish(a: IPlatformAdapter): a is IPlatformAdapter & IPublishable {
+  return typeof (a as any).uploadVideoAPI === 'function' && typeof (a as any).submitContentAPI === 'function'
+}
+
+export function canCheckSession(a: IPlatformAdapter): a is IPlatformAdapter & ISessionCheckable {
+  return typeof (a as any).checkSessionAPI === 'function'
+}
+
+export function canCollectAnalytics(a: IPlatformAdapter): a is IPlatformAdapter & IAnalyticsCapable {
+  return typeof (a as any).getVideoList === 'function'
+}
+
+export function canSearchLocation(a: IPlatformAdapter): a is IPlatformAdapter & ILocationCapable {
+  return typeof (a as any).searchLocation === 'function'
+}
+
+// ---- Main adapter interface (methods are optional for backward compat) ----
+
 export interface IPlatformAdapter {
   readonly platformId: string
   readonly platformName: string
   readonly loginUrl: string
 
+  // Platform fields (always available — all adapters implement this)
+  getPlatformFields(): PlatformFieldDefinition[]
+
   // Publish — API mode (HTTP-based, no browser automation)
   getVideoConstraints?(): VideoConstraints
-  uploadVideoAPI?(client: HttpClient, filePath: string, onProgress?: (p: UploadProgress) => void): Promise<string | void>
+  uploadVideoAPI?(client: HttpClient, filePath: string, onProgress?: (p: UploadProgress) => void): Promise<string | UploadResult | void>
   uploadCoverImageAPI?(client: HttpClient, imagePath: string, onProgress?: (p: UploadProgress) => void): Promise<string>
   submitContentAPI?(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<SubmitResult>
   checkSessionAPI?(client: HttpClient): Promise<boolean>
-  getPlatformFields?(): PlatformFieldDefinition[]
   getAccountInfoAPI?(client: HttpClient): Promise<{ displayName?: string; avatarUrl?: string } | null>
   searchLocation?(client: HttpClient, keyword: string, options?: LocationSearchOptions): Promise<LocationResult[]>
   getRecommendLocations?(client: HttpClient, options?: LocationSearchOptions): Promise<LocationResult[]>
   getCollections?(client: HttpClient): Promise<Array<{ label: string; value: string }>>
 
   // ---- Analytics (数据采集) ----
-  /** 获取视频列表（含统计数据） */
   getVideoList?(client: HttpClient, options?: { cursor?: string; pageSize?: number }): Promise<VideoListResult>
-  /** 获取单个视频详情 */
   getVideoDetail?(client: HttpClient, contentId: string): Promise<VideoDetailResult | null>
 }

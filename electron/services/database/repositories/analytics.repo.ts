@@ -15,6 +15,10 @@ import type {
   VideoGroupListResult
 } from '../../../../shared/contracts/analytics.contract'
 
+// Use '||' (double-pipe) as separator — pipe is not valid in any OS file path,
+// avoiding false splits on paths like C:\Users\test_videos\demo.mp4.
+const GROUP_SEPARATOR = '||'
+
 export interface AnalyticsSnapshotRow {
   id: string
   record_id: string
@@ -280,7 +284,7 @@ export class AnalyticsRepository {
     const countStmt = this.db.prepare(`
       SELECT COUNT(*) as cnt FROM (
         SELECT DISTINCT
-          video_path || '_' || CAST(strftime('%s', created_at) / 600 AS TEXT) as groupKey
+          video_path || '||' || CAST(strftime('%s', created_at) / 600 AS TEXT) as groupKey
         FROM publish_records pr
         ${whereClause}
       )
@@ -295,7 +299,7 @@ export class AnalyticsRepository {
 
     const groupStmt = this.db.prepare(`
       SELECT
-        pr.video_path || '_' || CAST(strftime('%s', pr.created_at) / 600 AS TEXT) as groupId,
+        pr.video_path || '||' || CAST(strftime('%s', pr.created_at) / 600 AS TEXT) as groupId,
         MIN(pr.title) as title,
         pr.video_path as videoPath,
         MIN(pr.cover_path) as coverPath,
@@ -422,13 +426,13 @@ export class AnalyticsRepository {
 
   /** 获取视频分组详情 */
   getVideoGroupDetail(groupId: string): VideoGroupDetail | null {
-    // 从 groupId 解析 video_path 和时间窗口
-    // groupId 格式: video_path_timestamp/600
-    const lastUnderscore = groupId.lastIndexOf('_')
-    if (lastUnderscore <= 0) return null
+    // Parse video_path and time bucket from groupId.
+    // Format: video_path||timestamp/600  (separator is || — safe for paths with underscores)
+    const sepIdx = groupId.lastIndexOf(GROUP_SEPARATOR)
+    if (sepIdx <= 0) return null
 
-    const videoPath = groupId.substring(0, lastUnderscore)
-    const timeBucket = groupId.substring(lastUnderscore + 1)
+    const videoPath = groupId.substring(0, sepIdx)
+    const timeBucket = groupId.substring(sepIdx + GROUP_SEPARATOR.length)
 
     // 获取视频信息
     const prStmt = this.db.prepare(`

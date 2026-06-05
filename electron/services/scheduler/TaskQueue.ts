@@ -175,7 +175,13 @@ export class TaskQueue {
         ...progress
       })
     })
-    const videoId = typeof result === 'string' ? result : undefined
+    // Handle both legacy string return and new UploadResult (H7 + H11 fix)
+    const videoId = typeof result === 'string' ? result
+      : (result && typeof result === 'object' && 'videoId' in result) ? (result as { videoId: string; meta: Record<string, unknown> }).videoId
+      : undefined
+    if (result && typeof result === 'object' && 'meta' in result) {
+      recordRepo.saveUploadMeta(record.id, (result as { meta: Record<string, unknown> }).meta)
+    }
 
     recordRepo.updateStatus(record.id, 'uploaded', 100)
     saveDatabase()
@@ -207,7 +213,9 @@ export class TaskQueue {
     }
 
     logger.info(`[TaskQueue] Submitting to ${platformId} via API`)
-    await adapter.submitContentAPI(client, content, videoId)
+    // Pass recordId so adapter can read upload metadata from DB (H7 + H11 fix)
+    const contentWithRecord = { ...content, recordId: record.id }
+    await adapter.submitContentAPI(client, contentWithRecord, videoId)
 
     recordRepo.updateStatus(record.id, 'done', 100)
     const now = new Date().toISOString()

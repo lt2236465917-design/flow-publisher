@@ -9,9 +9,10 @@ import { XHS_URLS } from './xhs-urls'
 import { XHS_SELECTORS } from './xhs-selectors'
 import { logger } from '../../../utils/logger'
 import { delay } from '../../../utils/delays'
-import { existsSync, statSync, createReadStream, readFileSync } from 'fs'
+import { existsSync, statSync, readFileSync } from 'fs'
 import { createHash } from 'crypto'
 import { getSignService } from '../../sign/SignService'
+import { openChunkedReader } from '../../../utils/chunked-reader'
 
 // Xiaohongshu Creator API endpoints (reverse-engineered from yixiaoer)
 const API = {
@@ -309,7 +310,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
     // Step 2: Multipart upload (matching yixiaoer's Tencent COS flow)
-    const fileBuffer = readFileSync(filePath)
+    // Use chunked reader — reads each chunk on-demand, never loads entire file into memory
+    const PART_SIZE = 8 * 1024 * 1024 // 8MB — matching yixiaoer's chunk size
+    const reader = await openChunkedReader(filePath, PART_SIZE)
+    const totalParts = reader.totalChunks
+
     const baseUploadUrl = `https://${uploadAddr}/${fileId}`
     const commonHeaders: Record<string, string> = {
       'x-cos-security-token': token,
@@ -317,6 +322,8 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       Origin: 'https://creator.xiaohongshu.com',
       Authorization: ''
     }
+
+    try {
 
     // Step 2a: Init multipart upload — POST ?uploads with empty body to get uploadId
     // Response is XML containing <UploadId>...</UploadId>
@@ -337,17 +344,12 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     }
     logger.info(`[xiaohongshu] Multipart upload initiated, uploadId: ${uploadId}`)
 
-    // Step 2b: Upload parts with concurrency (8MB each, 3 concurrent — matching yixiaoer)
-    const PART_SIZE = 8 * 1024 * 1024 // 8MB — matching yixiaoer's chunk size
-    const totalParts = Math.ceil(stats.size / PART_SIZE)
+    // Step 2b: Upload parts (8MB each — matching yixiaoer's chunk size)
     const etags: string[] = new Array(totalParts)
-    const CONCURRENCY = 3
     let completedParts = 0
 
     const uploadPart = async (i: number, maxRetries = 3) => {
-      const start = i * PART_SIZE
-      const end = Math.min(start + PART_SIZE, stats.size)
-      const part = fileBuffer.subarray(start, end)
+      const part = await reader.readChunk(i)
       const partNumber = i + 1
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -418,6 +420,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     })
 
     logger.info(`[xiaohongshu] Multipart upload completed`)
+
+    } finally {
+      await reader.close()
+    }
+
     onProgress?.({ percent: 80, stage: '视频上传完成' })
 
     return fileId
@@ -563,9 +570,8 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     }
 
     // Add location if provided (through post_loc)
-    // Format matching yixiaoer: { poi_id, name, subname }
-    // Note: yixiaoer uses $.location.source for poi_type, but 'source' is not set from the POI API,
-    // so it's effectively undefined and omitted from JSON. We must NOT include poi_type.
+    // Format matching yixiaoer: { poi_id, name, poi_type, subname }
+    // yixiaoer: K={poi_id:$.location.poiOid, name:$.location.name, poi_type:$.location.source, subname:$.location.subname}
     if (payload.platformFields?.location) {
       const loc = payload.platformFields.location
       if (typeof loc === 'object' && loc !== null && 'name' in loc) {
@@ -573,6 +579,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         commonObj.post_loc = {
           poi_id: locObj.poi_id || '',
           name: locObj.name,
+          poi_type: (locObj.extra?.poi_type as number) || 0,
           subname: locObj.address || ''
         }
         logger.info(`[xiaohongshu] Location: poi_id=${commonObj.post_loc.poi_id}, name=${locObj.name}, subname=${commonObj.post_loc.subname}`)
@@ -757,16 +764,6 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       logger.error('[xiaohongshu] submitContentAPI error:', err)
       throw err
     }
-  }
-
-  private async computeFileMd5(filePath: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const hash = createHash('md5')
-      const stream = createReadStream(filePath)
-      stream.on('data', (data) => hash.update(data))
-      stream.on('end', () => resolve(hash.digest('hex')))
-      stream.on('error', reject)
-    })
   }
 
   /**

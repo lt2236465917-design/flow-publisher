@@ -1,5 +1,6 @@
 import { getAccountRepository, saveDatabase } from '../database'
 import { logger } from '../../utils/logger'
+import { encryptString, decryptString } from '../../utils/crypto-store'
 
 // Cookie格式（兼容Playwright和Electron）
 interface CookieData {
@@ -16,15 +17,15 @@ interface CookieData {
 export class CookieStore {
   async saveCookies(accountId: string, cookies: CookieData[]): Promise<void> {
     const repo = getAccountRepository()
-    repo.updateSession(accountId, 'logged_in', JSON.stringify(cookies))
+    // Encrypt cookies before storing (M1 fix — safeStorage or base64 fallback)
+    const encrypted = encryptString(JSON.stringify(cookies))
+    repo.updateSession(accountId, 'logged_in', encrypted)
     saveDatabase()
 
-    // Log cookie details for debugging
+    // Log cookie metadata only (never values)
     const domains = [...new Set(cookies.map(c => c.domain))]
-    const cookieNames = cookies.map(c => c.name)
     logger.info(`Cookies saved for account ${accountId}, count: ${cookies.length}`)
-    logger.info(`  domains: ${domains.join(', ')}`)
-    logger.info(`  names: ${cookieNames.join(', ')}`)
+    logger.debug(`  domains: ${domains.join(', ')}`)  // demoted to debug — metadata only
   }
 
   async clearCookies(accountId: string): Promise<void> {
@@ -46,14 +47,15 @@ export class CookieStore {
       return null
     }
     try {
-      const cookies: CookieData[] = JSON.parse(account.cookies)
+      // Decrypt cookies before parsing (handles legacy plaintext transparently)
+      const decrypted = decryptString(account.cookies)
+      const cookies: CookieData[] = JSON.parse(decrypted)
       if (cookies.length === 0) {
         logger.warn(`Empty cookies array for account ${accountId}`)
         return null
       }
       const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join('; ')
-      const domains = [...new Set(cookies.map(c => c.domain))]
-      logger.info(`Cookie string exported for account ${accountId}, length: ${cookieStr.length}, domains: ${domains.join(', ')}`)
+      logger.info(`Cookie string exported for account ${accountId}, length: ${cookieStr.length}`)
       return cookieStr
     } catch (err) {
       logger.error(`Failed to export cookie string for account ${accountId}:`, err)

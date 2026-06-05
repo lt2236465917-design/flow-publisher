@@ -9,12 +9,15 @@ import { logger } from '../../utils/logger'
 import { getAnalyticsRepository, getAccountRepository, getPublishRecordRepository, saveDatabase } from '../database'
 import { getAdapter } from '../platform-adapters/PlatformAdapterRegistry'
 import { HttpClient } from '../http/HttpClient'
+import { CookieStore } from '../browser/CookieStore'
 import type { CollectResult } from '../../../shared/types/analytics'
 
 export class AnalyticsCollectorService {
 
+  private cookieStore = new CookieStore()
+
   /**
-   * 创建 HttpClient（需要从账号加载 cookies）
+   * 创建 HttpClient（通过 CookieStore 加载并解密 cookies）
    */
   private createClient(platform: string, accountId: string): HttpClient {
     const accountRepo = getAccountRepository()
@@ -23,15 +26,10 @@ export class AnalyticsCollectorService {
       throw new Error(`账号 ${accountId} 不存在`)
     }
 
-    // 将 JSON 数组格式的 cookies 转换为普通 cookie 字符串
-    let cookieStr = account.cookies || '[]'
-    try {
-      const cookiesArr = JSON.parse(cookieStr)
-      if (Array.isArray(cookiesArr)) {
-        cookieStr = cookiesArr.map((c: { name: string; value: string }) => `${c.name}=${c.value}`).join('; ')
-      }
-    } catch {
-      // 如果解析失败，直接使用原字符串
+    // Use CookieStore to decrypt and format cookies (handles encrypted storage)
+    const cookieStr = this.cookieStore.getCookieString(accountId)
+    if (!cookieStr) {
+      throw new Error(`账号 ${accountId} 缺少有效 cookies`)
     }
 
     return new HttpClient({

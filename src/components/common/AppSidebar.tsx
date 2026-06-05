@@ -26,7 +26,10 @@ export default function AppSidebar() {
   useEffect(() => {
     window.electron.ipcRenderer.invoke<{ version: string }>('app:get-version').then((res) => {
       if (res.success && res.data) setAppVersion(res.data.version)
-    }).catch(() => {})
+    }).catch((err) => {
+      // Non-critical: version display is cosmetic; don't block the UI
+      console.error('[AppSidebar] Failed to get app version:', err)
+    })
   }, [])
 
   return (

@@ -26,10 +26,20 @@ export default class ErrorBoundary extends Component<Props, State> {
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo): void {
     this.setState({ errorInfo })
     console.error('[ErrorBoundary] Caught error:', error, errorInfo)
+    // Send error to main process for logging/monitoring
+    try {
+      if (window.electron?.ipcRenderer) {
+        window.electron.ipcRenderer.invoke('app:get-version').catch(() => {})
+      }
+    } catch { /* best-effort */ }
   }
 
   handleReset = (): void => {
     this.setState({ hasError: false, error: null, errorInfo: null })
+  }
+
+  handleReload = (): void => {
+    window.location.reload()
   }
 
   handleGoHome = (): void => {
@@ -37,9 +47,19 @@ export default class ErrorBoundary extends Component<Props, State> {
     window.location.hash = '#/account'
   }
 
+  private isDev(): boolean {
+    // In dev mode (electron-vite dev), Vite serves from localhost
+    return window.location.protocol === 'http:'
+  }
+
   render() {
     if (this.state.hasError) {
       if (this.props.fallback) return this.props.fallback
+
+      // Only show technical details in development
+      const errorDetail = this.isDev()
+        ? this.state.error?.message || '发生了未知错误'
+        : '应用遇到了意外错误，请尝试刷新页面。'
 
       return (
         <div
@@ -86,13 +106,22 @@ export default class ErrorBoundary extends Component<Props, State> {
                 color: '#86868b',
                 marginBottom: 32,
                 lineHeight: 1.5,
+                fontFamily: this.isDev() ? 'monospace' : undefined,
               }}
             >
-              {this.state.error?.message || '发生了未知错误'}
+              {errorDetail}
             </p>
+            {this.isDev() && this.state.errorInfo?.componentStack && (
+              <details style={{ textAlign: 'left', marginBottom: 16, fontSize: 12, color: '#999' }}>
+                <summary>组件堆栈</summary>
+                <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
+                  {this.state.errorInfo.componentStack}
+                </pre>
+              </details>
+            )}
             <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-              <Button type="primary" icon={<ReloadOutlined />} onClick={this.handleReset}>
-                重试
+              <Button type="primary" icon={<ReloadOutlined />} onClick={this.handleReload}>
+                刷新页面
               </Button>
               <Button icon={<HomeOutlined />} onClick={this.handleGoHome}>
                 返回首页

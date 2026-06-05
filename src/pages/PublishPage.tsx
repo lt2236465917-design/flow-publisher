@@ -12,9 +12,11 @@ import { useAccountStore } from '@/stores/accountStore'
 import { useKeyboardShortcuts } from '@/hooks/useKeyboard'
 import SchedulePicker from '@/components/publish/SchedulePicker'
 import EmptyState from '@/components/common/EmptyState'
+import { SectionCard, SectionTitle, Divider, PageHeader } from '@/components/common/SectionCard'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
+import { ipcInvoke } from '@/utils/ipc'
 
 interface AccountInfo {
   id: string
@@ -57,19 +59,10 @@ export default function PublishPage() {
       return
     }
 
-    const coverSource = form.cover.horizontal_4_3 || form.horizontalCover
-    let coverFilePath: string | undefined
-    if (coverSource) {
-      const coverRes = await window.electron.ipcRenderer.invoke<{ filePath: string }>(
-        IPC_CHANNELS.FILE_DATA_URL_TO_TEMP,
-        coverSource
-      )
-      if (coverRes.success && coverRes.data?.filePath) {
-        coverFilePath = coverRes.data.filePath
-      }
-    }
+    // Use shared cover resolution (M22 fix — same logic as publish())
+    const coverFilePath = await flow.resolveCoverFilePath?.(form)
 
-    const accountsRes = await window.electron.ipcRenderer.invoke<AccountInfo[]>(IPC_CHANNELS.ACCOUNT_LIST)
+    const accountsRes = await ipcInvoke<AccountInfo[]>(IPC_CHANNELS.ACCOUNT_LIST)
     const accounts = accountsRes.data || []
     const accountIds: Record<string, string> = {}
     for (const platformId of form.platforms) {
@@ -83,20 +76,6 @@ export default function PublishPage() {
       accountIds[platformId] = account.id
     }
 
-    const sharedContent = {
-      title: form.title,
-      description: form.description,
-      hashtags: form.hashtags,
-      mentions: form.mentions,
-      location: form.location,
-      collection: form.collection,
-      visibility: form.visibility,
-      publishTime: form.publishTime,
-      originalDeclaration: form.originalDeclaration,
-      cover: form.cover,
-      declarations: form.declarations
-    }
-
     const params = {
       platforms: form.platforms,
       accountIds,
@@ -107,7 +86,6 @@ export default function PublishPage() {
       hashtags: form.hashtags,
       declarations: form.declarations,
       platformOverrides: form.platformOverrides,
-      sharedContent,
       scheduledAt
     }
 
@@ -141,29 +119,11 @@ export default function PublishPage() {
 
   return (
     <div style={{ maxWidth: 800, margin: '0 auto' }}>
-      {/* Page Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 28 }}>
-        <div>
-          <h1
-            style={{
-              fontFamily: "'Sora', sans-serif",
-              fontSize: 28,
-              fontWeight: 700,
-              color: '#1d1d1f',
-              letterSpacing: '-0.03em',
-              marginBottom: 6,
-            }}
-          >
-            内容发布
-          </h1>
-          <p style={{ fontSize: 14, color: '#86868b', margin: 0 }}>
-            创建一次，发布到所有平台
-          </p>
-        </div>
-        <span style={{ fontSize: 11, color: '#aeaeb2', letterSpacing: '0.02em' }}>
-          Ctrl+O 选择 · Ctrl+Enter 发布 · Ctrl+R 重置
-        </span>
-      </div>
+      <PageHeader
+        title="内容发布"
+        subtitle="创建一次，发布到所有平台"
+        extra={<span style={{ fontSize: 11, color: '#aeaeb2', letterSpacing: '0.02em' }}>Ctrl+O 选择 · Ctrl+Enter 发布 · Ctrl+R 重置</span>}
+      />
 
       {/* Video Selection */}
       <SectionCard>
@@ -346,51 +306,4 @@ export default function PublishPage() {
   )
 }
 
-function SectionCard({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        background: 'rgba(255, 255, 255, 0.78)',
-        backdropFilter: 'blur(20px) saturate(180%)',
-        WebkitBackdropFilter: 'blur(20px) saturate(180%)',
-        borderRadius: 16,
-        border: '0.5px solid rgba(255, 255, 255, 0.85)',
-        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.02), 0 12px 40px rgba(0, 0, 0, 0.02)',
-        padding: '20px 24px',
-        marginBottom: 14,
-      }}
-    >
-      {children}
-    </div>
-  )
-}
-
-function SectionTitle({ children }: { children: React.ReactNode }) {
-  return (
-    <h3
-      style={{
-        fontFamily: "'Sora', sans-serif",
-        fontSize: 13,
-        fontWeight: 600,
-        color: '#86868b',
-        textTransform: 'uppercase',
-        letterSpacing: '0.06em',
-        marginBottom: 14,
-      }}
-    >
-      {children}
-    </h3>
-  )
-}
-
-function Divider() {
-  return (
-    <div
-      style={{
-        height: 1,
-        background: 'rgba(0, 0, 0, 0.04)',
-        margin: '18px 0',
-      }}
-    />
-  )
-}
+// SectionCard, SectionTitle, Divider are now imported from @/components/common/SectionCard

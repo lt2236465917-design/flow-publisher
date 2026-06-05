@@ -593,8 +593,33 @@ export class SignService {
   }
 
   private findBrowser(): string | null {
-    try {
-      if (process.platform === 'win32') {
+    // Cross-platform browser discovery — ordered by likelihood
+    const platformCandidates: Record<string, string[]> = {
+      win32: [
+        'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+        'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+      ],
+      darwin: [
+        '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+        '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+        '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      ],
+      linux: [
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chromium',
+        '/usr/bin/microsoft-edge',
+        '/snap/bin/chromium',
+      ],
+    }
+
+    // Try Windows registry first (most accurate on Windows)
+    if (process.platform === 'win32') {
+      try {
         const result = execSync(
           'reg query "HKCU\\Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\http\\UserChoice" /v ProgId',
           { encoding: 'utf-8', timeout: 1000 }
@@ -611,12 +636,10 @@ export class SignService {
             if (existsSync(p)) return p
           }
         }
-      }
-    } catch {}
-    const candidates = [
-      'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-    ]
+      } catch { /* registry query can fail; fall through to candidates */ }
+    }
+
+    const candidates = platformCandidates[process.platform] || platformCandidates.win32
     for (const p of candidates) {
       if (existsSync(p)) return p
     }

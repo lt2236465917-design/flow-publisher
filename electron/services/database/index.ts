@@ -6,6 +6,8 @@ import { runMigration002 } from './migrations/002_publish_records'
 import { runMigration003 } from './migrations/003_scheduled_tasks'
 import { runMigration004 } from './migrations/004_analytics_snapshots'
 import { runMigration005 } from './migrations/005_content_analytics'
+import { runMigration006 } from './migrations/006_upload_meta'
+import { runMigration007 } from './migrations/007_progress_tracking'
 import { AccountRepository } from './repositories/account.repo'
 import { PublishRecordRepository } from './repositories/publish-record.repo'
 import { ScheduledTaskRepository } from './repositories/scheduled-task.repo'
@@ -24,7 +26,12 @@ if (!globalDb.__dbInstances) {
     accountRepo: null,
     publishRecordRepo: null,
     scheduledTaskRepo: null,
-    analyticsRepo: null
+    analyticsRepo: null,
+    // Async-save state must survive HMR reloads too —
+    // otherwise pending writes are silently lost on hot reload
+    saveDirty: false,
+    saveTimer: null,
+    saveWriting: false
   }
 }
 
@@ -73,11 +80,48 @@ export async function initDatabase(): Promise<void> {
   // Enable foreign key enforcement (SQLite has it OFF by default)
   dbInstance.run('PRAGMA foreign_keys = ON')
 
-  runMigration(dbInstance)
-  runMigration002(dbInstance)
-  runMigration003(dbInstance)
-  runMigration004(dbInstance)
-  runMigration005(dbInstance)
+  // Migration version tracking — ensures each migration runs exactly once (M5 fix)
+  dbInstance.run(`
+    CREATE TABLE IF NOT EXISTS _migrations (
+      version INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `)
+
+  const appliedVersions = new Set<number>()
+  const migStmt = dbInstance.prepare('SELECT version FROM _migrations')
+  while (migStmt.step()) {
+    appliedVersions.add((migStmt.getAsObject() as { version: number }).version)
+  }
+  migStmt.free()
+
+  const migrations: Array<{ version: number; name: string; run: () => void }> = [
+    { version: 1, name: '001_accounts', run: () => runMigration(dbInstance) },
+    { version: 2, name: '002_publish_records', run: () => runMigration002(dbInstance) },
+    { version: 3, name: '003_scheduled_tasks', run: () => runMigration003(dbInstance) },
+    { version: 4, name: '004_analytics_snapshots', run: () => runMigration004(dbInstance) },
+    { version: 5, name: '005_content_analytics', run: () => runMigration005(dbInstance) },
+    { version: 6, name: '006_upload_meta', run: () => runMigration006(dbInstance) },
+    { version: 7, name: '007_progress_tracking', run: () => runMigration007(dbInstance) },
+  ]
+
+  for (const mig of migrations) {
+    if (appliedVersions.has(mig.version)) {
+      logger.info(`[DB] Migration ${mig.name} already applied, skipping`)
+      continue
+    }
+    try {
+      logger.info(`[DB] Applying migration ${mig.name}...`)
+      mig.run()
+      dbInstance.run('INSERT INTO _migrations (version, name) VALUES (?, ?)', [mig.version, mig.name])
+      logger.info(`[DB] Migration ${mig.name} applied successfully`)
+    } catch (err) {
+      logger.error(`[DB] Migration ${mig.name} FAILED:`, err)
+      throw new Error(`Database migration ${mig.name} (v${mig.version}) failed: ${err}`)
+    }
+  }
+
   saveDatabaseSync() // Sync: must complete before app continues
 
   accountRepoInstance = new AccountRepository(dbInstance)
@@ -122,31 +166,30 @@ export function getAnalyticsRepository(): AnalyticsRepository {
   return analyticsRepoInstance
 }
 
-// Async save manager: debounces rapid saveDatabase() calls into a single disk write
-let saveDirty = false
-let saveTimer: ReturnType<typeof setTimeout> | null = null
-let saveWriting = false
-
+// Async save manager: debounces rapid saveDatabase() calls into a single disk write.
+// State is stored on globalThis so pending writes survive HMR reloads.
+function saveState() { return globalDb.__dbInstances }
 const SAVE_DEBOUNCE_MS = 300
 
 function flushSave(): void {
-  if (!saveDirty || saveWriting || !dbInstance) return
-  saveDirty = false
-  saveWriting = true
+  const state = saveState()
+  if (!state.saveDirty || state.saveWriting || !dbInstance) return
+  state.saveDirty = false
+  state.saveWriting = true
 
   const data = dbInstance.export()
   const buffer = Buffer.from(data)
   const dbPath = getDbPath()
 
   writeFile(dbPath, buffer, (err) => {
-    saveWriting = false
+    state.saveWriting = false
     if (err) {
       logger.error('[DB] Async save failed:', err)
       // Re-mark dirty so the next call retries
-      saveDirty = true
+      state.saveDirty = true
     }
     // If another save was requested while writing, flush again
-    if (saveDirty) flushSave()
+    if (state.saveDirty) flushSave()
   })
 }
 
@@ -156,10 +199,11 @@ function flushSave(): void {
  */
 export function saveDatabase(): void {
   if (!dbInstance) return
-  saveDirty = true
-  if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => {
-    saveTimer = null
+  const state = saveState()
+  state.saveDirty = true
+  if (state.saveTimer) clearTimeout(state.saveTimer)
+  state.saveTimer = setTimeout(() => {
+    state.saveTimer = null
     flushSave()
   }, SAVE_DEBOUNCE_MS)
 }
@@ -170,12 +214,13 @@ export function saveDatabase(): void {
 export function saveDatabaseSync(): void {
   if (!dbInstance) return
   // Cancel any pending async save to avoid double-write
-  if (saveTimer) {
-    clearTimeout(saveTimer)
-    saveTimer = null
+  const state = saveState()
+  if (state.saveTimer) {
+    clearTimeout(state.saveTimer)
+    state.saveTimer = null
   }
-  saveDirty = false
-  saveWriting = false
+  state.saveDirty = false
+  state.saveWriting = false
   const data = dbInstance.export()
   writeFileSync(getDbPath(), Buffer.from(data))
 }

@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
-import { Tabs, Empty, Spin, Form } from 'antd'
+import { Tabs, Empty, Spin, Form, message } from 'antd'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
 import type { PlatformFieldDefinition } from '@shared/types/platform-fields'
+import { ipcInvoke } from '@/utils/ipc'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import PlatformFieldRenderer from './PlatformFieldRenderer'
 
@@ -34,7 +35,9 @@ export default function PlatformCustomizer({ platforms, overrides, onChange }: P
           setAccounts(r.data)
         }
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.error('[PlatformCustomizer] Failed to fetch accounts:', err)
+      })
   }, [])
 
   useEffect(() => {
@@ -68,17 +71,21 @@ export default function PlatformCustomizer({ platforms, overrides, onChange }: P
                 const ipcChannel = DYNAMIC_KEY_IPC[field.dynamicKey]
                 if (!ipcChannel) return field
                 try {
-                  const optRes = await window.electron.ipcRenderer.invoke(
+                  const optRes = await ipcInvoke<Array<{ label: string; value: string }>>(
                     ipcChannel,
                     { platformId, accountId: account.id }
-                  ) as { success: boolean; data?: Array<{ label: string; value: string }> }
+                  )
                   if (optRes.success && optRes.data) {
                     return { ...field, options: optRes.data }
                   }
-                } catch {}
+                } catch (err) {
+                  console.error(`[PlatformCustomizer] Failed to fetch dynamic options for ${platformId}/${field.dynamicKey}:`, err)
+                }
                 return field
               })
-            )
+            ).catch((err) => {
+              console.error(`[PlatformCustomizer] Failed to load platform fields for ${platformId}:`, err)
+            })
           }
 
           setFieldDefs((prev) => ({ ...prev, [platformId]: fields }))

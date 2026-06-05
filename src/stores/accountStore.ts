@@ -40,6 +40,8 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   checkingSessions: false,
 
   fetchAccounts: async () => {
+    // Prevent concurrent calls — multiple components may trigger this simultaneously
+    if (get().loading) return
     set({ loading: true })
     try {
       const response = await ipcInvoke<AccountInfo[]>('account:list')
