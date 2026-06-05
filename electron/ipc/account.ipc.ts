@@ -233,44 +233,116 @@ export function registerAccountIpcHandlers(): void {
     }
   })
 
-  // Check session status — only check if cookies exist, don't call API
-  // API calls during check may fail due to signature issues and cause false "expired" status
+  // Check session status — call platform API to verify real login status
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_CHECK_SESSION, async (_event, accountId: string): Promise<IpcResponse> => {
     try {
       const repo = getAccountRepository()
       const account = repo.getById(accountId)
       if (!account) return { success: false, error: '账号不存在' }
 
-      // Simple check: if cookies exist, consider session valid
-      // The actual session validity will be determined when publishing (API call)
       const cookieStr = cookieStore.getCookieString(accountId)
-      const isValid = !!cookieStr && account.session_status === 'logged_in'
+      if (!cookieStr || account.session_status !== 'logged_in') {
+        return { success: true, data: { sessionStatus: 'not_logged_in' } }
+      }
 
-      logger.info(`[account] Session check for ${account.platform}: ${isValid ? 'valid' : 'no cookies'}`)
+      // 调用平台 API 验证真实的登录状态
+      const adapter = getAdapter(account.platform)
+      if (!adapter) {
+        return { success: true, data: { sessionStatus: 'logged_in' } }
+      }
 
-      // 如果登录成功但 displayName 还是默认平台名，尝试通过 API 重新获取
-      if (isValid && (!account.display_name || account.display_name === getAdapter(account.platform).platformName)) {
-        try {
-          const adapter = getAdapter(account.platform)
-          if ('getAccountInfoAPI' in adapter && typeof (adapter as any).getAccountInfoAPI === 'function') {
-            const apiClient = new HttpClient({ cookies: cookieStr, platform: account.platform, accountId })
-            const apiInfo = await (adapter as any).getAccountInfoAPI(apiClient)
-            if (apiInfo?.displayName) {
-              const repo2 = getAccountRepository()
-              repo2.updateSession(accountId, 'logged_in', cookieStr, apiInfo.displayName)
-              saveDatabase()
-              logger.info(`[account] Refreshed displayName via checkSession: ${apiInfo.displayName}`)
-              return { success: true, data: { sessionStatus: 'logged_in', displayName: apiInfo.displayName } }
+      try {
+        const apiClient = new HttpClient({ cookies: cookieStr, platform: account.platform, accountId })
+
+        // 使用 checkSessionAPI 验证登录状态
+        if (adapter.checkSessionAPI) {
+          const isValid = await adapter.checkSessionAPI(apiClient)
+          logger.info(`[account] API session check for ${account.platform}: ${isValid ? 'valid' : 'expired'}`)
+
+          if (!isValid) {
+            // API 验证失败，更新状态为 expired
+            repo.updateSession(accountId, 'expired', cookieStr)
+            saveDatabase()
+            return { success: true, data: { sessionStatus: 'expired' } }
+          }
+        }
+
+        // 如果登录成功但 displayName 还是默认平台名，尝试通过 API 重新获取
+        if (!account.display_name || account.display_name === adapter.platformName) {
+          try {
+            if ('getAccountInfoAPI' in adapter && typeof (adapter as any).getAccountInfoAPI === 'function') {
+              const apiInfo = await (adapter as any).getAccountInfoAPI(apiClient)
+              if (apiInfo?.displayName) {
+                repo.updateSession(accountId, 'logged_in', cookieStr, apiInfo.displayName)
+                saveDatabase()
+                logger.info(`[account] Refreshed displayName via checkSession: ${apiInfo.displayName}`)
+                return { success: true, data: { sessionStatus: 'logged_in', displayName: apiInfo.displayName } }
+              }
             }
+          } catch (e) {
+            logger.warn('[account] Failed to refresh displayName during checkSession:', e)
+          }
+        }
+
+        return { success: true, data: { sessionStatus: 'logged_in' } }
+      } catch (apiErr) {
+        // API 调用失败（可能是签名问题），保持当前状态但记录警告
+        logger.warn(`[account] API check failed for ${account.platform}, keeping current status:`, apiErr)
+        return { success: true, data: { sessionStatus: account.session_status } }
+      }
+    } catch (err) {
+      logger.error('ACCOUNT_CHECK_SESSION error:', err)
+      return { success: false, error: String(err) }
+    }
+  })
+
+  // Batch check all logged-in accounts (for startup auto-check)
+  ipcMain.handle(IPC_CHANNELS.ACCOUNT_CHECK_ALL_SESSIONS, async (): Promise<IpcResponse> => {
+    try {
+      const repo = getAccountRepository()
+      const allAccounts = repo.getAll()
+      const loggedInAccounts = allAccounts.filter(a => a.session_status === 'logged_in')
+
+      logger.info(`[account] Auto-checking ${loggedInAccounts.length} logged-in accounts...`)
+
+      const results: Array<{ accountId: string; platform: string; sessionStatus: string }> = []
+
+      for (const account of loggedInAccounts) {
+        try {
+          const cookieStr = cookieStore.getCookieString(account.id)
+          if (!cookieStr) {
+            repo.updateSession(account.id, 'not_logged_in', '[]')
+            results.push({ accountId: account.id, platform: account.platform, sessionStatus: 'not_logged_in' })
+            continue
+          }
+
+          const adapter = getAdapter(account.platform)
+          if (!adapter?.checkSessionAPI) {
+            results.push({ accountId: account.id, platform: account.platform, sessionStatus: 'logged_in' })
+            continue
+          }
+
+          const apiClient = new HttpClient({ cookies: cookieStr, platform: account.platform, accountId: account.id })
+          const isValid = await adapter.checkSessionAPI(apiClient)
+
+          if (!isValid) {
+            repo.updateSession(account.id, 'expired', cookieStr)
+            results.push({ accountId: account.id, platform: account.platform, sessionStatus: 'expired' })
+            logger.info(`[account] ${account.platform} session expired`)
+          } else {
+            results.push({ accountId: account.id, platform: account.platform, sessionStatus: 'logged_in' })
+            logger.info(`[account] ${account.platform} session valid`)
           }
         } catch (e) {
-          logger.warn('[account] Failed to refresh displayName during checkSession:', e)
+          logger.warn(`[account] Failed to check ${account.platform}:`, e)
+          results.push({ accountId: account.id, platform: account.platform, sessionStatus: account.session_status })
         }
       }
 
-      return { success: true, data: { sessionStatus: isValid ? 'logged_in' : 'expired' } }
+      saveDatabase()
+      return { success: true, data: results }
     } catch (err) {
-      logger.error('ACCOUNT_CHECK_SESSION error:', err)
+      logger.error('ACCOUNT_CHECK_ALL_SESSIONS error:', err)
       return { success: false, error: String(err) }
     }
   })

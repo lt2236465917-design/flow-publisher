@@ -4,6 +4,7 @@ export const IPC_CHANNELS = {
   // Account
   ACCOUNT_LOGIN: 'account:login',
   ACCOUNT_CHECK_SESSION: 'account:check-session',
+  ACCOUNT_CHECK_ALL_SESSIONS: 'account:check-all-sessions',
   ACCOUNT_LOGOUT: 'account:logout',
   ACCOUNT_LIST: 'account:list',
 

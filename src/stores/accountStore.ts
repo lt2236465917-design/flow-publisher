@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { AccountInfo } from '@/types/platform.types'
 import { ipcInvoke } from '@/utils/ipc'
 import { toChineseMessage } from '@/utils/errorMessages'
+import { IPC_CHANNELS } from '@/constants/ipc-channels'
 
 interface LoginProgress {
   platformId: string
@@ -11,14 +12,22 @@ interface LoginProgress {
   error?: string
 }
 
+interface SessionCheckResult {
+  accountId: string
+  platform: string
+  sessionStatus: string
+}
+
 interface AccountState {
   accounts: AccountInfo[]
   loginProgress: Record<string, LoginProgress>
   loading: boolean
+  checkingSessions: boolean
 
   fetchAccounts: () => Promise<void>
   startLogin: (platformId: string) => Promise<boolean>
   checkSession: (accountId: string) => Promise<void>
+  checkAllSessions: () => Promise<void>
   logout: (accountId: string) => Promise<void>
   setQrDataUrl: (platformId: string, qrDataUrl: string | null, fallbackMessage?: string) => void
   setLoginStatus: (platformId: string, status: LoginProgress['status'], error?: string) => void
@@ -28,6 +37,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   accounts: [],
   loginProgress: {},
   loading: false,
+  checkingSessions: false,
 
   fetchAccounts: async () => {
     set({ loading: true })
@@ -72,6 +82,36 @@ export const useAccountStore = create<AccountState>((set, get) => ({
     const response = await ipcInvoke<{ sessionStatus: string }>('account:check-session', accountId)
     if (response.success) {
       await get().fetchAccounts()
+    }
+  },
+
+  checkAllSessions: async () => {
+    if (get().checkingSessions) {
+      console.log('[accountStore] checkAllSessions: already checking, skipping')
+      return
+    }
+
+    console.log('[accountStore] checkAllSessions: starting...')
+    set({ checkingSessions: true })
+    try {
+      const response = await ipcInvoke<SessionCheckResult[]>(IPC_CHANNELS.ACCOUNT_CHECK_ALL_SESSIONS)
+      console.log('[accountStore] checkAllSessions response:', response)
+
+      if (response.success) {
+        // 刷新账号列表以获取最新状态
+        await get().fetchAccounts()
+
+        // 统计结果
+        const results = response.data || []
+        const expiredCount = results.filter(r => r.sessionStatus === 'expired').length
+        const validCount = results.filter(r => r.sessionStatus === 'logged_in').length
+
+        console.log(`[accountStore] Session check complete: ${validCount} valid, ${expiredCount} expired`)
+      }
+    } catch (err) {
+      console.error('[accountStore] checkAllSessions error:', err)
+    } finally {
+      set({ checkingSessions: false })
     }
   },
 

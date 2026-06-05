@@ -224,34 +224,70 @@ export class AnalyticsCollectorService {
         return result
       }
 
-      const contentId = (record as any).content_id
+      let contentId = (record as any).content_id
+
+      // 如果没有 content_id，尝试通过平台视频列表匹配
       if (!contentId) {
-        result.errors.push(`记录 ${recordId} 没有平台内容ID，无法采集数据`)
-        return result
+        logger.info(`[AnalyticsCollector] 记录 ${recordId} 没有 content_id，尝试通过平台列表匹配...`)
+        const matchedId = await this.findContentIdByTitle(record)
+        if (matchedId) {
+          contentId = matchedId
+          // 保存匹配到的 content_id
+          analyticsRepo.updateRecordContentId(recordId, contentId)
+          logger.info(`[AnalyticsCollector] 通过标题匹配到 content_id: ${contentId}`)
+        } else {
+          result.errors.push(`记录 ${recordId} 没有平台内容ID，且无法通过标题匹配`)
+          return result
+        }
       }
 
       const adapter = getAdapter(record.platform as any)
-      if (!adapter || !adapter.getVideoDetail) {
-        result.errors.push(`平台 ${record.platform} 不支持数据采集`)
+      if (!adapter) {
+        result.errors.push(`平台 ${record.platform} 不支持`)
         return result
       }
 
+      // 优先使用 getVideoDetail，如果没有则使用 getVideoList 匹配
       const client = this.createClient(record.platform, record.account_id)
 
-      const detail = await adapter.getVideoDetail(client, contentId)
-      if (detail) {
-        analyticsRepo.createSnapshot({
-          recordId: record.id,
-          platform: record.platform,
-          views: detail.views,
-          likes: detail.likes,
-          comments: detail.comments,
-          shares: detail.shares,
-          followers: detail.favorites
-        })
-        result.newSnapshots = 1
-        result.updatedRecords = 1
-        saveDatabase()
+      if (adapter.getVideoDetail) {
+        const detail = await adapter.getVideoDetail(client, contentId)
+        if (detail) {
+          analyticsRepo.createSnapshot({
+            recordId: record.id,
+            platform: record.platform,
+            views: detail.views,
+            likes: detail.likes,
+            comments: detail.comments,
+            shares: detail.shares,
+            followers: detail.favorites
+          })
+          result.newSnapshots = 1
+          result.updatedRecords = 1
+          saveDatabase()
+        }
+      } else if (adapter.getVideoList) {
+        // 从视频列表中查找匹配的视频
+        const listResult = await adapter.getVideoList(client, { pageSize: 50 })
+        const matched = listResult.items.find(item => item.contentId === contentId)
+        if (matched) {
+          analyticsRepo.createSnapshot({
+            recordId: record.id,
+            platform: record.platform,
+            views: matched.views,
+            likes: matched.likes,
+            comments: matched.comments,
+            shares: matched.shares,
+            followers: matched.favorites
+          })
+          result.newSnapshots = 1
+          result.updatedRecords = 1
+          saveDatabase()
+        } else {
+          result.errors.push(`在平台视频列表中未找到匹配的视频`)
+        }
+      } else {
+        result.errors.push(`平台 ${record.platform} 不支持数据采集`)
       }
     } catch (err: any) {
       const errorMsg = `采集记录 ${recordId} 数据失败: ${err.message}`
@@ -260,6 +296,40 @@ export class AnalyticsCollectorService {
     }
 
     return result
+  }
+
+  /**
+   * 通过标题匹配查找 content_id
+   */
+  private async findContentIdByTitle(record: any): Promise<string | null> {
+    try {
+      const adapter = getAdapter(record.platform as any)
+      if (!adapter?.getVideoList) return null
+
+      const client = this.createClient(record.platform, record.account_id)
+      const listResult = await adapter.getVideoList(client, { pageSize: 50 })
+
+      const recordTitle = record.title?.trim().toLowerCase()
+      if (!recordTitle) return null
+
+      // 尝试精确匹配
+      let matched = listResult.items.find(item =>
+        item.title?.trim().toLowerCase() === recordTitle
+      )
+
+      // 如果没有精确匹配，尝试包含匹配
+      if (!matched) {
+        matched = listResult.items.find(item => {
+          const itemTitle = item.title?.trim().toLowerCase()
+          return itemTitle && (itemTitle.includes(recordTitle) || recordTitle.includes(itemTitle))
+        })
+      }
+
+      return matched?.contentId || null
+    } catch (err) {
+      logger.warn(`[AnalyticsCollector] 通过标题匹配 content_id 失败:`, err)
+      return null
+    }
   }
 
   /**
