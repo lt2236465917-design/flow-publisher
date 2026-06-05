@@ -70,7 +70,7 @@ export function usePublishFlow() {
         })
       }
     })
-    return () => { unsubscribe() }
+    return () => { if (typeof unsubscribe === 'function') unsubscribe() }
   }, [])
 
   const selectVideo = useCallback(async () => {
@@ -180,25 +180,18 @@ export function usePublishFlow() {
     // Convert cover data URL to temp file (new cover format + legacy fallback)
     const coverSource = form.cover.horizontal_4_3 || form.horizontalCover || form.coverPath
     let coverFilePath: string | undefined
-    console.log(`[usePublishFlow] cover.horizontal_4_3: ${form.cover.horizontal_4_3 ? `len=${form.cover.horizontal_4_3.length}` : 'null'}`)
-    console.log(`[usePublishFlow] horizontalCover: ${form.horizontalCover ? `len=${form.horizontalCover.length}` : 'null'}`)
-    console.log(`[usePublishFlow] coverPath: ${form.coverPath}`)
-    console.log(`[usePublishFlow] coverSource: ${coverSource ? `${coverSource.substring(0, 60)}... (len=${coverSource.length})` : 'null/empty'}`)
     if (coverSource && coverSource.startsWith('data:')) {
       const coverRes = await ipcInvoke<{ filePath: string }>(
         IPC_CHANNELS.FILE_DATA_URL_TO_TEMP,
         coverSource
       )
-      console.log(`[usePublishFlow] FILE_DATA_URL_TO_TEMP result:`, JSON.stringify(coverRes))
       if (coverRes.success && coverRes.data?.filePath) {
         coverFilePath = coverRes.data.filePath
       }
     } else if (coverSource && !coverSource.startsWith('data:')) {
       // It's a file path, use directly
       coverFilePath = coverSource
-      console.log(`[usePublishFlow] Using cover as file path: ${coverFilePath}`)
     }
-    console.log(`[usePublishFlow] Final coverFilePath: ${coverFilePath}`)
 
     const tasks = form.platforms.map((p) => ({
       id: `task-${p}-${Date.now()}`,

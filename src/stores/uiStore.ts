@@ -95,7 +95,7 @@ export function registerNetworkListener(): void {
   if (networkListenerRegistered) return
   networkListenerRegistered = true
 
-  const store = useUIStore.getState()
-  window.addEventListener('online', () => store.setNetworkOnline(true))
-  window.addEventListener('offline', () => store.setNetworkOnline(false))
+  // Call getState() inside each handler to always get the current store reference
+  window.addEventListener('online', () => useUIStore.getState().setNetworkOnline(true))
+  window.addEventListener('offline', () => useUIStore.getState().setNetworkOnline(false))
 }

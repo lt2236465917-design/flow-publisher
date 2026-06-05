@@ -34,6 +34,10 @@ export class PublishScheduler {
     }
   }
 
+  get isRunning(): boolean {
+    return this.cronTask !== null
+  }
+
   async checkDueTasks(): Promise<void> {
     if (this.taskQueue.isRunning) {
       logger.debug('[PublishScheduler] Task queue is running, skipping check')

@@ -86,6 +86,7 @@ export function registerFileDialogIpcHandlers(): void {
   // Read file as data URL (for image preview/crop)
   ipcMain.handle(IPC_CHANNELS.FILE_READ_DATA_URL, async (_event, filePath: string): Promise<IpcResponse> => {
     try {
+      if (!filePath || typeof filePath !== 'string') return { success: false, error: '无效的文件路径' }
       if (!existsSync(filePath)) return { success: false, error: '文件不存在' }
       const ext = extname(filePath).replace('.', '').toLowerCase()
       const mimeMap: Record<string, string> = {

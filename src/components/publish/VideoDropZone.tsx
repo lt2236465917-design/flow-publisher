@@ -23,7 +23,10 @@ export default function VideoDropZone({ video, onSelect, onDropFile }: Props) {
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    setDragging(false)
+    // Only set dragging to false when actually leaving the drop zone (not entering a child element)
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setDragging(false)
+    }
   }, [])
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -86,7 +89,7 @@ export default function VideoDropZone({ video, onSelect, onDropFile }: Props) {
         点击或拖拽视频文件到此处
       </div>
       <div style={{ fontSize: 12, color: '#aeaeb2' }}>
-        支持 MP4、MOV、AVI、FLV、MKV、WMV 格式
+        支持 MP4、MOV、AVI、FLV、MKV、WMV、WebM 格式
       </div>
     </div>
   )

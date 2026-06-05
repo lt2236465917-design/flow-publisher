@@ -563,21 +563,21 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     }
 
     // Add location if provided (through post_loc)
-    // Format matching yixiaoer: { poi_id, name, poi_type, subname }
+    // Format matching yixiaoer: { poi_id, name, subname }
+    // Note: yixiaoer uses $.location.source for poi_type, but 'source' is not set from the POI API,
+    // so it's effectively undefined and omitted from JSON. We must NOT include poi_type.
     if (payload.platformFields?.location) {
       const loc = payload.platformFields.location
       if (typeof loc === 'object' && loc !== null && 'name' in loc) {
-        const locObj = loc as { name: string; poi_id?: string; lat?: number; lng?: number; poi_type?: number; extra?: Record<string, unknown> }
-        const poiType = locObj.poi_type ?? (locObj.extra?.poi_type as number) ?? 3
+        const locObj = loc as { name: string; poi_id?: string; address?: string; extra?: Record<string, unknown> }
         commonObj.post_loc = {
           poi_id: locObj.poi_id || '',
           name: locObj.name,
-          poi_type: poiType,
-          subname: ''
+          subname: locObj.address || ''
         }
-        logger.info(`[xiaohongshu] Location: poi_id=${locObj.poi_id}, name=${locObj.name}, poi_type=${poiType}, raw_extra=${JSON.stringify(locObj.extra)}`)
+        logger.info(`[xiaohongshu] Location: poi_id=${commonObj.post_loc.poi_id}, name=${locObj.name}, subname=${commonObj.post_loc.subname}`)
       } else if (typeof loc === 'string') {
-        commonObj.post_loc = { poi_id: '', name: loc, poi_type: 3, subname: '' }
+        commonObj.post_loc = { poi_id: '', name: loc, subname: '' }
       }
     } else {
       logger.info(`[xiaohongshu] No location provided, platformFields.location=${JSON.stringify(payload.platformFields?.location)}`)

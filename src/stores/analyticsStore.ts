@@ -42,6 +42,7 @@ interface AnalyticsState {
   fetchRecordTrend: (recordId: string, days?: number) => Promise<void>
   collectAccount: (accountId: string) => Promise<void>
   collectAll: () => Promise<void>
+  collectVideoGroup: (groupId: string) => Promise<void>
   clearVideoDetail: () => void
   clearCollectResult: () => void
 }
@@ -164,12 +165,12 @@ export const useAnalyticsStore = create<AnalyticsState>((set, get) => ({
   },
 
   collectAccount: async (accountId: string) => {
+    if (get().collecting) return
     set({ collecting: true, collectResult: null })
     try {
       const res = await ipcInvoke<CollectResult>(IPC_CHANNELS.ANALYTICS_COLLECT, { accountId })
       if (res.success && res.data) {
         set({ collectResult: res.data })
-        // 采集完成后刷新视频列表
         get().fetchVideoGroups()
       }
     } catch {
@@ -180,12 +181,12 @@ export const useAnalyticsStore = create<AnalyticsState>((set, get) => ({
   },
 
   collectAll: async () => {
+    if (get().collecting) return
     set({ collecting: true, collectResult: null })
     try {
       const res = await ipcInvoke<CollectResult>(IPC_CHANNELS.ANALYTICS_COLLECT_ALL)
       if (res.success && res.data) {
         set({ collectResult: res.data })
-        // 采集完成后刷新视频列表
         get().fetchVideoGroups()
       }
     } catch {
@@ -196,12 +197,12 @@ export const useAnalyticsStore = create<AnalyticsState>((set, get) => ({
   },
 
   collectVideoGroup: async (groupId: string) => {
+    if (get().collecting) return
     set({ collecting: true, collectResult: null })
     try {
       const res = await ipcInvoke<CollectResult>(IPC_CHANNELS.ANALYTICS_COLLECT_GROUP, { groupId })
       if (res.success && res.data) {
         set({ collectResult: res.data })
-        // 采集完成后刷新视频详情
         get().fetchVideoDetail(groupId)
       }
     } catch {

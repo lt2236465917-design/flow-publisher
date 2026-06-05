@@ -35,18 +35,27 @@ interface RecordState {
   deleteScheduledTask: (taskId: string) => Promise<boolean>
 }
 
+function safeJsonParse<T>(value: unknown, fallback: T): T {
+  if (value === null || value === undefined) return fallback
+  try {
+    return JSON.parse(String(value))
+  } catch {
+    return fallback
+  }
+}
+
 function parseScheduledTask(raw: Record<string, unknown>): ScheduledTask {
   return {
     id: raw.id as string,
-    platforms: JSON.parse((raw.platforms as string) || '[]'),
-    accountIds: JSON.parse((raw.account_ids as string) || '{}'),
+    platforms: safeJsonParse(raw.platforms, [] as string[]),
+    accountIds: safeJsonParse(raw.account_ids, {} as Record<string, string>),
     videoPath: raw.video_path as string,
     coverPath: (raw.cover_path as string) || null,
     title: (raw.title as string) || '',
     description: (raw.description as string) || '',
-    hashtags: JSON.parse((raw.hashtags as string) || '[]'),
-    declarations: JSON.parse((raw.declarations as string) || '[]'),
-    platformOverrides: JSON.parse((raw.platform_overrides as string) || '{}'),
+    hashtags: safeJsonParse(raw.hashtags, [] as string[]),
+    declarations: safeJsonParse(raw.declarations, [] as string[]),
+    platformOverrides: safeJsonParse(raw.platform_overrides, {} as Record<string, Record<string, unknown>>),
     scheduledAt: raw.scheduled_at as string,
     status: raw.status as string,
     retryCount: raw.retry_count as number,

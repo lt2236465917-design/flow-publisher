@@ -288,24 +288,28 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
 
   async checkSessionAPI(client: HttpClient): Promise<boolean> {
     try {
-      const cookie = client.getCookieString()
-      const msToken = this.extractMsToken(cookie)
-      const baseUrl = `${API.userInfo}?${new URLSearchParams({
-        ...COMMON_PARAMS,
-        no_cache: Date.now().toString().substring(0, 10),
-        msToken
-      }).toString()}`
-      const signedUrl = await this.signUrl(baseUrl, cookie)
-
-      const response = await client.get<{ status_code: number; user?: { nickname: string } }>(
-        signedUrl,
+      // Matching yixiaoer: plain GET with no query params, no signing — just cookie auth
+      const response = await client.get<any>(
+        API.userInfo,
         undefined,
         {
           referer: 'https://creator.douyin.com/creator-micro/home',
           Origin: 'https://creator.douyin.com'
         }
       )
-      return response.data?.status_code === 0 && !!response.data?.user
+
+      const data = response.data
+      // Log the actual response for debugging
+      const preview = JSON.stringify(data || {}).substring(0, 300)
+      logger.info(`[douyin] checkSessionAPI response: ${preview}`)
+
+      // The API can return different response formats
+      if (data?.status_code === 0 && data?.user) return true
+      if (data?.douyin_user_verify_info?.nick_name) return true
+      if (data?.extra?.now && !data?.status_code) return true
+
+      logger.warn(`[douyin] Session check failed: status_code=${data?.status_code}, hasUser=${!!data?.user}`)
+      return false
     } catch (err) {
       logger.error('[douyin] checkSessionAPI error:', err)
       return false
@@ -761,53 +765,140 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       throw new Error(`获取上传凭证失败: ${err}`)
     }
 
-    // Step 3: Upload video to ByteDance VOD (matching yixiaoer's uploadVideoPart$9)
+    // Step 3: Chunked upload to ByteDance VOD (matching yixiaoer's uploadVideoPart$9)
     const node = uploadNodes[0]
     const storeInfo = node.StoreInfos?.[0]
     if (!node.UploadHost || !storeInfo?.StoreUri) {
       throw new Error('上传地址无效')
     }
 
-    const uploadUrl = `https://${node.UploadHost}/upload/v1/${storeInfo.StoreUri}`
-    const fileBuffer = readFileSync(filePath)
+    // Generate client-side uploadId (matching yixiaoer: Guid.NewGuid().toString())
+    const uploadId = randomBytes(16).toString('hex')
+    const uploadBase = `https://${node.UploadHost}/upload/v1/${storeInfo.StoreUri}`
+    const uploadHeaders: Record<string, string> = {
+      Authorization: storeInfo.Auth || '',
+      'Content-Type': 'application/octet-stream',
+      'X-Storage-U': userId,
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      Referer: 'https://studio.ixigua.com/',
+      Origin: 'https://studio.ixigua.com/'
+    }
 
-    // Calculate CRC32 matching yixiaoer: crc.crc32(buf).toString(16).replace("-","")
-    const crc32 = require('crc-32')
-    const fileCrc = (crc32.buf(fileBuffer) >>> 0).toString(16)
+    // Chunk size selection (matching yixiaoer)
+    let chunkSize = 3 * 1024 * 1024 // 3MB default
+    if (stats.size > 1024 * 1024 * 500) chunkSize = 5 * 1024 * 1024    // >500MB → 5MB
+    if (stats.size > 1024 * 1024 * 1024) chunkSize = 10 * 1024 * 1024  // >1GB → 10MB
+
+    const totalChunks = Math.ceil(stats.size / chunkSize)
+    const crcMap = new Map<number, string>()
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
-    try {
-      const vodUploadResponse = await client.request<{
-        code?: number
-        message?: string
-      }>({
-        method: 'POST',
-        url: uploadUrl,
-        data: fileBuffer,
-        headers: {
-          'Content-CRC32': fileCrc,
-          Authorization: storeInfo.Auth || '',
-          'Content-Type': 'application/octet-stream',
-          'X-Storage-U': userId,
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          Referer: 'https://studio.ixigua.com/',
-          Origin: 'https://studio.ixigua.com/'
-        },
-        timeout: 300_000,
-        noCookie: true,
-        onUploadProgress: (progress) => {
-          const percent = 10 + Math.round(progress.percent * 0.7)
-          onProgress?.({ percent, stage: `上传中 ${progress.percent}%` })
-        }
-      })
+    // Dynamic timeout per chunk: base 60s + 1s per MB of chunk
+    const chunkTimeout = Math.max(60_000, 60_000 + Math.round(chunkSize / (1024 * 1024)) * 1000)
 
-      logger.info(`[douyin] VOD upload response: status=${vodUploadResponse.status}, crc32=${fileCrc}`)
-      onProgress?.({ percent: 80, stage: '正在提交上传...' })
+    try {
+      const fileHandle = await require('fs').promises.open(filePath, 'r')
+      try {
+        if (totalChunks <= 1) {
+          // Single chunk: read entire file and upload as one part
+          const buffer = Buffer.alloc(stats.size)
+          const { buffer: readBuf } = await fileHandle.read(buffer, 0, stats.size, 0)
+          if (readBuf.length > 0) {
+            const chunkCrc = this.computeCrc32FromBuffer(readBuf)
+            const chunkUrl = `${uploadBase}?uploadid=${uploadId}&part_number=1&phase=transfer&part_offset=0`
+            const result = await this.httpPostBuffer(chunkUrl, readBuf, {
+              ...uploadHeaders,
+              'Content-CRC32': chunkCrc
+            }, chunkTimeout)
+            if (!result?.data?.crc32) {
+              throw new Error(`分片上传失败: ${result?.message || 'no crc32 in response'}`)
+            }
+            crcMap.set(result.partNum || 1, result.data.crc32)
+          } else {
+            throw new Error('文件读取失败')
+          }
+        } else {
+          // Multi-chunk: read and upload with concurrency control
+          const maxConcurrent = 3
+          let offset = 0
+          let completedParts = 0
+
+          // Read and queue all chunks for concurrent upload
+          const allUploads: Promise<{ partNum: number; crc32: string }>[] = []
+
+          for (let partNum = 1; offset < stats.size; partNum++) {
+            const currentChunkSize = Math.min(chunkSize, stats.size - offset)
+            const currentOffset = offset
+            const currentPartNum = partNum
+            offset += currentChunkSize
+
+            const uploadPromise = (async () => {
+              const buffer = Buffer.alloc(currentChunkSize)
+              const { buffer: readBuf } = await fileHandle.read(buffer, 0, currentChunkSize, currentOffset)
+              if (readBuf.length === 0) throw new Error('文件读取失败')
+
+              const chunkCrc = this.computeCrc32FromBuffer(readBuf)
+              const chunkUrl = `${uploadBase}?uploadid=${uploadId}&part_number=${currentPartNum}&phase=transfer&part_offset=${(currentPartNum - 1) * chunkSize}`
+
+              const result = await this.httpPostBuffer(chunkUrl, readBuf, {
+                ...uploadHeaders,
+                'Content-CRC32': chunkCrc
+              }, chunkTimeout)
+
+              if (!result?.data?.crc32) {
+                throw new Error(`分片 ${currentPartNum} 上传失败: ${result?.message || 'no crc32 in response'}`)
+              }
+
+              completedParts++
+              const percent = 10 + Math.round((completedParts / totalChunks) * 70)
+              onProgress?.({ percent, stage: `上传中 ${completedParts}/${totalChunks}` })
+
+              return { partNum: currentPartNum, crc32: result.data.crc32 }
+            })()
+
+            allUploads.push(uploadPromise)
+
+            // Concurrency control: when we have enough pending, wait for the oldest
+            if (allUploads.length >= maxConcurrent) {
+              const finished = await allUploads[0]
+              crcMap.set(finished.partNum, finished.crc32)
+              allUploads.shift()
+            }
+          }
+
+          // Drain remaining uploads
+          const results = await Promise.all(allUploads)
+          for (const r of results) {
+            crcMap.set(r.partNum, r.crc32)
+          }
+        }
+      } finally {
+        await fileHandle.close()
+      }
+
+      logger.info(`[douyin] All ${totalChunks} chunks uploaded, completing...`)
+      onProgress?.({ percent: 80, stage: '正在校验上传...' })
+
+      // Step 3b: Finalize upload — send CRC32 map to server
+      const crcParts: string[] = []
+      for (let i = 1; i <= crcMap.size; i++) {
+        crcParts.push(`${i}:${crcMap.get(i)}`)
+      }
+      const crcBody = crcParts.join(',')
+      const finishUrl = `${uploadBase}?uploadid=${uploadId}&phase=finish&uploadmode=part`
+      const finishResult = await this.httpPostBuffer(finishUrl, Buffer.from(crcBody), {
+        ...uploadHeaders,
+        'Content-Type': 'text/plain'
+      }, 60_000)
+      logger.info(`[douyin] Upload finish response: ${JSON.stringify(finishResult).substring(0, 300)}`)
+
     } catch (err) {
-      logger.error('[douyin] VOD upload error:', err)
+      logger.error('[douyin] VOD chunked upload error:', err)
       throw new Error(`视频上传失败: ${err}`)
     }
+
+    onProgress?.({ percent: 85, stage: '正在提交上传...' })
 
     // Step 4: Commit the upload with AWS4 signing
     try {
@@ -1250,6 +1341,78 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       cursor: response.data.max_cursor || '0',
       hasMore: response.data.has_more || false
     }
+  }
+
+  /**
+   * Compute CRC32 from a Buffer (per-chunk, matching yixiaoer's crc.crc32(buf).toString(16).replace("-",""))
+   */
+  private computeCrc32FromBuffer(buf: Buffer): string {
+    // Build CRC32 lookup table (polynomial 0xEDB88320, same as crc-32 library)
+    const table = new Int32Array(256)
+    for (let i = 0; i < 256; i++) {
+      let c = i
+      for (let j = 0; j < 8; j++) {
+        c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1)
+      }
+      table[i] = c
+    }
+    let crc = -1
+    for (let i = 0; i < buf.length; i++) {
+      crc = table[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8)
+    }
+    // Convert to hex, strip leading dash for negative values (matching yixiaoer)
+    return ((crc ^ -1) >>> 0).toString(16)
+  }
+
+  /**
+   * POST a Buffer to a URL using Node.js https module.
+   * Returns parsed JSON response with partNum and data.crc32.
+   */
+  private httpPostBuffer(
+    url: string,
+    body: Buffer,
+    headers: Record<string, string>,
+    timeoutMs: number
+  ): Promise<any> {
+    return new Promise((resolve, reject) => {
+      const parsedUrl = new URL(url)
+      const httpModule = parsedUrl.protocol === 'https:' ? require('https') : require('http')
+
+      const req = httpModule.request({
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+        path: parsedUrl.pathname + parsedUrl.search,
+        method: 'POST',
+        headers: {
+          ...headers,
+          'Content-Length': body.length
+        },
+        timeout: timeoutMs,
+        rejectUnauthorized: false
+      })
+
+      req.on('error', reject)
+      req.on('timeout', () => {
+        req.destroy()
+        reject(new Error('上传超时'))
+      })
+
+      let responseBody = ''
+      req.on('response', (res: any) => {
+        res.on('data', (chunk: Buffer) => { responseBody += chunk.toString() })
+        res.on('end', () => {
+          try {
+            const parsed = JSON.parse(responseBody)
+            resolve(parsed)
+          } catch {
+            resolve({ statusCode: 0, raw: responseBody })
+          }
+        })
+        res.on('error', reject)
+      })
+
+      req.end(body)
+    })
   }
 
   private async computeFileMd5(filePath: string): Promise<string> {

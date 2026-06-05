@@ -305,22 +305,21 @@ export class KsApiAdapter extends BasePlatformAdapter {
   async checkSessionAPI(client: HttpClient): Promise<boolean> {
     try {
       const cookie = client.getCookieString()
-      const apiPh = this.extractApiPh(cookie)
+      if (!cookie) return false
 
-      const response = await client.post<{ result: number; data?: { user_name: string; user_id?: string } }>(
-        API.userInfo,
-        JSON.stringify({ 'kuaishou.web.cp.api_ph': apiPh }),
-        { referer: REFERER, Origin: ORIGIN, 'Content-Type': 'application/json' }
-      )
+      // Check essential login cookies exist (matching yixiaoer's cookie-based detection)
+      // The API endpoint requires __NS_sig3 signing which needs an external service,
+      // so we verify the login cookies that are set during the login flow.
+      const hasUserId = /(?:^|;\s*)userId=[^;]+/.test(cookie)
+      const hasApiSt = /(?:^|;\s*)kuaishou\.web\.cp\.api_st=[^;]+/.test(cookie)
 
-      if (response.data?.result === 1 && response.data?.data) {
-        this.cachedDisplayName = response.data.data.user_name || ''
-        this.cachedUserId = response.data.data.user_id || ''
-        logger.info(`[kuaishou] Session valid, user: ${this.cachedDisplayName}, userId: ${this.cachedUserId}`)
+      if (hasUserId && hasApiSt) {
+        // Try to extract display name from cached data or cookie
+        logger.info(`[kuaishou] Session valid (cookies present), userId found`)
         return true
       }
 
-      logger.warn(`[kuaishou] Session invalid: result=${response.data?.result}`)
+      logger.warn(`[kuaishou] Session invalid: missing essential cookies (userId=${hasUserId}, api_st=${hasApiSt})`)
       return false
     } catch (err) {
       logger.error('[kuaishou] checkSessionAPI error:', err)

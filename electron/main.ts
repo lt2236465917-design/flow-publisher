@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, protocol, net } from 'electron'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import { pathToFileURL } from 'url'
 import { initDatabase, closeDatabase, backupDatabase } from './services/database'
 import { registerAccountIpcHandlers } from './ipc/account.ipc'
@@ -63,12 +63,24 @@ app.whenReady().then(async () => {
   app.setAppUserModelId('com.flow.publisher')
 
   // Handle local-file:// protocol to serve local files
+  // Security: only allow paths within the app's userData directory or temp directory
+  const allowedRoots = [
+    app.getPath('userData'),
+    app.getPath('temp')
+  ]
   protocol.handle('local-file', (request) => {
     const url = new URL(request.url)
     const filePath = decodeURIComponent(url.pathname)
     // On Windows, pathname starts with /C:/..., remove leading /
     const normalizedPath = process.platform === 'win32' && filePath.startsWith('/') ? filePath.slice(1) : filePath
-    const fileUrl = pathToFileURL(normalizedPath).toString()
+    const resolvedPath = resolve(normalizedPath)
+    // Validate path is within allowed directories
+    const isAllowed = allowedRoots.some(root => resolvedPath.startsWith(resolve(root)))
+    if (!isAllowed) {
+      logger.warn(`[local-file] Blocked access to path outside allowed directories: ${resolvedPath}`)
+      return new Response('Forbidden', { status: 403 })
+    }
+    const fileUrl = pathToFileURL(resolvedPath).toString()
     return net.fetch(fileUrl)
   })
 
@@ -98,15 +110,24 @@ app.whenReady().then(async () => {
   createWindow()
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow()
+      // Restart scheduler if it was stopped on macOS (window-all-closed)
+      if (scheduler && !scheduler.isRunning) {
+        scheduler.start()
+      }
+    }
   })
 })
 
 app.on('window-all-closed', () => {
-  scheduler?.stop()
+  // On macOS, don't stop scheduler — app stays alive and activate event will restart it
+  if (process.platform !== 'darwin') {
+    scheduler?.stop()
+  }
   getSignService().dispose().catch((err) => logger.error('SignService dispose error:', err))
   closeDatabase()
-  if (process.platform !== 'darwin') {
+  if (process.platform === 'win32') {
     app.quit()
   }
 })

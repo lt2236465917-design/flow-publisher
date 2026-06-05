@@ -48,11 +48,11 @@ export const PLATFORM_LIMITS: Record<string, PlatformLimits> = {
     titleMinLength: 0,
     descriptionMaxLength: 500,
     hashtagMaxLength: 15,
-    hashtagMaxCount: 10,
+    hashtagMaxCount: 4,
     tips: {
       title: '快手标题最多30字',
       description: '快手描述最多500字（标题+描述合并为caption）',
-      hashtag: '快手话题标签最多10个，每个不超过15字',
+      hashtag: '快手话题标签最多4个，每个不超过15字',
     },
   },
   'wechat-channels': {

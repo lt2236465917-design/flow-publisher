@@ -139,9 +139,8 @@ export class AnalyticsCollectorService {
               followers: item.favorites
             })
             result.newSnapshots++
+            result.updatedRecords++
           }
-
-          result.updatedRecords += result.newSnapshots
 
           cursor = listResult.cursor
           hasMore = listResult.hasMore

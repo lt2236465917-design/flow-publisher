@@ -90,14 +90,34 @@ export class ElectronLoginWindow {
       throw new Error('Login window not opened')
     }
 
+    // Store local reference to avoid null issues from class property changes
+    const loginWin = this.loginWindow
+
     return new Promise((resolve) => {
       let resolved = false
+      // Track navigation listeners for cleanup
+      const onNavigate = (_event: any, url: string) => {
+        if (resolved) return
+        logger.info(`[ElectronLoginWindow] Navigate: ${url}`)
+        for (const domain of checkDomains) {
+          if (url.includes(domain) && !this.isLoginPage(url)) {
+            logger.info(`[ElectronLoginWindow] Login detected via navigation: ${url}`)
+            setTimeout(() => resolveOnce(true), 1000)
+            return
+          }
+        }
+      }
+
       const resolveOnce = (value: boolean) => {
         if (resolved) return
         resolved = true
         clearInterval(pollTimer)
         clearTimeout(timeoutTimer)
-        try { ses.removeListener('changed', onCookieChange) } catch {}
+        // Remove cookie listener on the correct target (ses.cookies, not ses)
+        try { ses.cookies.removeListener('changed', onCookieChange) } catch {}
+        // Remove navigation listeners to prevent leaks
+        try { loginWin.webContents.removeListener('did-navigate', onNavigate) } catch {}
+        try { loginWin.webContents.removeListener('did-navigate-in-page', onNavigate) } catch {}
         resolve(value)
       }
 
@@ -109,7 +129,7 @@ export class ElectronLoginWindow {
 
       // 方式1：监听cookie变化（最可靠）
       // 当平台设置登录cookie时，说明登录成功
-      const ses = this.loginWindow.webContents.session
+      const ses = loginWin.webContents.session
       const cookieDomainKeywords = this.getCookieDomainKeywords()
 
       const onCookieChange = (_event: any, cookie: any, _cause: any, _removed: boolean) => {
@@ -133,9 +153,9 @@ export class ElectronLoginWindow {
       // 方式2：URL轮询（兜底）
       let lastUrl = ''
       const pollTimer = setInterval(() => {
-        if (resolved || !this.loginWindow || this.loginWindow.isDestroyed()) return
+        if (resolved || loginWin.isDestroyed()) return
         try {
-          const url = this.loginWindow.webContents.getURL()
+          const url = loginWin.webContents.getURL()
           if (url !== lastUrl) {
             logger.info(`[ElectronLoginWindow] URL poll: ${url}`)
             lastUrl = url
@@ -152,24 +172,12 @@ export class ElectronLoginWindow {
         } catch {}
       }, 1000)
 
-      // 方式3：导航事件
-      const onNavigate = (_event: any, url: string) => {
-        if (resolved) return
-        logger.info(`[ElectronLoginWindow] Navigate: ${url}`)
-        for (const domain of checkDomains) {
-          if (url.includes(domain) && !this.isLoginPage(url)) {
-            logger.info(`[ElectronLoginWindow] Login detected via navigation: ${url}`)
-            setTimeout(() => resolveOnce(true), 1000)
-            return
-          }
-        }
-      }
-
-      this.loginWindow.webContents.on('did-navigate', onNavigate)
-      this.loginWindow.webContents.on('did-navigate-in-page', onNavigate)
+      // 方式3：导航事件 (onNavigate is defined above resolveOnce for proper cleanup)
+      loginWin.webContents.on('did-navigate', onNavigate)
+      loginWin.webContents.on('did-navigate-in-page', onNavigate)
 
       // 窗口关闭
-      this.loginWindow.on('closed', () => {
+      loginWin.on('closed', () => {
         resolveOnce(false)
       })
     })

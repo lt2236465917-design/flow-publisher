@@ -41,6 +41,13 @@ export default function LocationSearch({ value, onChange, platformId, accountId,
   const [ipLoading, setIpLoading] = useState(false)
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // Cleanup timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (searchTimeout.current) clearTimeout(searchTimeout.current)
+    }
+  }, [])
+
   // 获取IP定位
   const fetchIPLocation = useCallback(async () => {
     setIpLoading(true)

@@ -25,21 +25,25 @@ function createImage(url: string): Promise<HTMLImageElement> {
 async function getCroppedImg(imageSrc: string, pixelCrop: Area): Promise<string> {
   const image = await createImage(imageSrc)
   const canvas = document.createElement('canvas')
-  const ctx = canvas.getContext('2d')!
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return ''
 
-  canvas.width = pixelCrop.width
-  canvas.height = pixelCrop.height
+  // Canvas dimensions must be integers
+  const width = Math.round(pixelCrop.width)
+  const height = Math.round(pixelCrop.height)
+  canvas.width = width
+  canvas.height = height
 
   ctx.drawImage(
     image,
-    pixelCrop.x,
-    pixelCrop.y,
-    pixelCrop.width,
-    pixelCrop.height,
+    Math.round(pixelCrop.x),
+    Math.round(pixelCrop.y),
+    width,
+    height,
     0,
     0,
-    pixelCrop.width,
-    pixelCrop.height
+    width,
+    height
   )
 
   return new Promise((resolve) => {

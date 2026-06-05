@@ -58,16 +58,27 @@ export const useAccountStore = create<AccountState>((set, get) => ({
       loginProgress: { ...s.loginProgress, [platformId]: { platformId, status: 'launching' } }
     }))
 
-    const response = await ipcInvoke<{ accountId: string; displayName?: string }>('account:login', platformId)
+    try {
+      const response = await ipcInvoke<{ accountId: string; displayName?: string }>(IPC_CHANNELS.ACCOUNT_LOGIN, platformId)
 
-    if (response.success) {
-      set((s) => ({
-        loginProgress: { ...s.loginProgress, [platformId]: { platformId, status: 'success' } }
-      }))
-      await get().fetchAccounts()
-      return true
-    } else {
-      const errorMsg = toChineseMessage(response.error)
+      if (response.success) {
+        set((s) => ({
+          loginProgress: { ...s.loginProgress, [platformId]: { platformId, status: 'success' } }
+        }))
+        await get().fetchAccounts()
+        return true
+      } else {
+        const errorMsg = toChineseMessage(response.error)
+        set((s) => ({
+          loginProgress: {
+            ...s.loginProgress,
+            [platformId]: { platformId, status: 'error', error: errorMsg }
+          }
+        }))
+        return false
+      }
+    } catch (err) {
+      const errorMsg = toChineseMessage(err)
       set((s) => ({
         loginProgress: {
           ...s.loginProgress,

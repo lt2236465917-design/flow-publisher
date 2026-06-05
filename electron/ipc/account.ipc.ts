@@ -70,6 +70,7 @@ export function registerAccountIpcHandlers(): void {
   // Start login flow for a platform
   // 使用Electron内置BrowserWindow进行登录，与yixiaoer相同方式，不会被检测为自动化
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_LOGIN, async (event, platformId: string): Promise<IpcResponse> => {
+    let loginWindow: ElectronLoginWindow | null = null
     try {
       const adapter = getAdapter(platformId)
       if (!adapter) {
@@ -92,7 +93,7 @@ export function registerAccountIpcHandlers(): void {
       }
 
       // 使用accountId作为partition，确保session隔离
-      const loginWindow = new ElectronLoginWindow(platformId, accountId)
+      loginWindow = new ElectronLoginWindow(platformId, accountId)
 
       // 使用Electron内置浏览器打开登录页面（与yixiaoer相同方式）
       logger.info(`[account] Opening login window for ${platformId}, accountId: ${accountId}...`)
@@ -137,7 +138,14 @@ export function registerAccountIpcHandlers(): void {
           const domains = platformDomains[platformId] || []
           const filteredCookies = cookies.filter(c => {
             const cd = c.domain || ''
-            return domains.some(d => cd === d || cd.endsWith(d) || d.endsWith(cd) || cd.includes(d) || d.includes(cd))
+            // Exact match or subdomain match only (no loose includes() to prevent evil-douyin.com matching douyin.com)
+            return domains.some(d => {
+              if (cd === d) return true
+              // d starts with '.' means it's a domain-suffix pattern like '.douyin.com'
+              if (d.startsWith('.')) return cd.endsWith(d)
+              // Otherwise check if cd is a subdomain of d
+              return cd.endsWith('.' + d)
+            })
           })
           logger.info(`[account] Filtered cookies: ${filteredCookies.length}/${cookies.length} for ${platformId}`)
           if (filteredCookies.length > 0) {
@@ -228,7 +236,7 @@ export function registerAccountIpcHandlers(): void {
       }
     } catch (err) {
       logger.error('ACCOUNT_LOGIN error:', err)
-      loginWindow.close()
+      loginWindow?.close()
       return { success: false, error: String(err) }
     }
   })

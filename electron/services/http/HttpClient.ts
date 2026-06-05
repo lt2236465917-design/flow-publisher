@@ -86,6 +86,8 @@ export class HttpClient {
       },
       timeout: options.timeout || DEFAULT_TIMEOUT,
       responseType: options.responseType || 'json',
+      // Accept all non-negative status codes — callers check status manually.
+      // This is intentional: platform adapters handle 401/403 as session expiry gracefully.
       validateStatus: (status) => status >= 0 && status < 800,
       onUploadProgress: options.onUploadProgress
         ? (event) => {
@@ -101,7 +103,10 @@ export class HttpClient {
     try {
       // Log the actual request for debugging
       logger.info(`[HttpClient] ${options.method} ${options.url}`)
-      logger.info(`[HttpClient] Headers: ${JSON.stringify(config.headers)}`)
+      // Log headers without Cookie value to avoid credential leakage
+      const safeHeaders: Record<string, unknown> = { ...config.headers }
+      if (safeHeaders['Cookie']) safeHeaders['Cookie'] = `*** (${String(safeHeaders['Cookie']).length} chars)`
+      logger.info(`[HttpClient] Headers: ${JSON.stringify(safeHeaders)}`)
       if (typeof options.data === 'string') {
         logger.info(`[HttpClient] Body (string, first 3000): ${options.data.substring(0, 3000)}`)
       }

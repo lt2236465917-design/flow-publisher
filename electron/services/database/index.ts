@@ -1,5 +1,5 @@
 import initSqlJs, { Database } from 'sql.js'
-import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, unlinkSync, statSync } from 'fs'
+import { readFileSync, writeFileSync, writeFile, existsSync, mkdirSync, readdirSync, unlinkSync, statSync } from 'fs'
 import { join } from 'path'
 import { runMigration } from './migrations/001_accounts'
 import { runMigration002 } from './migrations/002_publish_records'
@@ -70,12 +70,15 @@ export async function initDatabase(): Promise<void> {
     logger.info('Database created, will save to', dbPath)
   }
 
+  // Enable foreign key enforcement (SQLite has it OFF by default)
+  dbInstance.run('PRAGMA foreign_keys = ON')
+
   runMigration(dbInstance)
   runMigration002(dbInstance)
   runMigration003(dbInstance)
   runMigration004(dbInstance)
   runMigration005(dbInstance)
-  saveDatabase()
+  saveDatabaseSync() // Sync: must complete before app continues
 
   accountRepoInstance = new AccountRepository(dbInstance)
   publishRecordRepoInstance = new PublishRecordRepository(dbInstance)
@@ -119,8 +122,60 @@ export function getAnalyticsRepository(): AnalyticsRepository {
   return analyticsRepoInstance
 }
 
+// Async save manager: debounces rapid saveDatabase() calls into a single disk write
+let saveDirty = false
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+let saveWriting = false
+
+const SAVE_DEBOUNCE_MS = 300
+
+function flushSave(): void {
+  if (!saveDirty || saveWriting || !dbInstance) return
+  saveDirty = false
+  saveWriting = true
+
+  const data = dbInstance.export()
+  const buffer = Buffer.from(data)
+  const dbPath = getDbPath()
+
+  writeFile(dbPath, buffer, (err) => {
+    saveWriting = false
+    if (err) {
+      logger.error('[DB] Async save failed:', err)
+      // Re-mark dirty so the next call retries
+      saveDirty = true
+    }
+    // If another save was requested while writing, flush again
+    if (saveDirty) flushSave()
+  })
+}
+
+/**
+ * Schedule an async debounced save. Multiple calls within 300ms collapse into one write.
+ * Fire-and-forget: callers do not need to await this.
+ */
 export function saveDatabase(): void {
   if (!dbInstance) return
+  saveDirty = true
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => {
+    saveTimer = null
+    flushSave()
+  }, SAVE_DEBOUNCE_MS)
+}
+
+/**
+ * Synchronous save — blocks the main thread. Use only for shutdown / critical paths.
+ */
+export function saveDatabaseSync(): void {
+  if (!dbInstance) return
+  // Cancel any pending async save to avoid double-write
+  if (saveTimer) {
+    clearTimeout(saveTimer)
+    saveTimer = null
+  }
+  saveDirty = false
+  saveWriting = false
   const data = dbInstance.export()
   writeFileSync(getDbPath(), Buffer.from(data))
 }
@@ -162,23 +217,28 @@ export function backupDatabase(): void {
 
 export function closeDatabase(): void {
   if (dbInstance) {
-    saveDatabase()
-    dbInstance.close()
-    dbInstance = null
-    accountRepoInstance = null
-    publishRecordRepoInstance = null
-    scheduledTaskRepoInstance = null
-    analyticsRepoInstance = null
+    try {
+      saveDatabaseSync() // Sync: must complete before closing db handle
+      dbInstance.close()
+    } catch (err) {
+      logger.error('Error closing database:', err)
+    } finally {
+      dbInstance = null
+      accountRepoInstance = null
+      publishRecordRepoInstance = null
+      scheduledTaskRepoInstance = null
+      analyticsRepoInstance = null
 
-    // Clear global instances
-    globalDb.__dbInstances = {
-      db: null,
-      accountRepo: null,
-      publishRecordRepo: null,
-      scheduledTaskRepo: null,
-      analyticsRepo: null
+      // Clear global instances
+      globalDb.__dbInstances = {
+        db: null,
+        accountRepo: null,
+        publishRecordRepo: null,
+        scheduledTaskRepo: null,
+        analyticsRepo: null
+      }
+
+      logger.info('Database closed')
     }
-
-    logger.info('Database closed')
   }
 }

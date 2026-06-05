@@ -11,6 +11,6 @@ export function useScheduleProgress() {
         useRecordStore.getState().fetchScheduledTasks()
       }
     )
-    return () => { unsubscribe() }
+    return () => { if (typeof unsubscribe === 'function') unsubscribe() }
   }, [])
 }

@@ -566,7 +566,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
     const taskId = Date.now().toString()
 
     // Match yixiaoer's exact logic: BlockPartLength is cumulative byte positions
-    const CHUNK_SIZE = 8 * 1024 * 1024 // 8MB — must match uploadVideoChunks chunk size
+    const CHUNK_SIZE = 4 * 1024 * 1024 // 4MB — smaller chunks reduce timeout risk on slow connections
     const blockSum = Math.ceil(fileSize / CHUNK_SIZE)
     const blockPartLength: number[] = []
     if (fileSize < CHUNK_SIZE) {
@@ -653,14 +653,14 @@ export class WcApiAdapter extends BasePlatformAdapter {
     uin?: string,
     onProgress?: (p: UploadProgress) => void
   ): Promise<string> {
-    const CHUNK_SIZE = 8 * 1024 * 1024 // 8MB — matching yixiaoer, more reliable on slow connections
+    const CHUNK_SIZE = 4 * 1024 * 1024 // 4MB — smaller chunks reduce timeout risk on slow connections
     const totalChunks = Math.ceil(fileSize / CHUNK_SIZE)
     const fileBuffer = readFileSync(filePath)
     const weixinnum = uin || (this.cachedFinderUin ? String(this.cachedFinderUin) : '') || ''
     const taskId = Date.now().toString()
     const fileName = require('path').basename(filePath)
     const CDN_HOST = 'finderassistancea.video.qq.com'
-    const CONCURRENCY = 6 // higher concurrency for faster upload
+    const CONCURRENCY = 6 // send all chunks in parallel for maximum speed
 
     // PartInfo map — keyed by PartNumber (1-based), used for both verification and complete call
     const partInfoMap = new Map<number, { PartNumber: number; ETag: string }>()
@@ -678,7 +678,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
 
     // --- HTTP/1.1 with keep-alive (matching yixiaoer) ---
     const https = require('https')
-    const agent = new https.Agent({ keepAlive: true, maxSockets: CONCURRENCY, rejectUnauthorized: false })
+    const agent = new https.Agent({ keepAlive: true, maxSockets: totalChunks, maxFreeSockets: 6, rejectUnauthorized: false })
 
     const uploadChunkH1 = (i: number): Promise<{ partNum: number; etag: string }> => {
       const start = i * CHUNK_SIZE
@@ -720,7 +720,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
           })
         })
         req.on('error', reject)
-        req.setTimeout(120_000, () => { req.destroy(); reject(new Error(`Chunk ${partNumber} timeout`)) })
+        req.setTimeout(60_000, () => { req.destroy(); reject(new Error(`Chunk ${partNumber} timeout`)) })
         req.write(chunk)
         req.end()
       })
@@ -749,42 +749,25 @@ export class WcApiAdapter extends BasePlatformAdapter {
       throw new Error(`Chunk ${i + 1} failed after ${maxRetries} attempts`)
     }
 
-    // --- Concurrency control matching yixiaoer's Promise.race pattern ---
-    // This ensures ALL errors are properly awaited, not silently swallowed.
-    logger.info(`[wechat-channels] Starting upload: ${totalChunks} chunks of ${CHUNK_SIZE / 1024 / 1024}MB, concurrency=${CONCURRENCY}`)
+    // Launch ALL chunks in parallel for maximum speed
+    logger.info(`[wechat-channels] Starting upload: ${totalChunks} chunks of ${CHUNK_SIZE / 1024 / 1024}MB, all parallel`)
 
-    const pending: Promise<void>[] = []
-    let firstError: Error | null = null
-
-    for (let i = 0; i < totalChunks; i++) {
-      // If a previous chunk already failed, stop launching new ones
-      if (firstError) break
-
-      const p = uploadChunkWithRetry(i).then((result) => {
+    const allUploads = Array.from({ length: totalChunks }, (_, i) =>
+      uploadChunkWithRetry(i).then((result) => {
         completedChunks++
         logger.info(`[wechat-channels] Chunk ${result.partNum}/${totalChunks} uploaded, ETag=${result.etag.substring(0, 20)}...`)
         onProgress?.({ percent: 10 + Math.round((completedChunks / totalChunks) * 70), stage: `上传中 ${completedChunks}/${totalChunks}` })
         partInfoMap.set(result.partNum, { PartNumber: result.partNum, ETag: result.etag })
-      }).catch((err: Error) => {
-        logger.error(`[wechat-channels] Chunk ${i + 1} failed permanently: ${err.message}`)
-        if (!firstError) firstError = err
       })
+    )
 
-      pending.push(p)
-
-      // When we reach concurrency limit, wait for the earliest to finish
-      if (pending.length >= CONCURRENCY) {
-        await pending.shift()
-      }
-    }
-
-    // Drain remaining pending uploads — ALL must settle before we proceed
-    await Promise.allSettled(pending)
+    const results = await Promise.allSettled(allUploads)
+    const firstFailure = results.find(r => r.status === 'rejected') as PromiseRejectedResult | undefined
 
     // Check if any chunk failed
-    if (firstError) {
+    if (firstFailure) {
       agent.destroy()
-      throw new Error(`视频分片上传失败: ${firstError.message}`)
+      throw new Error(`视频分片上传失败: ${firstFailure.reason?.message || 'unknown error'}`)
     }
 
     if (partInfoMap.size !== totalChunks) {
@@ -1320,7 +1303,8 @@ export class WcApiAdapter extends BasePlatformAdapter {
     // Step 1: Get upload ID for image
     const weixinnum = uin || (this.cachedFinderUin ? String(this.cachedFinderUin) : '') || ''
     const fileSize = coverData.length
-    const blockPartLength = fileSize < 8388608 ? [fileSize] : [8388608, fileSize]
+    const COVER_CHUNK = 4 * 1024 * 1024
+    const blockPartLength = fileSize < COVER_CHUNK ? [fileSize] : [COVER_CHUNK, fileSize]
     const blockSum = blockPartLength.length
 
     const xArgs = `apptype=251&filetype=${IMAGE_FILE_TYPE}&weixinnum=${weixinnum}&filekey=${encodeURIComponent(fileName)}&filesize=${fileSize}&taskid=${taskId}&scene=2`

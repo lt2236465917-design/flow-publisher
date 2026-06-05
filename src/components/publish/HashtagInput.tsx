@@ -45,6 +45,8 @@ export default function HashtagInput({
 
     if (trimmed.length > maxTagLength) {
       message.warning(`标签不能超过${maxTagLength}个字`)
+      setInputVisible(false)
+      setInputValue('')
       return
     }
 

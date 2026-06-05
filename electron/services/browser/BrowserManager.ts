@@ -29,9 +29,10 @@ export class BrowserManager {
     // Reuse existing context if browser is still alive
     if (this.context) {
       try {
-        // Verify browser is still connected
-        const pages = this.context.pages()
-        if (pages.length >= 0) {
+        // Verify browser is still connected by checking browser.isConnected()
+        // pages() can return [] (length 0) for a valid context with no open tabs
+        if (this.context.browser()?.isConnected() !== false) {
+          const pages = this.context.pages()
           logger.info(`Reusing existing browser context (${pages.length} pages open)`)
           return this.context
         }
