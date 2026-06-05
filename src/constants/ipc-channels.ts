@@ -48,6 +48,10 @@ export const IPC_CHANNELS = {
   FILE_READ_DATA_URL: 'file:read-data-url',
   FILE_DATA_URL_TO_TEMP: 'file:data-url-to-temp',
 
+  // Sign fallback warning
+  PUBLISH_SIGN_FALLBACK_WARNING: 'publish:sign-fallback-warning',
+  PUBLISH_CONFIRM_SIGN_FALLBACK: 'publish:confirm-sign-fallback',
+
   // App
   APP_GET_VERSION: 'app:get-version'
 } as const

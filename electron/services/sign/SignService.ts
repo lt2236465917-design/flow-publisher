@@ -38,13 +38,37 @@ export class SignService {
   private contexts = new Map<string, BrowserContext>()
   private pages = new Map<string, Page>()
   private initializing = new Map<string, Promise<void>>()
+  private fallbackConfirmer: ((platform: string) => Promise<boolean>) | null = null
+  private fallbackCache = new Map<string, boolean>()
+
+  /**
+   * Set a callback to confirm before falling back to local signing.
+   * When set, the callback is invoked (and awaited) before any local Playwright
+   * signing is attempted. The result is cached per-platform for the current session.
+   *
+   * If no confirmer is set (null), local signing is NEVER attempted — the method
+   * returns an empty string when external signing fails. This is the safe default
+   * for unattended contexts like scheduled tasks.
+   */
+  setFallbackConfirmer(fn: ((platform: string) => Promise<boolean>) | null): void {
+    this.fallbackConfirmer = fn
+  }
+
+  /**
+   * Clear the per-platform fallback confirmation cache.
+   * Call this at the start of each publish operation so the user is re-prompted
+   * if external signing fails again for a different publish.
+   */
+  clearFallbackCache(): void {
+    this.fallbackCache.clear()
+  }
 
   /**
    * Get the signature for a given request.
    *
    * Priority: external yixiaoer service first (signatures generated in real browser
    * environment on their servers, indistinguishable from real users), then local
-   * Playwright-based signing as fallback.
+   * Playwright-based signing as fallback (requires user confirmation via fallbackConfirmer).
    *
    * @param body Request body string — used by kuaishou external service (MD5 of body)
    */
@@ -64,6 +88,29 @@ export class SignService {
       }
 
       // Priority 2: Local Playwright-based signing (fallback)
+      // Require user confirmation before using local signing — Playwright-based
+      // signing may be detected by platforms and lead to account restrictions.
+      const cached = this.fallbackCache.get(platform)
+      if (cached === false) {
+        logger.info(`[sign] ${platform} local signing previously denied by user, skipping`)
+        return ''
+      }
+      if (cached !== true) {
+        if (this.fallbackConfirmer) {
+          logger.info(`[sign] ${platform} asking user for local signing confirmation`)
+          const confirmed = await this.fallbackConfirmer(platform)
+          this.fallbackCache.set(platform, confirmed)
+          if (!confirmed) {
+            logger.info(`[sign] ${platform} local signing denied by user`)
+            return ''
+          }
+        } else {
+          // No confirmer set (e.g. scheduled task) — never use local signing
+          logger.info(`[sign] ${platform} no confirmer set, skipping local signing for safety`)
+          return ''
+        }
+      }
+
       logger.info(`[sign] External service unavailable for ${platform}, trying local signing...`)
 
       switch (platform) {

@@ -10,12 +10,14 @@ const ALLOWED_INVOKE_CHANNELS = new Set([
   'analytics:fetch', 'analytics:compare', 'analytics:collect', 'analytics:collect-all',
   'analytics:collect-group', 'analytics:video-groups', 'analytics:video-detail', 'analytics:record-trend',
   'file:select-video', 'file:select-image', 'file:read-data-url', 'file:data-url-to-temp',
+  'publish:confirm-sign-fallback',
   'app:get-version'
 ])
 
 const ALLOWED_LISTENER_CHANNELS = new Set([
   'account:qr-code',
   'publish:progress',
+  'publish:sign-fallback-warning',
   'schedule:progress'
 ])
 

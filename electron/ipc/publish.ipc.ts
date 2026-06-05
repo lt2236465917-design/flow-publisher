@@ -3,6 +3,7 @@ import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
 import { getAccountRepository, getPublishRecordRepository, saveDatabase } from '../services/database'
 import { CookieStore } from '../services/browser/CookieStore'
 import { getAdapter } from '../services/platform-adapters/PlatformAdapterRegistry'
+import { getSignService } from '../services/sign/SignService'
 import { HttpClient } from '../services/http/HttpClient'
 import type { CookieContext } from '../services/http/HttpClient'
 import { ffmpegService } from '../services/ffmpeg/FFmpegService'
@@ -15,7 +16,20 @@ import { logger } from '../utils/logger'
 
 const cookieStore = new CookieStore()
 
+// Pending sign-fallback confirmation — resolve function is set when the main process
+// waits for the renderer to confirm whether to use local Playwright-based signing.
+let pendingSignConfirm: ((confirmed: boolean) => void) | null = null
+
 export function registerPublishIpcHandlers(): void {
+  // Sign-fallback confirmation — renderer responds when user dismisses the warning dialog
+  ipcMain.handle(IPC_CHANNELS.PUBLISH_CONFIRM_SIGN_FALLBACK, (_event, confirmed: boolean) => {
+    logger.info(`[publish] Sign fallback confirmation: ${confirmed ? 'accepted' : 'denied'}`)
+    if (pendingSignConfirm) {
+      pendingSignConfirm(confirmed)
+      pendingSignConfirm = null
+    }
+  })
+
   // Probe video metadata
   ipcMain.handle(IPC_CHANNELS.PUBLISH_PROBE_VIDEO, async (_event, filePath: string): Promise<IpcResponse> => {
     try {
@@ -99,6 +113,23 @@ export function registerPublishIpcHandlers(): void {
         accountId: params.accountId
       }
       const client = new HttpClient(context)
+
+      // Set up sign fallback confirmation for this publish operation
+      const signService = getSignService()
+      signService.clearFallbackCache()
+      signService.setFallbackConfirmer(async (platform: string) => {
+        return new Promise((resolve) => {
+          pendingSignConfirm = resolve
+          mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_SIGN_FALLBACK_WARNING, { platform })
+          // Safety timeout: auto-deny after 60s if user doesn't respond
+          setTimeout(() => {
+            if (pendingSignConfirm) {
+              pendingSignConfirm = null
+              resolve(false)
+            }
+          }, 60000)
+        })
+      })
 
       const result = await adapter.uploadVideoAPI(client, params.filePath, (progress) => {
         recordRepo.updateStatus(record.id, 'uploading', progress.percent)
@@ -208,6 +239,22 @@ export function registerPublishIpcHandlers(): void {
         accountId: record.account_id
       }
       const client = new HttpClient(context)
+
+      // Set up sign fallback confirmation for this publish operation
+      const signService = getSignService()
+      signService.clearFallbackCache()
+      signService.setFallbackConfirmer(async (platform: string) => {
+        return new Promise((resolve) => {
+          pendingSignConfirm = resolve
+          mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_SIGN_FALLBACK_WARNING, { platform })
+          setTimeout(() => {
+            if (pendingSignConfirm) {
+              pendingSignConfirm = null
+              resolve(false)
+            }
+          }, 60000)
+        })
+      })
 
       // Probe video metadata to pass actual values (width, height, duration, fps)
       let videoMetadata: VideoMetadata | undefined

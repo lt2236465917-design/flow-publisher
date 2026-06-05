@@ -3,6 +3,7 @@ import { message, Modal } from 'antd'
 import { usePublishStore, probeAndUpdate, extractFramesAndUpdate, validateForPlatform } from '@/stores/publishStore'
 import { useUIStore } from '@/stores/uiStore'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
+import { PLATFORMS } from '@/constants/platforms'
 import { ipcInvoke } from '@/utils/ipc'
 import { toChineseMessage } from '@/utils/errorMessages'
 import {
@@ -71,6 +72,42 @@ export function usePublishFlow() {
         })
       }
     })
+    return () => { if (typeof unsubscribe === 'function') unsubscribe() }
+  }, [])
+
+  // Listen for sign fallback warning from main process.
+  // When external signing service is unavailable and the main process is about to
+  // fall back to local Playwright-based signing, it sends this event. The user must
+  // explicitly confirm before local signing is used.
+  useEffect(() => {
+    const unsubscribe = window.electron.ipcRenderer.on(
+      IPC_CHANNELS.PUBLISH_SIGN_FALLBACK_WARNING,
+      (...args: unknown[]) => {
+        const { platform } = args[0] as { platform: string }
+        const platformName = PLATFORMS[platform as PlatformId]?.displayName || platform
+
+        Modal.confirm({
+          title: '⚠️ 签名服务降级警告',
+          icon: null,
+          content: `外部签名服务当前不可用。即将使用本地浏览器生成${platformName}的签名参数。\n\n此操作可能被平台检测为非正常行为，存在账号被限制发布功能的风险。\n\n是否继续？`,
+          okText: '继续发布（有风险）',
+          cancelText: '取消发布',
+          okButtonProps: { danger: true },
+          onOk: () => {
+            window.electron.ipcRenderer.invoke(
+              IPC_CHANNELS.PUBLISH_CONFIRM_SIGN_FALLBACK,
+              true
+            )
+          },
+          onCancel: () => {
+            window.electron.ipcRenderer.invoke(
+              IPC_CHANNELS.PUBLISH_CONFIRM_SIGN_FALLBACK,
+              false
+            )
+          }
+        })
+      }
+    )
     return () => { if (typeof unsubscribe === 'function') unsubscribe() }
   }, [])
 
