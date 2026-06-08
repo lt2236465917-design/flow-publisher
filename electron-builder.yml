@@ -16,6 +16,7 @@ win:
       arch:
         - x64
   icon: build/icon.ico
+  signAndEditExecutable: false
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}
@@ -24,7 +25,6 @@ nsis:
   oneClick: false
   perMachine: false
   allowToChangeInstallationDirectory: true
-  installerLanguages: ChineseSimplified
   language: 2052
 mac:
   entitlementsInherit: build/entitlements.mac.plist
