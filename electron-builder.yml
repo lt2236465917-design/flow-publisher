@@ -46,5 +46,5 @@ asarUnpack:
   - resources/**
 publish:
   provider: github
-  owner: flow-app
-  repo: publisher
+  owner: lt2236465917-design
+  repo: flow-publisher
