@@ -58,6 +58,7 @@ export function usePublishFlow() {
   const store = usePublishStore()
   const { confirm } = useUIStore()
   const publishingRef = useRef(false)
+  const signFallbackModalOpenRef = useRef(false)
 
   useEffect(() => {
     const unsubscribe = window.electron.ipcRenderer.on(IPC_CHANNELS.PUBLISH_PROGRESS, (...args: unknown[]) => {
@@ -76,30 +77,34 @@ export function usePublishFlow() {
   }, [])
 
   // Listen for sign fallback warning from main process.
-  // When external signing service is unavailable and the main process is about to
-  // fall back to local Playwright-based signing, it sends this event. The user must
-  // explicitly confirm before local signing is used.
+  // When the self-hosted signer is unavailable and the main process is about to
+  // fall back to the built-in local browser signer, it sends this event. The user
+  // must explicitly confirm before local signing is used.
   useEffect(() => {
     const unsubscribe = window.electron.ipcRenderer.on(
       IPC_CHANNELS.PUBLISH_SIGN_FALLBACK_WARNING,
       (...args: unknown[]) => {
         const { platform } = args[0] as { platform: string }
         const platformName = PLATFORMS[platform as PlatformId]?.displayName || platform
+        if (signFallbackModalOpenRef.current) return
+        signFallbackModalOpenRef.current = true
 
         Modal.confirm({
-          title: '⚠️ 签名服务降级警告',
+          title: '签名服务切换确认',
           icon: null,
-          content: `外部签名服务当前不可用。即将使用本地浏览器生成${platformName}的签名参数。\n\n此操作可能被平台检测为非正常行为，存在账号被限制发布功能的风险。\n\n是否继续？`,
-          okText: '继续发布（有风险）',
+          content: `本机自托管 signer 当前不可用。要继续发布到 ${platformName}，本轮发布需要使用 App 内置的本机浏览器生成平台签名参数。\n\n此操作仍属于网页 API 自动化，可能被平台风控识别。建议优先启动本机 signer 或配置官方 OpenAPI。\n\n请在 3 分钟内确认；取消或超时都会停止本轮发布。`,
+          okText: '启用内置本机签名',
           cancelText: '取消发布',
           okButtonProps: { danger: true },
           onOk: () => {
+            signFallbackModalOpenRef.current = false
             window.electron.ipcRenderer.invoke(
               IPC_CHANNELS.PUBLISH_CONFIRM_SIGN_FALLBACK,
               true
             )
           },
           onCancel: () => {
+            signFallbackModalOpenRef.current = false
             window.electron.ipcRenderer.invoke(
               IPC_CHANNELS.PUBLISH_CONFIRM_SIGN_FALLBACK,
               false
@@ -263,6 +268,7 @@ export function usePublishFlow() {
     const latestForm = readLatestForm()
 
     const coverFilePath = await resolveCoverFilePath(latestForm)
+    const publishRunId = `publish-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
     const tasks = form.platforms.map((p) => ({
       id: `task-${p}-${Date.now()}`,
@@ -290,7 +296,8 @@ export function usePublishFlow() {
         const uploadRes = await ipcInvoke<{ recordId: string; videoId?: string }>(IPC_CHANNELS.PUBLISH_UPLOAD, {
           accountId: account.id,
           platformId,
-          filePath: video.filePath
+          filePath: video.filePath,
+          publishRunId
         })
 
         if (!uploadRes.success) {
@@ -318,6 +325,7 @@ export function usePublishFlow() {
           recordId,
           platformId,
           videoId,
+          publishRunId,
           content: contentPayload
         })
 

@@ -120,7 +120,7 @@ export const STEALTH_SCRIPTS = `
     configurable: true
   });
 
-  // 10. 隐藏自动化相关属性
+  // 10. Legacy automation attribute adjustment
   delete navigator.__proto__.webdriver;
 
   // 11. 修复 toString 检测

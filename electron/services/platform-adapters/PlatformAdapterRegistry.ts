@@ -15,4 +15,4 @@ export function getAllAdapters(): IPlatformAdapter[] {
   return Array.from(adapters.values())
 }
 
-logger.info('Platform adapter registry initialized (API mode only)')
+logger.info('Platform adapter registry initialized (API mode)')

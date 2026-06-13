@@ -41,6 +41,10 @@ const COMMON_PARAMS = {
   timezone_name: 'Asia/Shanghai'
 }
 
+function isDouyinOfficialOpenApiRequested(): boolean {
+  return process.env.FLOW_PUBLISHER_DOUYIN_OPENAPI_ENABLED === 'true'
+}
+
 export class DouyinApiAdapter extends BasePlatformAdapter {
   readonly platformId = 'douyin'
   readonly platformName = '抖音'
@@ -153,18 +157,151 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
    * Uses the local SignService to generate the signature.
    * Passes the URL as data so the external signing service can use it.
    */
-  private async signUrl(url: string, cookie: string, body?: string): Promise<string> {
+  private async signUrl(
+    url: string,
+    cookie: string,
+    body?: string,
+    options?: { required?: boolean; action?: string }
+  ): Promise<string> {
     try {
       const signService = getSignService()
       const signature = await signService.getSignature('douyin', cookie, url, body)
-      if (!signature) return url
+      if (!signature) {
+        if (options?.required) {
+          throw new Error(
+            `${options.action || '抖音请求'}需要签名。本机自托管 signer 不可用，且内置本机签名被取消或生成失败。请启动本机 signer，或在签名切换提示中选择“启用内置本机签名”。`
+          )
+        }
+        return url
+      }
 
       const separator = url.includes('?') ? '&' : '?'
-      return `${url}${separator}a_bogus=${encodeURIComponent(signature)}`
+      const normalizedSignature = this.normalizeABogusSignature(signature)
+      return `${url}${separator}a_bogus=${encodeURIComponent(normalizedSignature)}`
     } catch (err) {
+      if (options?.required) throw err
       logger.warn('[douyin] Signature generation failed, proceeding without signature:', err)
       return url
     }
+  }
+
+  private normalizeABogusSignature(signature: string): string {
+    if (!/%[0-9a-f]{2}/i.test(signature)) return signature
+
+    try {
+      return decodeURIComponent(signature)
+    } catch {
+      return signature
+    }
+  }
+
+  private hasUsableABogus(url: string): boolean {
+    try {
+      const value = new URL(url).searchParams.get('a_bogus')
+      return Boolean(value && value.trim())
+    } catch {
+      const match = url.match(/[?&]a_bogus=([^&]+)/)
+      return Boolean(match?.[1])
+    }
+  }
+
+  private parseJsonText(text: string): unknown | null {
+    if (!text.trim()) return null
+
+    try {
+      return JSON.parse(text)
+    } catch {
+      return null
+    }
+  }
+
+  private pickDouyinBrowserSignedHeaders(headers: Record<string, string>): Record<string, string> {
+    const allowedExact = new Set([
+      'accept',
+      'accept-language',
+      'content-type',
+      'origin',
+      'referer',
+      'user-agent',
+      'x-secsdk-csrf-token'
+    ])
+    const allowedPrefixes = [
+      'bd-ticket-guard-',
+      'sec-ch-',
+      'sec-fetch-'
+    ]
+    const blockedExact = new Set([
+      'connection',
+      'content-length',
+      'cookie',
+      'host'
+    ])
+    const picked: Record<string, string> = {}
+
+    for (const [rawName, value] of Object.entries(headers)) {
+      if (!value) continue
+      const name = rawName.toLowerCase()
+      if (blockedExact.has(name)) continue
+      if (allowedExact.has(name) || allowedPrefixes.some((prefix) => name.startsWith(prefix))) {
+        picked[name] = value
+      }
+    }
+
+    return picked
+  }
+
+  private mergeCookieStrings(...cookieStrings: Array<string | null | undefined>): string {
+    const cookieMap = new Map<string, string>()
+
+    for (const cookieString of cookieStrings) {
+      if (!cookieString) continue
+      for (const part of cookieString.split(';')) {
+        const trimmed = part.trim()
+        const separatorIndex = trimmed.indexOf('=')
+        if (separatorIndex <= 0) continue
+        const name = trimmed.slice(0, separatorIndex)
+        const value = trimmed.slice(separatorIndex + 1)
+        if (name && value) {
+          cookieMap.set(name, value)
+        }
+      }
+    }
+
+    return Array.from(cookieMap.entries())
+      .map(([name, value]) => `${name}=${value}`)
+      .join('; ')
+  }
+
+  private appendMissingCookieStrings(primary: string, ...extras: Array<string | null | undefined>): string {
+    const existingNames = new Set<string>()
+    const mergedParts: string[] = []
+
+    const addPart = (part: string, allowExisting: boolean) => {
+      const trimmed = part.trim()
+      const separatorIndex = trimmed.indexOf('=')
+      if (separatorIndex <= 0) return
+
+      const name = trimmed.slice(0, separatorIndex)
+      const value = trimmed.slice(separatorIndex + 1)
+      if (!name || !value) return
+      if (!allowExisting && existingNames.has(name)) return
+
+      existingNames.add(name)
+      mergedParts.push(`${name}=${value}`)
+    }
+
+    for (const part of primary.split(';')) {
+      addPart(part, true)
+    }
+
+    for (const extra of extras) {
+      if (!extra) continue
+      for (const part of extra.split(';')) {
+        addPart(part, false)
+      }
+    }
+
+    return mergedParts.join('; ')
   }
 
   /**
@@ -172,7 +309,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
    */
   private extractMsToken(cookie: string): string {
     const match = cookie.match(/msToken=([^;]+)/)
-    return match ? match[1] : `${Date.now()}randomtoken`
+    return match ? match[1] : ''
   }
 
   // --- Browser mode (legacy) ---
@@ -677,6 +814,10 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     filePath: string,
     onProgress?: (p: UploadProgress) => void
   ): Promise<string> {
+    if (isDouyinOfficialOpenApiRequested()) {
+      throw new Error('抖音官方内容发布 OpenAPI 当前仍需平台内测开通，尚不能自助接入。请先获得抖音开放平台内容发布权限和接口参数，再启用 FLOW_PUBLISHER_DOUYIN_OPENAPI_ENABLED。')
+    }
+
     if (!existsSync(filePath)) {
       throw new Error(`视频文件不存在: ${filePath}`)
     }
@@ -964,7 +1105,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
   }
 
   async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<SubmitResult> {
-    const cookie = client.getCookieString()
+    let cookie = client.getCookieString()
 
     logger.info(`[douyin] submitContentAPI called, payload.coverPath="${payload.coverPath}", videoId="${videoId}"`)
     logger.info(`[douyin] payload keys: ${Object.keys(payload).join(', ')}`)
@@ -1181,11 +1322,6 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       // Get CSRF token
       const csrfToken = await this.getCsrfToken(client)
 
-      // Extract bd_ticket_guard data from cookie
-      const bdTicketKey = this.extractBdTicketGuardKey(cookie)
-      const clientData = this.clientSign(cookie)
-      const guardVersion = this.getTicketGuardVersion(cookie)
-
       // Pre-check: call publishlimit endpoint (required by yixiaoer's flow)
       try {
         const limitParams = new URLSearchParams({
@@ -1206,13 +1342,22 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         logger.warn('[douyin] publishlimit check failed (non-fatal):', limitErr)
       }
 
-      // Get msToken from sign service page (set by Douyin's JS) or extract from cookie
+      const refreshedCookie = client.getCookieString()
+      if (refreshedCookie !== cookie) {
+        logger.info(`[douyin] Keeping original login cookie for submit: originalLen=${cookie.length}, refreshedLen=${refreshedCookie.length}`)
+      }
+
+      // Initialize Douyin's local signing context before choosing msToken.
+      // The publish action itself remains an API/HTTP request.
       const signService = getSignService()
+      await signService.ensureDouyinSignContext(cookie)
+      const pageCookieBeforeSign = await signService.getCookieStringFromPage('douyin')
+      let effectiveCookie = this.appendMissingCookieStrings(cookie, pageCookieBeforeSign)
       let msToken = await signService.getCookieFromPage('douyin', 'msToken')
       if (!msToken) {
-        msToken = this.extractMsToken(cookie)
+        msToken = this.extractMsToken(effectiveCookie)
       }
-      logger.info(`[douyin] Using msToken: ${msToken.substring(0, 15)}...`)
+      logger.info(`[douyin] Using msToken: ${msToken ? `${msToken.substring(0, 15)}...` : 'none'}`)
       const queryParams = new URLSearchParams({
         read_aid: '2906',
         ...COMMON_PARAMS,
@@ -1220,37 +1365,129 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         msToken
       })
       const baseUrl = `${API.awemeCreate}?${queryParams.toString()}`
-      const signedUrl = await this.signUrl(baseUrl, cookie, JSON.stringify(postData))
+      const createBody = JSON.stringify(postData)
+      const browserRequest = await signService.getDouyinSignedBrowserRequest(effectiveCookie, baseUrl, createBody, {
+        'Content-Type': 'application/json',
+        'x-secsdk-csrf-token': csrfToken
+      })
+      const browserSignedHeaders = this.pickDouyinBrowserSignedHeaders(browserRequest?.headers || {})
+      const pageCookieAfterSign = await signService.getCookieStringFromPage('douyin')
+      effectiveCookie = this.appendMissingCookieStrings(cookie, pageCookieBeforeSign, pageCookieAfterSign)
+
+      const signedUrl = browserRequest?.url && this.hasUsableABogus(browserRequest.url)
+        ? browserRequest.url
+        : await this.signUrl(baseUrl, effectiveCookie, createBody, {
+            required: true,
+            action: '抖音内容提交'
+          })
+
+      const browserSubmit = await signService.submitDouyinInBuiltinBrowser(
+        effectiveCookie,
+        signedUrl,
+        createBody,
+        {
+          'Content-Type': 'application/json',
+          'x-secsdk-csrf-token': csrfToken
+        }
+      )
+      if (browserSubmit) {
+        logger.info(`[douyin] built-in browser create_v2 response: status=${browserSubmit.status}, body=${browserSubmit.text.substring(0, 1000) || '""'}`)
+        const browserData = this.parseJsonText(browserSubmit.text) as {
+          status_code?: number
+          status_msg?: string
+          aweme_id?: string
+          item_id?: string
+        } | null
+        if (browserData && typeof browserData === 'object') {
+          if (browserData.status_code !== 0) {
+            throw new Error(`内容提交失败: ${browserData.status_msg || JSON.stringify(browserData)}`)
+          }
+
+          const awemeId = browserData.aweme_id || browserData.item_id
+          logger.info(`[douyin] Content submitted via built-in browser session, content_id: ${awemeId}`)
+          return {
+            contentId: awemeId,
+            publishUrl: awemeId ? `https://www.douyin.com/video/${awemeId}` : undefined
+          }
+        }
+
+        if (browserSubmit.status >= 200 && browserSubmit.status < 300) {
+          throw new Error(
+            `内容提交失败：抖音浏览器提交通道返回${browserSubmit.text ? '非 JSON 响应' : '空响应'}（HTTP ${browserSubmit.status}，a_bogus=${this.hasUsableABogus(browserSubmit.url) ? 'yes' : 'no'}）。为避免重复发布，已停止重试。响应=${JSON.stringify(browserSubmit.text)}`
+          )
+        }
+
+        logger.warn(
+          `[douyin] Built-in browser submit did not return JSON, falling back to direct HTTP: ` +
+          `status=${browserSubmit.status}, textLength=${browserSubmit.text.length}, ` +
+          `a_bogus=${this.hasUsableABogus(browserSubmit.url) ? 'yes' : 'no'}`
+        )
+      }
+
+      // Extract bd_ticket_guard data from browser-captured headers first, then
+      // fall back to cookies. The latest Douyin security SDK often keeps the
+      // signing material in browser state and only exposes short cookie handles.
+      const bdTicketKey = browserSignedHeaders['bd-ticket-guard-ree-public-key'] || this.extractBdTicketGuardKey(effectiveCookie)
+      const clientData = browserSignedHeaders['bd-ticket-guard-client-data'] || this.clientSign(effectiveCookie)
+      const guardVersion = browserSignedHeaders['bd-ticket-guard-web-version'] || this.getTicketGuardVersion(effectiveCookie)
+      const directBrowserHeaders = { ...browserSignedHeaders }
+      for (const name of ['content-type', 'origin', 'referer', 'cookie', 'host', 'content-length']) {
+        delete directBrowserHeaders[name]
+      }
+      logger.info(
+        `[douyin] ticket guard: key=${bdTicketKey ? 'yes' : 'no'}, clientData=${clientData ? 'yes' : 'no'}, ` +
+        `version=${guardVersion}, browserHeaders=${Object.keys(browserSignedHeaders).join(',') || 'none'}`
+      )
 
       const response = await retry(() => client.post<{
         status_code: number
         status_msg?: string
         aweme_id?: string
+        item_id?: string
       }>(
         signedUrl,
-        JSON.stringify(postData),
+        createBody,
         {
+          ...directBrowserHeaders,
           'Content-Type': 'application/json',
           'x-secsdk-csrf-token': csrfToken,
           'bd-ticket-guard-web-version': guardVersion,
           'bd-ticket-guard-version': '2',
           'bd-ticket-guard-iteration-version': '1',
           'bd-ticket-guard-web-sign-type': '0',
-          'bd-ticket-guard-ree-public-key': bdTicketKey,
+          ...(bdTicketKey ? { 'bd-ticket-guard-ree-public-key': bdTicketKey } : {}),
           ...(clientData ? { 'bd-ticket-guard-client-data': clientData } : {}),
+          Cookie: effectiveCookie,
           Referer: 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page',
-          Origin: 'https://creator.douyin.com/'
-        }
+          Origin: 'https://creator.douyin.com'
+        },
+        { minimalHeaders: true, noCookie: true }
       ), { maxAttempts: 2, delayMs: 5000, backoff: 2 }) // Only 2 attempts — duplicate submissions are worse than failures
 
-      logger.info(`[douyin] create_v2 response: ${JSON.stringify(response.data).substring(0, 1000)}`)
+      const responsePreview = typeof response.data === 'string'
+        ? response.data
+        : JSON.stringify(response.data)
+      logger.info(
+        `[douyin] create_v2 response: status=${response.status}, ` +
+        `a_bogus=${this.hasUsableABogus(signedUrl) ? 'yes' : 'no'}, ` +
+        `body=${(responsePreview || '').substring(0, 1000) || '""'}`
+      )
+
+      if (!response.data || typeof response.data !== 'object') {
+        const rawResponse = typeof response.data === 'string'
+          ? response.data
+          : JSON.stringify(response.data)
+        throw new Error(
+          `内容提交失败：抖音返回${rawResponse ? '非 JSON 响应' : '空响应'}（HTTP ${response.status}，a_bogus=${this.hasUsableABogus(signedUrl) ? 'yes' : 'no'}，ticketGuard=${clientData ? 'yes' : 'no'}）。通常是签名参数失效、登录态失效或账号触发风控。请重新登录抖音账号后重试，并确认本机 signer 可用或启用内置本机签名。响应=${JSON.stringify(response.data)}`
+        )
+      }
 
       if (response.data.status_code !== 0) {
         throw new Error(`内容提交失败: ${response.data.status_msg || JSON.stringify(response.data)}`)
       }
 
-      const awemeId = response.data.aweme_id
-      logger.info(`[douyin] Content submitted, aweme_id: ${awemeId}`)
+      const awemeId = response.data.aweme_id || response.data.item_id
+      logger.info(`[douyin] Content submitted, content_id: ${awemeId}`)
 
       return {
         contentId: awemeId,
@@ -1476,11 +1713,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
    */
   private getTicketGuardVersion(cookie: string): string {
     try {
-      const match = cookie.match(/security-sdk\/s_sdk_sign_data_key\/web_protect=([^;]+)/)
-      if (match) {
-        const decoded = JSON.parse(JSON.parse(decodeURIComponent(match[1])).data)
-        return decoded.ticket?.startsWith('hash') ? '2' : '1'
-      }
+      const decoded = this.parseSecuritySdkCookie(cookie, [
+        'security-sdk/s_sdk_sign_data_key/web_protect',
+        '__security_mc_1_s_sdk_sign_data_key_web_protect'
+      ])
+      return decoded?.ticket?.startsWith('hash') ? '2' : '1'
     } catch {
       // Ignore parse errors
     }
@@ -1517,18 +1754,29 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
   private clientSign(cookie: string): string {
     try {
       // Extract EC private key
-      const cryptMatch = cookie.match(/security-sdk\/s_sdk_crypt_sdk=([^;]+)/)
-      if (!cryptMatch) return ''
-
-      const cryptData = JSON.parse(JSON.parse(decodeURIComponent(cryptMatch[1])).data)
-      const privateKeyPem = cryptData.ec_privateKey
+      const cryptData = this.parseSecuritySdkCookie(cookie, [
+        'security-sdk/s_sdk_crypt_sdk',
+        '__security_mc_1_s_sdk_crypt_sdk'
+      ])
+      if (!cryptData) return ''
+      const privateKeyPem = cryptData.ec_privateKey || cryptData.ecPrivateKey || cryptData.private_key || cryptData.privateKey
+      if (!privateKeyPem) {
+        logger.warn(`[douyin] clientSign missing private key, crypt keys=${Object.keys(cryptData).join(',')}`)
+        return ''
+      }
 
       // Extract ticket and ts_sign
-      const protectMatch = cookie.match(/security-sdk\/s_sdk_sign_data_key\/web_protect=([^;]+)/)
-      if (!protectMatch) return ''
-
-      const protectData = JSON.parse(JSON.parse(decodeURIComponent(protectMatch[1])).data)
-      const { ticket, ts_sign } = protectData
+      const protectData = this.parseSecuritySdkCookie(cookie, [
+        'security-sdk/s_sdk_sign_data_key/web_protect',
+        '__security_mc_1_s_sdk_sign_data_key_web_protect'
+      ])
+      if (!protectData) return ''
+      const ticket = protectData.ticket
+      const ts_sign = protectData.ts_sign || protectData.tsSign
+      if (!ticket || !ts_sign) {
+        logger.warn(`[douyin] clientSign missing ticket fields, protect keys=${Object.keys(protectData).join(',')}`)
+        return ''
+      }
 
       // Sign: ticket={ticket}&path=/web/api/media/aweme/create_v2/&timestamp={ts}
       const timestamp = Math.floor(Date.now() / 1000)
@@ -1550,6 +1798,105 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       logger.warn('[douyin] clientSign failed (cookie may lack security-sdk fields):', err)
       return ''
     }
+  }
+
+  private getCookieValue(cookie: string, name: string): string | null {
+    for (const part of cookie.split(';')) {
+      const trimmed = part.trim()
+      const separatorIndex = trimmed.indexOf('=')
+      if (separatorIndex <= 0) continue
+
+      const cookieName = trimmed.slice(0, separatorIndex)
+      if (cookieName === name) {
+        return trimmed.slice(separatorIndex + 1)
+      }
+    }
+    return null
+  }
+
+  private parseSecuritySdkCookie(cookie: string, names: string[]): Record<string, string> | null {
+    for (const name of names) {
+      const value = this.getCookieValue(cookie, name)
+      if (!value) continue
+
+      const decoded = this.decodeCookieValue(value)
+      const candidates = this.getJsonCandidates(decoded)
+
+      for (const candidate of candidates) {
+        const parsed = this.parseSecuritySdkJson(candidate)
+        if (parsed) {
+          logger.info(`[douyin] Parsed security-sdk cookie ${name}, keys=${Object.keys(parsed).join(',')}`)
+          return parsed
+        }
+      }
+
+      logger.warn(`[douyin] Failed to parse security-sdk cookie ${name}, decodedPrefix="${decoded.slice(0, 12)}", length=${decoded.length}`)
+    }
+    return null
+  }
+
+  private decodeCookieValue(value: string): string {
+    let decoded = value
+    for (let i = 0; i < 3; i++) {
+      try {
+        const next = decodeURIComponent(decoded)
+        if (next === decoded) break
+        decoded = next
+      } catch {
+        break
+      }
+    }
+    return decoded
+  }
+
+  private getJsonCandidates(value: string): string[] {
+    const candidates = [value]
+
+    const withoutVersionPrefix = value.replace(/^\d+[|:,-]?/, '')
+    if (withoutVersionPrefix !== value) {
+      candidates.push(withoutVersionPrefix)
+    }
+
+    const firstBrace = value.indexOf('{')
+    const lastBrace = value.lastIndexOf('}')
+    if (firstBrace >= 0 && lastBrace > firstBrace) {
+      candidates.push(value.slice(firstBrace, lastBrace + 1))
+    }
+
+    if (/^[A-Za-z0-9+/=_-]+$/.test(value) && value.length > 16) {
+      try {
+        const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+        candidates.push(Buffer.from(normalized, 'base64').toString('utf8'))
+      } catch {
+        // Not a base64 JSON payload.
+      }
+    }
+
+    return [...new Set(candidates)]
+  }
+
+  private parseSecuritySdkJson(value: string): Record<string, string> | null {
+    try {
+      let parsed: unknown = JSON.parse(value)
+      if (typeof parsed === 'string') {
+        parsed = JSON.parse(parsed)
+      }
+      if (parsed && typeof parsed === 'object' && 'data' in parsed) {
+        const data = (parsed as { data?: unknown }).data
+        if (typeof data === 'string') {
+          return this.parseSecuritySdkJson(data)
+        }
+        if (data && typeof data === 'object') {
+          return data as Record<string, string>
+        }
+      }
+      if (parsed && typeof parsed === 'object') {
+        return parsed as Record<string, string>
+      }
+    } catch {
+      // Try the next candidate.
+    }
+    return null
   }
 
   /**

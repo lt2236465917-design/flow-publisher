@@ -3,7 +3,7 @@ import { logger } from '../../utils/logger'
 
 /**
  * 使用Electron内置BrowserWindow进行登录
- * 这种方式与yixiaoer相同，不会被检测为自动化工具
+ * 每个账号使用独立 session 分区，减少 Cookie 串用和登录态污染。
  */
 export class ElectronLoginWindow {
   private loginWindow: BrowserWindow | null = null

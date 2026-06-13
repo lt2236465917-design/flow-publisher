@@ -63,6 +63,15 @@ const BROWSER_HEADERS: Record<string, string> = {
   'Sec-Fetch-Dest': 'empty'
 }
 
+const SENSITIVE_LOG_HEADERS = new Set([
+  'authorization',
+  'bd-ticket-guard-client-data',
+  'bd-ticket-guard-ree-public-key',
+  'cookie',
+  'proxy-authorization',
+  'x-secsdk-csrf-token'
+])
+
 // CDN upload endpoints use self-signed or non-standard certificates.
 // This agent is ONLY for known CDN domains.
 const HTTPS_AGENT_CDN = new HttpsAgent({ rejectUnauthorized: false })
@@ -76,6 +85,16 @@ const CDN_DOMAINS = [
   'bytedanceapi.com',      // ByteDance VOD / ImageX
   'kuaishouzt.com',        // Kuaishou CDN upload
 ]
+
+function summarizeData(data: unknown, maxLength = 1000): string {
+  if (data === undefined || data === null) return ''
+  if (typeof data === 'string') return data.substring(0, maxLength)
+  try {
+    return JSON.stringify(data).substring(0, maxLength)
+  } catch {
+    return String(data).substring(0, maxLength)
+  }
+}
 
 function isCdnDomain(url: string): boolean {
   try {
@@ -162,7 +181,11 @@ export class HttpClient {
       logger.info(`[HttpClient] ${options.method} ${options.url}`)
       // Log headers without Cookie value to avoid credential leakage
       const safeHeaders: Record<string, unknown> = { ...config.headers }
-      if (safeHeaders['Cookie']) safeHeaders['Cookie'] = `*** (${String(safeHeaders['Cookie']).length} chars)`
+      for (const key of Object.keys(safeHeaders)) {
+        if (SENSITIVE_LOG_HEADERS.has(key.toLowerCase())) {
+          safeHeaders[key] = `*** (${String(safeHeaders[key]).length} chars)`
+        }
+      }
       logger.info(`[HttpClient] Headers: ${JSON.stringify(safeHeaders)}`)
       if (typeof options.data === 'string') {
         logger.info(`[HttpClient] Body (string, first 3000): ${options.data.substring(0, 3000)}`)
@@ -172,8 +195,9 @@ export class HttpClient {
 
       logger.info(`[HttpClient] Response: status=${response.status}, url=${response.request?.res?.responseUrl || response.config?.url || 'unknown'}`)
 
-      // Detect 401/403 — likely session expired. Mark account as expired so the user gets a clear notification.
-      if (response.status === 401 || response.status === 403) {
+      // Detect clear authentication expiry. A 403 is often platform risk-control
+      // or signature rejection, so don't mark the account expired from 403 alone.
+      if (response.status === 401) {
         logger.warn(`[HttpClient] ${response.status} response for ${this.context.platform} — session may be expired`)
         try {
           const repo = getAccountRepository()
@@ -186,6 +210,8 @@ export class HttpClient {
         } catch (e) {
           logger.warn('[HttpClient] Failed to update session expiry:', e)
         }
+      } else if (response.status === 403) {
+        logger.warn(`[HttpClient] 403 response for ${this.context.platform} — possible signature rejection or risk control`)
       }
 
       // Refresh cookies from Set-Cookie response headers
@@ -200,8 +226,19 @@ export class HttpClient {
       if (axios.isAxiosError(err)) {
         const status = err.response?.status
         const data = err.response?.data
-        logger.error(`[${this.context.platform}] HTTP ${options.method} ${options.url} failed: ${status}`, data)
-        throw new Error(`HTTP ${options.method} ${options.url} failed: ${status} ${JSON.stringify(data)}`)
+        const code = err.code || 'none'
+        const message = err.message || 'unknown error'
+        const dataSummary = summarizeData(data)
+        logger.error(
+          `[${this.context.platform}] HTTP ${options.method} ${options.url} failed: ` +
+          `status=${status ?? 'none'}, code=${code}, message=${message}`,
+          data
+        )
+        throw new Error(
+          `HTTP ${options.method} ${options.url} failed: ` +
+          `status=${status ?? 'none'} code=${code} message=${message}` +
+          (dataSummary ? ` data=${dataSummary}` : '')
+        )
       }
       throw err
     }

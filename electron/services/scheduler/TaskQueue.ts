@@ -5,10 +5,56 @@ import { CookieStore } from '../browser/CookieStore'
 import { getAdapter } from '../platform-adapters/PlatformAdapterRegistry'
 import { HttpClient } from '../http/HttpClient'
 import type { CookieContext } from '../http/HttpClient'
+import { getPublishRiskGuard } from '../risk/PublishRiskGuard'
+import { getSignService } from '../sign/SignService'
+import type { IPlatformAdapter } from '../platform-adapters/IPlatformAdapter'
 import { retry, delay } from '../../utils/delays'
 import { logger } from '../../utils/logger'
 import type { ScheduledTaskRow } from '../database/repositories/scheduled-task.repo'
 import type { ScheduledTaskRepository } from '../database/repositories/scheduled-task.repo'
+
+async function ensureSessionHealthy(
+  adapter: IPlatformAdapter,
+  client: HttpClient,
+  accountId: string,
+  platformId: string
+): Promise<void> {
+  if (!adapter.checkSessionAPI) return
+
+  const ok = await adapter.checkSessionAPI(client)
+  if (ok) return
+
+  const accountRepo = getAccountRepository()
+  accountRepo.updateSession(accountId, 'expired', client.getCookieString())
+  saveDatabase()
+  throw new Error(`账号登录状态异常或已过期，请先重新登录 ${platformId}`)
+}
+
+async function ensureWebSignerReadyForScheduledTask(
+  platformId: string,
+  taskId: string,
+  recordId: string,
+  mainWindow: BrowserWindow | undefined
+): Promise<void> {
+  mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
+    taskId,
+    recordId,
+    platformId,
+    percent: 1,
+    stage: '正在检查平台签名服务...'
+  })
+
+  const signService = getSignService()
+  signService.clearFallbackCache()
+  signService.setFallbackConfirmer(null)
+  const result = await signService.ensureWebSignerReadyForPublish(platformId)
+  if (!result.required) return
+
+  logger.info(
+    `[TaskQueue] Signer preflight passed for ${platformId}: mode=${result.mode}` +
+    `${result.detail ? `, detail=${result.detail}` : ''}`
+  )
+}
 
 export class TaskQueue {
   private _running = false
@@ -165,16 +211,39 @@ export class TaskQueue {
     }
     const client = new HttpClient(context)
 
-    const result = await adapter.uploadVideoAPI(client, task.video_path, (progress) => {
-      recordRepo.updateStatus(record.id, 'uploading', progress.percent)
-      saveDatabase()
-      mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
-        taskId: task.id,
-        recordId: record.id,
+    const riskGuard = getPublishRiskGuard()
+    const result = await riskGuard.run(
+      {
+        accountId,
         platformId,
-        ...progress
-      })
-    })
+        stage: 'upload',
+        recordId: record.id,
+        onProgress: (progress) => {
+          recordRepo.updateStatus(record.id, 'uploading', progress.percent)
+          saveDatabase()
+          mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
+            taskId: task.id,
+            recordId: record.id,
+            platformId,
+            ...progress
+          })
+        }
+      },
+      async () => {
+        await ensureSessionHealthy(adapter, client, accountId, platformId)
+        await ensureWebSignerReadyForScheduledTask(platformId, task.id, record.id, mainWindow)
+        return await adapter.uploadVideoAPI!(client, task.video_path, (progress) => {
+          recordRepo.updateStatus(record.id, 'uploading', progress.percent)
+          saveDatabase()
+          mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
+            taskId: task.id,
+            recordId: record.id,
+            platformId,
+            ...progress
+          })
+        })
+      }
+    )
     // Handle both legacy string return and new UploadResult (H7 + H11 fix)
     const videoId = typeof result === 'string' ? result
       : (result && typeof result === 'object' && 'videoId' in result) ? (result as { videoId: string; meta: Record<string, unknown> }).videoId
@@ -215,7 +284,27 @@ export class TaskQueue {
     logger.info(`[TaskQueue] Submitting to ${platformId} via API`)
     // Pass recordId so adapter can read upload metadata from DB (H7 + H11 fix)
     const contentWithRecord = { ...content, recordId: record.id }
-    await adapter.submitContentAPI(client, contentWithRecord, videoId)
+    await riskGuard.run(
+      {
+        accountId,
+        platformId,
+        stage: 'submit',
+        recordId: record.id,
+        onProgress: (progress) => {
+          recordRepo.updateStatus(record.id, 'submitting', progress.percent)
+          saveDatabase()
+          mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
+            taskId: task.id,
+            recordId: record.id,
+            platformId,
+            ...progress
+          })
+        }
+      },
+      async () => {
+        await adapter.submitContentAPI!(client, contentWithRecord, videoId)
+      }
+    )
 
     recordRepo.updateStatus(record.id, 'done', 100)
     const now = new Date().toISOString()

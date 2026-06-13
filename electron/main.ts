@@ -12,6 +12,7 @@ import { getScheduledTaskRepository } from './services/database'
 import { TaskQueue } from './services/scheduler/TaskQueue'
 import { PublishScheduler } from './services/scheduler/PublishScheduler'
 import { getSignService } from './services/sign/SignService'
+import { getManagedSelfHostedSignerServer } from './services/sign/ManagedSelfHostedSignerServer'
 import { logger } from './utils/logger'
 
 const isDev = !app.isPackaged
@@ -22,7 +23,21 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'local-file', privileges: { standard: true, stream: true, supportFetchAPI: true } }
 ])
 
+function getAppIconPath(): string | undefined {
+  const iconPath = app.isPackaged
+    ? join(process.resourcesPath, 'icon.png')
+    : join(__dirname, '../../build/icon.png')
+
+  return existsSync(iconPath) ? iconPath : undefined
+}
+
 function createWindow(): void {
+  const appIconPath = getAppIconPath()
+
+  if (process.platform === 'darwin' && appIconPath && app.dock) {
+    app.dock.setIcon(appIconPath)
+  }
+
   const mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -31,6 +46,7 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     title: 'Flow',
+    icon: appIconPath,
     backgroundColor: '#1d1d1f',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -109,6 +125,8 @@ app.whenReady().then(async () => {
   registerSchedulerIpcHandlers()
   registerAnalyticsIpcHandlers()
 
+  await getManagedSelfHostedSignerServer().start()
+
   // App-level IPC handlers
   ipcMain.handle('app:get-version', () => {
     return { success: true, data: { version: app.getVersion() } }
@@ -137,6 +155,7 @@ app.whenReady().then(async () => {
 // Ensure cleanup on actual app quit (all platforms)
 app.on('before-quit', () => {
   scheduler?.stop()
+  getManagedSelfHostedSignerServer().stop().catch((err) => logger.error('Managed signer stop error:', err))
   getSignService().dispose().catch((err) => logger.error('SignService dispose error:', err))
   closeDatabase()
 })
@@ -145,6 +164,7 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     // Windows & Linux: clean shutdown — stop scheduler, dispose services, close DB, quit
     scheduler?.stop()
+    getManagedSelfHostedSignerServer().stop().catch((err) => logger.error('Managed signer stop error:', err))
     getSignService().dispose().catch((err) => logger.error('SignService dispose error:', err))
     closeDatabase()
     app.quit()

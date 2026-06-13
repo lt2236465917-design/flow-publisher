@@ -68,8 +68,8 @@ export function registerAccountIpcHandlers(): void {
     }
   })
 
-  // Start login flow for a platform
-  // 使用Electron内置BrowserWindow进行登录，与yixiaoer相同方式，不会被检测为自动化
+  // Start login flow for a platform.
+  // Use Electron BrowserWindow with an isolated session partition per account.
   ipcMain.handle(IPC_CHANNELS.ACCOUNT_LOGIN, async (event, platformId: string): Promise<IpcResponse> => {
     let loginWindow: ElectronLoginWindow | null = null
     try {
@@ -96,7 +96,7 @@ export function registerAccountIpcHandlers(): void {
       // 使用accountId作为partition，确保session隔离
       loginWindow = new ElectronLoginWindow(platformId, accountId)
 
-      // 使用Electron内置浏览器打开登录页面（与yixiaoer相同方式）
+      // 使用Electron内置浏览器打开登录页面，避免共享主浏览器 Cookie
       logger.info(`[account] Opening login window for ${platformId}, accountId: ${accountId}...`)
       await loginWindow.open(adapter.loginUrl)
 

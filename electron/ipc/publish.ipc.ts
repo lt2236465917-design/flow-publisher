@@ -4,30 +4,126 @@ import { getAccountRepository, getPublishRecordRepository, saveDatabase } from '
 import { CookieStore } from '../services/browser/CookieStore'
 import { getAdapter } from '../services/platform-adapters/PlatformAdapterRegistry'
 import { getSignService } from '../services/sign/SignService'
+import { shouldAutoConfirmBuiltinSigner } from '../services/sign/SignPolicy'
 import { HttpClient } from '../services/http/HttpClient'
 import type { CookieContext } from '../services/http/HttpClient'
 import { ffmpegService } from '../services/ffmpeg/FFmpegService'
 import { validateVideo } from '../services/ffmpeg/VideoValidator'
 import { ipLocationService } from '../services/location/IPLocationService'
+import { getPublishRiskGuard } from '../services/risk/PublishRiskGuard'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
-import type { VideoMetadata } from '../services/platform-adapters/IPlatformAdapter'
-import type { SubmitResult } from '../../shared/types/analytics'
+import type { IPlatformAdapter, VideoMetadata } from '../services/platform-adapters/IPlatformAdapter'
 import { logger } from '../utils/logger'
 
 const cookieStore = new CookieStore()
+const SIGN_FALLBACK_CONFIRM_TIMEOUT_MS = 180_000
 
 // Pending sign-fallback confirmation — resolve function is set when the main process
 // waits for the renderer to confirm whether to use local Playwright-based signing.
 let pendingSignConfirm: ((confirmed: boolean) => void) | null = null
+let pendingSignConfirmPromise: Promise<boolean> | null = null
+let pendingSignConfirmTimer: ReturnType<typeof setTimeout> | null = null
+let activeSignFallbackRunId: string | null = null
+
+function resolvePendingSignConfirm(confirmed: boolean): void {
+  const resolve = pendingSignConfirm
+  if (!resolve) return
+
+  if (pendingSignConfirmTimer) {
+    clearTimeout(pendingSignConfirmTimer)
+    pendingSignConfirmTimer = null
+  }
+  pendingSignConfirm = null
+  pendingSignConfirmPromise = null
+  resolve(confirmed)
+}
+
+function requestSignFallbackConfirmation(mainWindow: BrowserWindow | undefined, platform: string): Promise<boolean> {
+  if (shouldAutoConfirmBuiltinSigner()) {
+    logger.warn(`[publish] Auto-confirming built-in local signer fallback for ${platform}`)
+    return Promise.resolve(true)
+  }
+
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return Promise.resolve(false)
+  }
+  if (pendingSignConfirmPromise) {
+    return pendingSignConfirmPromise
+  }
+
+  pendingSignConfirmPromise = new Promise((resolve) => {
+    pendingSignConfirm = resolve
+    mainWindow.webContents.send(IPC_CHANNELS.PUBLISH_SIGN_FALLBACK_WARNING, { platform })
+    // Safety timeout: auto-deny if user doesn't respond.
+    pendingSignConfirmTimer = setTimeout(() => {
+      resolvePendingSignConfirm(false)
+    }, SIGN_FALLBACK_CONFIRM_TIMEOUT_MS)
+  })
+
+  return pendingSignConfirmPromise
+}
+
+function configureSignFallback(mainWindow: BrowserWindow | undefined, publishRunId?: string): void {
+  const signService = getSignService()
+  const runId = publishRunId || `ipc-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+  if (activeSignFallbackRunId !== runId) {
+    resolvePendingSignConfirm(false)
+    activeSignFallbackRunId = runId
+    signService.clearFallbackCache()
+  }
+
+  signService.setFallbackConfirmer((platform: string) => requestSignFallbackConfirmation(mainWindow, platform))
+}
+
+async function ensureSessionHealthy(
+  adapter: IPlatformAdapter,
+  client: HttpClient,
+  accountId: string,
+  platformId: string
+): Promise<void> {
+  if (!adapter.checkSessionAPI) return
+
+  const ok = await adapter.checkSessionAPI(client)
+  if (ok) return
+
+  try {
+    const accountRepo = getAccountRepository()
+    accountRepo.updateSession(accountId, 'expired', client.getCookieString())
+    saveDatabase()
+  } catch (err) {
+    logger.warn(`[publish] Failed to mark ${platformId} account as expired after session preflight:`, err)
+  }
+
+  throw new Error('账号登录状态异常或已过期，请先重新登录后再发布')
+}
+
+async function ensureWebSignerReadyForUpload(
+  platformId: string,
+  recordId: string,
+  mainWindow: BrowserWindow | undefined
+): Promise<void> {
+  mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
+    recordId,
+    percent: 1,
+    stage: '正在检查平台签名服务...'
+  })
+
+  const result = await getSignService().ensureWebSignerReadyForPublish(platformId)
+  if (!result.required) return
+
+  logger.info(
+    `[publish] Signer preflight passed for ${platformId}: mode=${result.mode}` +
+    `${result.detail ? `, detail=${result.detail}` : ''}`
+  )
+}
 
 export function registerPublishIpcHandlers(): void {
   // Sign-fallback confirmation — renderer responds when user dismisses the warning dialog
   ipcMain.handle(IPC_CHANNELS.PUBLISH_CONFIRM_SIGN_FALLBACK, (_event, confirmed: boolean) => {
     logger.info(`[publish] Sign fallback confirmation: ${confirmed ? 'accepted' : 'denied'}`)
-    if (pendingSignConfirm) {
-      pendingSignConfirm(confirmed)
-      pendingSignConfirm = null
-    }
+    resolvePendingSignConfirm(confirmed)
+    return { success: true }
   })
 
   // Probe video metadata
@@ -64,12 +160,14 @@ export function registerPublishIpcHandlers(): void {
     }
   })
 
-  // Upload video to platform (API mode only)
+  // Upload video to platform (API mode)
   ipcMain.handle(IPC_CHANNELS.PUBLISH_UPLOAD, async (_event, params: {
     accountId: string
     platformId: string
     filePath: string
+    publishRunId?: string
   }): Promise<IpcResponse> => {
+    let createdRecordId: string | null = null
     try {
       const adapter = getAdapter(params.platformId)
       if (!adapter) {
@@ -96,6 +194,7 @@ export function registerPublishIpcHandlers(): void {
         description: '',
         videoPath: params.filePath
       })
+      createdRecordId = record.id
       saveDatabase()
 
       const mainWindow = BrowserWindow.getAllWindows()[0]
@@ -114,31 +213,37 @@ export function registerPublishIpcHandlers(): void {
       }
       const client = new HttpClient(context)
 
-      // Set up sign fallback confirmation for this publish operation
-      const signService = getSignService()
-      signService.clearFallbackCache()
-      signService.setFallbackConfirmer(async (platform: string) => {
-        return new Promise((resolve) => {
-          pendingSignConfirm = resolve
-          mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_SIGN_FALLBACK_WARNING, { platform })
-          // Safety timeout: auto-deny after 60s if user doesn't respond
-          setTimeout(() => {
-            if (pendingSignConfirm) {
-              pendingSignConfirm = null
-              resolve(false)
-            }
-          }, 60000)
-        })
-      })
+      configureSignFallback(mainWindow, params.publishRunId)
 
-      const result = await adapter.uploadVideoAPI(client, params.filePath, (progress) => {
-        recordRepo.updateStatus(record.id, 'uploading', progress.percent)
-        saveDatabase()
-        mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
+      const riskGuard = getPublishRiskGuard()
+      const result = await riskGuard.run(
+        {
+          accountId: params.accountId,
+          platformId: params.platformId,
+          stage: 'upload',
           recordId: record.id,
-          ...progress
-        })
-      })
+          onProgress: (progress) => {
+            recordRepo.updateStatus(record.id, 'uploading', progress.percent)
+            saveDatabase()
+            mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
+              recordId: record.id,
+              ...progress
+            })
+          }
+        },
+        async () => {
+          await ensureSessionHealthy(adapter, client, params.accountId, params.platformId)
+          await ensureWebSignerReadyForUpload(params.platformId, record.id, mainWindow)
+          return await adapter.uploadVideoAPI!(client, params.filePath, (progress) => {
+            recordRepo.updateStatus(record.id, 'uploading', progress.percent)
+            saveDatabase()
+            mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
+              recordId: record.id,
+              ...progress
+            })
+          })
+        }
+      )
       // Handle both legacy string return and new UploadResult (H7 + H11 fix)
       const videoId = typeof result === 'string' ? result
         : (result && typeof result === 'object' && 'videoId' in result) ? (result as { videoId: string; meta: Record<string, unknown> }).videoId
@@ -157,12 +262,16 @@ export function registerPublishIpcHandlers(): void {
       // Mark the publish record as 'error' so it doesn't remain orphaned as 'pending'
       try {
         const recordRepo = getPublishRecordRepository()
-        const allRecords = recordRepo.getAll()
-        const pendingRecord = allRecords.find(r => r.status === 'pending' && r.account_id === params.accountId)
-        if (pendingRecord) {
-          recordRepo.updateStatus(pendingRecord.id, 'error', undefined, String(err))
-          saveDatabase()
+        if (createdRecordId) {
+          recordRepo.updateStatus(createdRecordId, 'error', undefined, String(err))
+        } else {
+          const allRecords = recordRepo.getAll()
+          const pendingRecord = allRecords.find(r => r.status === 'pending' && r.account_id === params.accountId)
+          if (pendingRecord) {
+            recordRepo.updateStatus(pendingRecord.id, 'error', undefined, String(err))
+          }
         }
+        saveDatabase()
       } catch (cleanupErr) {
         logger.warn('Failed to mark orphaned record as error:', cleanupErr)
       }
@@ -170,11 +279,12 @@ export function registerPublishIpcHandlers(): void {
     }
   })
 
-  // Submit content (API mode only)
+  // Submit content (API mode)
   ipcMain.handle(IPC_CHANNELS.PUBLISH_SUBMIT, async (_event, params: {
     recordId: string
     platformId: string
     videoId?: string
+    publishRunId?: string
     content: {
       title: string
       description: string
@@ -240,21 +350,7 @@ export function registerPublishIpcHandlers(): void {
       }
       const client = new HttpClient(context)
 
-      // Set up sign fallback confirmation for this publish operation
-      const signService = getSignService()
-      signService.clearFallbackCache()
-      signService.setFallbackConfirmer(async (platform: string) => {
-        return new Promise((resolve) => {
-          pendingSignConfirm = resolve
-          mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_SIGN_FALLBACK_WARNING, { platform })
-          setTimeout(() => {
-            if (pendingSignConfirm) {
-              pendingSignConfirm = null
-              resolve(false)
-            }
-          }, 60000)
-        })
-      })
+      configureSignFallback(mainWindow, params.publishRunId)
 
       // Probe video metadata to pass actual values (width, height, duration, fps)
       let videoMetadata: VideoMetadata | undefined
@@ -273,28 +369,51 @@ export function registerPublishIpcHandlers(): void {
         logger.warn(`[publish] Failed to probe video metadata: ${e}`)
       }
 
-      // Upload cover image if provided (for platforms that support it, e.g. XHS)
-      let coverFileId: string | undefined
-      if (params.content.coverPath && adapter.uploadCoverImageAPI) {
-        try {
-          mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
-            recordId: params.recordId,
-            percent: 85,
-            stage: '正在上传封面...'
-          })
-          coverFileId = await adapter.uploadCoverImageAPI(client, params.content.coverPath)
-          logger.info(`[publish] Cover uploaded, fileId: ${coverFileId}`)
-        } catch (e) {
-          logger.warn(`[publish] Cover upload failed (non-fatal): ${e}`)
-          // Non-fatal: continue without cover
-        }
-      }
+      const riskGuard = getPublishRiskGuard()
+      const submitResult = await riskGuard.run(
+        {
+          accountId: record.account_id,
+          platformId: params.platformId,
+          stage: 'submit',
+          recordId: params.recordId,
+          onProgress: (progress) => {
+            recordRepo.updateStatus(params.recordId, 'submitting', progress.percent)
+            saveDatabase()
+            mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
+              recordId: params.recordId,
+              ...progress
+            })
+          }
+        },
+        async () => {
+          // Upload cover image if provided (for platforms that support it, e.g. XHS)
+          let coverFileId: string | undefined
+          if (params.content.coverPath && adapter.uploadCoverImageAPI) {
+            try {
+              mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
+                recordId: params.recordId,
+                percent: 85,
+                stage: '正在上传封面...'
+              })
+              coverFileId = await adapter.uploadCoverImageAPI(client, params.content.coverPath)
+              logger.info(`[publish] Cover uploaded, fileId: ${coverFileId}`)
+            } catch (e) {
+              logger.warn(`[publish] Cover upload failed (non-fatal): ${e}`)
+              // Non-fatal: continue without cover
+            }
+          }
 
-      // Merge video metadata into content payload
-      const contentWithMeta = { ...params.content, videoMetadata }
-      // Pass recordId so adapter can read upload metadata from DB (H7 + H11 fix)
-      const contentWithRecord = { ...contentWithMeta, recordId: params.recordId }
-      const submitResult = await adapter.submitContentAPI(client, contentWithRecord, params.videoId, coverFileId)
+          // Merge video metadata into content payload
+          const contentWithMeta = { ...params.content, videoMetadata }
+          // Pass recordId so adapter can read upload metadata from DB (H7 + H11 fix)
+          const contentWithRecord = { ...contentWithMeta, recordId: params.recordId }
+          return await adapter.submitContentAPI!(client, contentWithRecord, params.videoId, coverFileId)
+        }
+      )
+
+      if (params.platformId === 'xiaohongshu' && !submitResult?.contentId) {
+        throw new Error('内容提交状态无法确认: 小红书未返回 note_id，已停止标记为发布成功。请到小红书创作者中心确认是否进入审核中或草稿箱。')
+      }
 
       recordRepo.updateStatus(params.recordId, 'done', 100)
       const now = new Date().toISOString()
@@ -511,5 +630,5 @@ export function registerPublishIpcHandlers(): void {
     }
   })
 
-  logger.info('Publish IPC handlers registered (API mode only)')
+  logger.info('Publish IPC handlers registered (API mode)')
 }

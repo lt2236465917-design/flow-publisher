@@ -1128,7 +1128,13 @@ export class WcApiAdapter extends BasePlatformAdapter {
       const postResp = await client.post<{
         errCode?: number
         errMsg?: string
-        data?: { feedId?: string; baseResp?: { errcode?: number; errmsg?: string } }
+        data?: {
+          feedId?: string
+          objectId?: string
+          postId?: string
+          id?: string
+          baseResp?: { errcode?: number; errmsg?: string }
+        }
       }>(
         API.publish,
         postBody,
@@ -1148,8 +1154,12 @@ export class WcApiAdapter extends BasePlatformAdapter {
         throw new Error(`内容提交失败: ${errMsg} | errCode=${errCode} | finderId=${finderId} | finderUsername=${finderUsername} | draftId=${draftId} | clipKey=${clipKey} | url=${downloadUrl.substring(0, 80)}`)
       }
 
-      const feedId = respData?.data?.feedId
-      logger.info(`[wechat-channels] Content submitted successfully, feedId: ${feedId}`)
+      const feedId = respData?.data?.feedId || respData?.data?.objectId || respData?.data?.postId || respData?.data?.id
+      if (feedId) {
+        logger.info(`[wechat-channels] Content submitted successfully, feedId: ${feedId}`)
+      } else {
+        logger.info(`[wechat-channels] Content accepted by post_create, but response did not include feedId (draftId=${draftId}, clipKey=${clipKey})`)
+      }
 
       return {
         contentId: feedId,
