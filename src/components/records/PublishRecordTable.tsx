@@ -70,6 +70,7 @@ export default function PublishRecordTable({ records, loading, onRefresh }: Prop
       width: 90,
       filters: [
         { text: '成功', value: 'done' },
+        { text: '待确认', value: 'unconfirmed' },
         { text: '失败', value: 'error' },
         { text: '上传中', value: 'uploading' },
         { text: '提交中', value: 'submitting' }

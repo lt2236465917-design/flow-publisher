@@ -21,7 +21,7 @@ const SIGN_PREFLIGHT_TIMEOUT = 2_500
 const DOUYIN_SIGN_CONTEXT_URL = 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page'
 const XHS_SIGN_CONTEXT_URL =
   process.env.FLOW_PUBLISHER_XHS_SIGN_CONTEXT_URL?.trim() ||
-  'https://creator.xiaohongshu.com/new/publish'
+  'https://creator.xiaohongshu.com/publish/publish?from=menu&target=video'
 const REALISTIC_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14'
 
@@ -1048,7 +1048,10 @@ export class SignService {
       }
       dbg.on('message', captureListener)
       await dbg.sendCommand('Fetch.enable', {
-        patterns: [{ urlPattern: '*://edith.xiaohongshu.com/*', requestStage: 'Request' }]
+        patterns: [
+          { urlPattern: '*://edith.xiaohongshu.com/*', requestStage: 'Request' },
+          { urlPattern: '*://creator.xiaohongshu.com/*', requestStage: 'Request' }
+        ]
       })
       fetchEnabled = true
 
@@ -1321,7 +1324,10 @@ export class SignService {
       }
       dbg.on('message', captureListener)
       await dbg.sendCommand('Fetch.enable', {
-        patterns: [{ urlPattern: '*://edith.xiaohongshu.com/*', requestStage: 'Request' }]
+        patterns: [
+          { urlPattern: '*://edith.xiaohongshu.com/*', requestStage: 'Request' },
+          { urlPattern: '*://creator.xiaohongshu.com/*', requestStage: 'Request' }
+        ]
       })
       fetchEnabled = true
 

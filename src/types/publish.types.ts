@@ -1,7 +1,7 @@
 import type { PlatformId } from '@/constants/platforms'
 import type { VideoMetadata, VideoFrame } from './video.types'
 
-export type PublishStatus = 'idle' | 'preparing' | 'uploading' | 'submitting' | 'done' | 'error'
+export type PublishStatus = 'idle' | 'preparing' | 'uploading' | 'submitting' | 'done' | 'unconfirmed' | 'error'
 
 /** Cover data matching 方案C schema: horizontal + vertical + recommended candidates */
 export interface CoverData {

@@ -276,6 +276,7 @@ export class TaskQueue {
       title: task.title,
       description: task.description,
       hashtags: JSON.parse(task.hashtags || '[]'),
+      videoPath: task.video_path,
       coverPath: task.cover_path || undefined,
       declarations: mergedDeclarations,
       platformFields
@@ -284,7 +285,7 @@ export class TaskQueue {
     logger.info(`[TaskQueue] Submitting to ${platformId} via API`)
     // Pass recordId so adapter can read upload metadata from DB (H7 + H11 fix)
     const contentWithRecord = { ...content, recordId: record.id }
-    await riskGuard.run(
+    const submitResult = await riskGuard.run(
       {
         accountId,
         platformId,
@@ -302,12 +303,34 @@ export class TaskQueue {
         }
       },
       async () => {
-        await adapter.submitContentAPI!(client, contentWithRecord, videoId)
+        return await adapter.submitContentAPI!(client, contentWithRecord, videoId)
       }
     )
 
-    recordRepo.updateStatus(record.id, 'done', 100)
     const now = new Date().toISOString()
+    if (platformId === 'xiaohongshu' && submitResult?.confirmed === false) {
+      const message = '小红书已受理提交请求，但未返回 note_id；请到创作者中心的发布管理、审核中或草稿箱确认。'
+      if (submitResult.contentId) recordRepo.updateContentId(record.id, submitResult.contentId)
+      recordRepo.updateStatus(record.id, 'unconfirmed', 99, message)
+      recordRepo['db'].run(
+        'UPDATE publish_records SET title = ?, description = ?, hashtags = ?, declarations = ?, updated_at = ? WHERE id = ?',
+        [task.title, task.description, task.hashtags, task.declarations, now, record.id]
+      )
+      saveDatabase()
+
+      mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
+        taskId: task.id,
+        recordId: record.id,
+        platformId,
+        percent: 99,
+        stage: '小红书已受理，等待平台确认'
+      })
+
+      logger.info(`[TaskQueue] Xiaohongshu submit unconfirmed for task ${task.id}`)
+      return
+    }
+
+    recordRepo.updateStatus(record.id, 'done', 100)
     recordRepo['db'].run(
       'UPDATE publish_records SET title = ?, description = ?, hashtags = ?, declarations = ?, updated_at = ? WHERE id = ?',
       [task.title, task.description, task.hashtags, task.declarations, now, record.id]

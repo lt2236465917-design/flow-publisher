@@ -166,6 +166,7 @@ export function registerPublishIpcHandlers(): void {
     platformId: string
     filePath: string
     publishRunId?: string
+    hasCustomCover?: boolean
   }): Promise<IpcResponse> => {
     let createdRecordId: string | null = null
     try {
@@ -234,14 +235,19 @@ export function registerPublishIpcHandlers(): void {
         async () => {
           await ensureSessionHealthy(adapter, client, params.accountId, params.platformId)
           await ensureWebSignerReadyForUpload(params.platformId, record.id, mainWindow)
-          return await adapter.uploadVideoAPI!(client, params.filePath, (progress) => {
-            recordRepo.updateStatus(record.id, 'uploading', progress.percent)
-            saveDatabase()
-            mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
-              recordId: record.id,
-              ...progress
-            })
-          })
+          return await adapter.uploadVideoAPI!(
+            client,
+            params.filePath,
+            (progress) => {
+              recordRepo.updateStatus(record.id, 'uploading', progress.percent)
+              saveDatabase()
+              mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
+                recordId: record.id,
+                ...progress
+              })
+            },
+            { waitForServerCover: !(params.platformId === 'xiaohongshu' && params.hasCustomCover) }
+          )
         }
       )
       // Handle both legacy string return and new UploadResult (H7 + H11 fix)
@@ -404,7 +410,7 @@ export function registerPublishIpcHandlers(): void {
           }
 
           // Merge video metadata into content payload
-          const contentWithMeta = { ...params.content, videoMetadata }
+          const contentWithMeta = { ...params.content, videoMetadata, videoPath: record.video_path }
           // Pass recordId so adapter can read upload metadata from DB (H7 + H11 fix)
           const contentWithRecord = { ...contentWithMeta, recordId: params.recordId }
           return await adapter.submitContentAPI!(client, contentWithRecord, params.videoId, coverFileId)
@@ -415,14 +421,35 @@ export function registerPublishIpcHandlers(): void {
         throw new Error('内容提交状态无法确认: 小红书未返回 note_id，已停止标记为发布成功。请到小红书创作者中心确认是否进入审核中或草稿箱。')
       }
 
-      recordRepo.updateStatus(params.recordId, 'done', 100)
       const now = new Date().toISOString()
+      const xhsUnconfirmed = params.platformId === 'xiaohongshu' && submitResult?.confirmed === false
 
-      // 保存 contentId 和 publishUrl（如果有的话）
       if (submitResult?.contentId) {
         recordRepo.updateContentId(params.recordId, submitResult.contentId)
         logger.info(`[publish] Saved contentId: ${submitResult.contentId} for record: ${params.recordId}`)
       }
+
+      if (xhsUnconfirmed) {
+        const message = '小红书已受理提交请求，但未返回 note_id；请到创作者中心的发布管理、审核中或草稿箱确认。'
+        recordRepo.updateStatus(params.recordId, 'unconfirmed', 99, message)
+        recordRepo['db'].run(
+          'UPDATE publish_records SET title = ?, description = ?, hashtags = ?, declarations = ?, cover_path = ?, updated_at = ? WHERE id = ?',
+          [params.content.title, params.content.description, JSON.stringify(params.content.hashtags), JSON.stringify(params.content.declarations), params.content.coverPath || null, now, params.recordId]
+        )
+        saveDatabase()
+
+        mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
+          recordId: params.recordId,
+          percent: 99,
+          stage: '小红书已受理，等待平台确认'
+        })
+
+        return { success: true, data: { recordId: params.recordId, status: 'unconfirmed', message } }
+      }
+
+      recordRepo.updateStatus(params.recordId, 'done', 100)
+
+      // 保存 contentId 和 publishUrl（如果有的话）
       if (submitResult?.publishUrl) {
         recordRepo.updateStatus(params.recordId, 'done', 100, undefined, submitResult.publishUrl)
       }

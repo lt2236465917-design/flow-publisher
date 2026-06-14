@@ -60,9 +60,16 @@ export interface UploadResult {
   meta: Record<string, unknown>
 }
 
+export interface UploadVideoOptions {
+  /** If false, upload may continue after videoId is accepted without waiting for server first-frame extraction. */
+  waitForServerCover?: boolean
+}
+
 export interface SubmitContentPayload {
   /** DB record ID — used to read upload metadata persisted by the caller (H7 + H11 fix) */
   recordId?: string
+  /** Original local video path, used by browser-page fallbacks that upload through the official creator UI. */
+  videoPath?: string
   title: string
   description: string
   hashtags: string[]
@@ -80,7 +87,7 @@ export interface SubmitContentPayload {
 
 /** Adapters that support API-based video publishing */
 export interface IPublishable {
-  uploadVideoAPI(client: HttpClient, filePath: string, onProgress?: (p: UploadProgress) => void): Promise<string | UploadResult | void>
+  uploadVideoAPI(client: HttpClient, filePath: string, onProgress?: (p: UploadProgress) => void, options?: UploadVideoOptions): Promise<string | UploadResult | void>
   submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<SubmitResult>
   getVideoConstraints(): VideoConstraints
 }
@@ -138,7 +145,7 @@ export interface IPlatformAdapter {
 
   // Publish — API mode (HTTP-based, no browser automation)
   getVideoConstraints?(): VideoConstraints
-  uploadVideoAPI?(client: HttpClient, filePath: string, onProgress?: (p: UploadProgress) => void): Promise<string | UploadResult | void>
+  uploadVideoAPI?(client: HttpClient, filePath: string, onProgress?: (p: UploadProgress) => void, options?: UploadVideoOptions): Promise<string | UploadResult | void>
   uploadCoverImageAPI?(client: HttpClient, imagePath: string, onProgress?: (p: UploadProgress) => void): Promise<string>
   submitContentAPI?(client: HttpClient, payload: SubmitContentPayload, videoId?: string, coverFileId?: string): Promise<SubmitResult>
   checkSessionAPI?(client: HttpClient): Promise<boolean>

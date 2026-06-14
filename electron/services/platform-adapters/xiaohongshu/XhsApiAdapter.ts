@@ -1,7 +1,7 @@
 import type { BrowserContext, Page } from 'playwright-core'
 import axios from 'axios'
 import { BasePlatformAdapter } from '../BasePlatformAdapter'
-import type { UploadProgress, SubmitContentPayload, UploadResult, VideoConstraints, VideoMetadata } from '../IPlatformAdapter'
+import type { UploadProgress, SubmitContentPayload, UploadResult, UploadVideoOptions, VideoConstraints, VideoMetadata } from '../IPlatformAdapter'
 import type { PlatformFieldDefinition } from '../../../shared/types/platform-fields'
 import type { SubmitResult } from '../../../../shared/types/analytics'
 import { HttpClient } from '../../http/HttpClient'
@@ -19,7 +19,6 @@ import { getPublishRecordRepository } from '../../database'
 const API = {
   userInfo: 'https://creator.xiaohongshu.com/api/galaxy/user/info',
   uploadCreatorPermit: 'https://creator.xiaohongshu.com/api/media/v1/upload/creator/permit',
-  uploadWebPermit: 'https://creator.xiaohongshu.com/api/media/v1/upload/web/permit',
   noteCreate: 'https://edith.xiaohongshu.com/web_api/sns/v2/note',
   personalInfo: 'https://creator.xiaohongshu.com/api/galaxy/creator/home/personal_info',
   collectionList: 'https://edith.xiaohongshu.com/api/sns/v1/note/collection/pc/list_v2',
@@ -36,7 +35,9 @@ type XhsSubmitResponse = {
 
 type XhsUploadPermit = {
   uploadAddr?: string
+  upload_addr?: string
   fileIds?: string[]
+  file_ids?: string[]
   token?: string
 }
 
@@ -52,8 +53,10 @@ type XhsUploadPermitResponse = {
   message?: string
   data?: {
     uploadTempPermits?: XhsUploadPermit[]
+    upload_temp_permits?: XhsUploadPermit[]
   }
   uploadTempPermits?: XhsUploadPermit[]
+  upload_temp_permits?: XhsUploadPermit[]
 }
 
 export class XhsApiAdapter extends BasePlatformAdapter {
@@ -304,7 +307,8 @@ export class XhsApiAdapter extends BasePlatformAdapter {
   async uploadVideoAPI(
     client: HttpClient,
     filePath: string,
-    onProgress?: (p: UploadProgress) => void
+    onProgress?: (p: UploadProgress) => void,
+    options?: UploadVideoOptions
   ): Promise<UploadResult> {
     if (!existsSync(filePath)) {
       throw new Error(`视频文件不存在: ${filePath}`)
@@ -343,6 +347,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       Origin: 'https://creator.xiaohongshu.com',
       Authorization: ''
     }
+    let sdkVideoId: string | undefined
 
     try {
 
@@ -444,6 +449,17 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     })
     const completeText = typeof completeResponse.data === 'string' ? completeResponse.data : String(completeResponse.data || '')
     logger.info(`[xiaohongshu] Multipart complete response: status=${completeResponse.status}, body=${completeText.substring(0, 500)}`)
+    const completeHeaders = (completeResponse.headers || {}) as Record<string, unknown>
+    const rosHeaders = Object.fromEntries(
+      Object.entries(completeHeaders).filter(([key]) => key.toLowerCase().startsWith('x-ros-'))
+    )
+    if (Object.keys(rosHeaders).length > 0) {
+      logger.info(`[xiaohongshu] Multipart complete x-ros headers: ${JSON.stringify(rosHeaders).substring(0, 500)}`)
+    }
+    sdkVideoId = this.readStringField(completeHeaders, ['x-ros-video-id', 'x-ros-videoid', 'x-ros-videoId'])
+    if (sdkVideoId) {
+      logger.info(`[xiaohongshu] Multipart complete returned SDK videoId=${sdkVideoId}`)
+    }
 
     logger.info(`[xiaohongshu] Multipart upload completed`)
 
@@ -453,7 +469,13 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
     onProgress?.({ percent: 80, stage: '视频上传完成，正在等待平台处理...' })
 
-    const readyInfo = await this.waitForUploadedVideoReady(client, fileId, onProgress)
+    const readyInfo = await this.waitForUploadedVideoReady(
+      client,
+      fileId,
+      onProgress,
+      sdkVideoId,
+      options?.waitForServerCover !== false
+    )
 
     return {
       videoId: fileId,
@@ -470,23 +492,35 @@ export class XhsApiAdapter extends BasePlatformAdapter {
   private async waitForUploadedVideoReady(
     client: HttpClient,
     fileId: string,
-    onProgress?: (p: UploadProgress) => void
+    onProgress?: (p: UploadProgress) => void,
+    sdkVideoId?: string,
+    waitForServerCover = true
   ): Promise<{ videoId: string; firstFrameFileId?: string; transcodeVideoFileId?: string }> {
     onProgress?.({ percent: 82, stage: '正在生成小红书视频ID...' })
-    const videoId = await this.generateXhsVideoId(client, fileId)
+    const videoId = sdkVideoId || await this.generateXhsVideoId(client, fileId)
     logger.info(`[xiaohongshu] Generated videoId=${videoId} for fileId=${fileId}`)
 
     onProgress?.({ percent: 84, stage: '等待小红书处理视频首帧...' })
     await delay(3000)
 
     let lastPayload: Record<string, unknown> | null = null
-    for (let attempt = 1; attempt <= 20; attempt++) {
+    let maxAttempts = 100
+    let queryIntervalMs = 3000
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const payload = await this.queryXhsTranscode(client, videoId, false)
       lastPayload = payload
       const hasFirstFrame = this.readBooleanField(payload, ['hasFirstFrame', 'has_first_frame'])
       const firstFrameFileId = this.readStringField(payload, ['firstFrameFileId', 'first_frame_file_id'])
       const transcodeVideoFileId = this.readStringField(payload, ['transcodeVideoFileId', 'transcode_video_file_id'])
       const progress = this.readStringField(payload, ['transProgressInfo.progress', 'trans_progress_info.progress'])
+      const serverMaxAttempts = Number(this.readStringField(payload, ['maxUnchangedQueryTimes', 'max_unchanged_query_times']))
+      const serverQueryIntervalMs = Number(this.readStringField(payload, ['queryIntervalMs', 'query_interval_ms']))
+      if (Number.isFinite(serverMaxAttempts) && serverMaxAttempts > 0) {
+        maxAttempts = serverMaxAttempts
+      }
+      if (Number.isFinite(serverQueryIntervalMs) && serverQueryIntervalMs > 0) {
+        queryIntervalMs = serverQueryIntervalMs
+      }
       logger.info(
         `[xiaohongshu] query_transcode attempt ${attempt}: ` +
         `hasFirstFrame=${hasFirstFrame ? 'yes' : 'no'}, ` +
@@ -499,9 +533,15 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         return { videoId, firstFrameFileId, transcodeVideoFileId }
       }
 
+      if (!waitForServerCover) {
+        logger.info('[xiaohongshu] Custom cover provided; continuing without server first-frame extraction')
+        onProgress?.({ percent: 88, stage: '小红书视频处理入口已确认' })
+        return { videoId, transcodeVideoFileId }
+      }
+
       const percent = Math.min(87, 84 + Math.floor(attempt / 4))
-      onProgress?.({ percent, stage: `等待小红书处理视频首帧...(${attempt}/20)` })
-      await delay(3000)
+      onProgress?.({ percent, stage: `等待小红书处理视频首帧...(${attempt}/${maxAttempts})` })
+      await delay(queryIntervalMs)
     }
 
     throw new Error(
@@ -603,52 +643,111 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     client: HttpClient,
     scene: 'video' | 'image'
   ): Promise<XhsValidUploadPermit> {
-    const endpoints = [
-      { name: 'creator', url: API.uploadCreatorPermit },
-      { name: 'web', url: API.uploadWebPermit }
-    ]
+    const urlPath = `/api/media/v1/upload/creator/permit?biz_name=spectrum&scene=${scene}&file_count=1&version=1&source=web`
+    const requestUrl = `https://creator.xiaohongshu.com${urlPath}`
     const failures: string[] = []
+    const cookie = client.getCookieString()
 
-    for (const endpoint of endpoints) {
-      try {
-        const response = await client.get<XhsUploadPermitResponse>(
-          `${endpoint.url}?biz_name=spectrum&scene=${scene}&file_count=1&version=1&source=web`,
-          undefined,
-          {
-            referer: XHS_URLS.publish,
-            Authorization: ''
-          }
-        )
-
-        const permit = this.readXhsUploadPermit(response.data)
-        if (response.status >= 200 && response.status < 300 && this.isValidXhsUploadPermit(permit)) {
-          logger.info(`[xiaohongshu] ${scene} upload permit via ${endpoint.name}: host=${permit.uploadAddr}, fileId=${permit.fileIds[0]}`)
+    try {
+      const browserResponse = await getSignService().getXhsInBuiltinBrowser(
+        cookie,
+        requestUrl,
+        { Accept: 'application/json, text/plain, */*' },
+        client.getAccountId()
+      )
+      if (browserResponse) {
+        const data = this.parseXhsUploadPermitPayload(browserResponse.text)
+        const permit = this.readXhsUploadPermit(data)
+        if (browserResponse.status >= 200 && browserResponse.status < 300 && this.isValidXhsUploadPermit(permit)) {
+          logger.info(`[xiaohongshu] ${scene} upload permit via signed creator browser: host=${permit.uploadAddr}, fileId=${permit.fileIds[0]}`)
           return permit
         }
 
-        const body = this.summarizeXhsPayload(response.data)
-        failures.push(`${endpoint.name}=HTTP ${response.status}${body ? ` ${body}` : ''}`)
-        logger.warn(`[xiaohongshu] ${scene} upload permit via ${endpoint.name} failed: HTTP ${response.status}${body ? `, body=${body}` : ''}`)
-      } catch (err: any) {
-        const detail = err?.message || String(err)
-        failures.push(`${endpoint.name}=error ${detail}`)
-        logger.warn(`[xiaohongshu] ${scene} upload permit via ${endpoint.name} error: ${detail}`)
+        const body = this.summarizeXhsPayload(data || browserResponse.text)
+        failures.push(`browser=HTTP ${browserResponse.status}${body ? ` ${body}` : ''}`)
+        logger.warn(`[xiaohongshu] ${scene} upload permit via signed creator browser failed: HTTP ${browserResponse.status}${body ? `, body=${body}` : ''}`)
+      } else {
+        failures.push('browser=unavailable')
       }
+    } catch (err: any) {
+      const detail = err?.message || String(err)
+      failures.push(`browser=error ${detail}`)
+      logger.warn(`[xiaohongshu] ${scene} upload permit via signed creator browser error: ${detail}`)
+    }
+
+    try {
+      const { headers: signHeaders } = await this.getXhsSignHeaders(
+        urlPath,
+        cookie,
+        undefined,
+        client.getAccountId()
+      )
+      const response = await client.get<XhsUploadPermitResponse>(
+        requestUrl,
+        undefined,
+        {
+          referer: XHS_URLS.publish,
+          Origin: 'https://creator.xiaohongshu.com',
+          Authorization: '',
+          ...signHeaders
+        }
+      )
+
+      const permit = this.readXhsUploadPermit(response.data)
+      if (response.status >= 200 && response.status < 300 && this.isValidXhsUploadPermit(permit)) {
+        logger.info(`[xiaohongshu] ${scene} upload permit via signed creator HTTP: host=${permit.uploadAddr}, fileId=${permit.fileIds[0]}`)
+        return permit
+      }
+
+      const body = this.summarizeXhsPayload(response.data)
+      failures.push(`signed-http=HTTP ${response.status}${body ? ` ${body}` : ''}`)
+      logger.warn(`[xiaohongshu] ${scene} upload permit via signed creator HTTP failed: HTTP ${response.status}${body ? `, body=${body}` : ''}`)
+    } catch (err: any) {
+      const detail = err?.message || String(err)
+      failures.push(`signed-http=error ${detail}`)
+      logger.warn(`[xiaohongshu] ${scene} upload permit via signed creator HTTP error: ${detail}`)
     }
 
     const label = scene === 'image' ? '封面上传凭证' : '上传凭证'
-    throw new Error(`获取${label}失败: ${failures.join(' | ')}`)
+    throw new Error(
+      `获取${label}失败: 当前小红书前端要求 creator/permit 签名，本次未拿到有效凭证（${failures.join(' | ')}）。` +
+      '已停止退回旧 web/permit，避免再次出现 HTTP 461 空成功但不入审核。'
+    )
+  }
+
+  private parseXhsUploadPermitPayload(raw: unknown): XhsUploadPermitResponse | undefined {
+    if (!raw) return undefined
+    if (typeof raw === 'string') {
+      try {
+        return JSON.parse(raw) as XhsUploadPermitResponse
+      } catch {
+        return undefined
+      }
+    }
+    if (typeof raw === 'object') return raw as XhsUploadPermitResponse
+    return undefined
   }
 
   private readXhsUploadPermit(data: XhsUploadPermitResponse | undefined): XhsUploadPermit | undefined {
     if (!data || typeof data !== 'object') return undefined
+    let permit: XhsUploadPermit | undefined
     if (data.data && typeof data.data === 'object' && Array.isArray(data.data.uploadTempPermits)) {
-      return data.data.uploadTempPermits[0]
+      permit = data.data.uploadTempPermits[0]
+    } else if (data.data && typeof data.data === 'object' && Array.isArray(data.data.upload_temp_permits)) {
+      permit = data.data.upload_temp_permits[0]
+    } else if (Array.isArray(data.uploadTempPermits)) {
+      permit = data.uploadTempPermits[0]
+    } else if (Array.isArray(data.upload_temp_permits)) {
+      permit = data.upload_temp_permits[0]
     }
-    if (Array.isArray(data.uploadTempPermits)) {
-      return data.uploadTempPermits[0]
+    if (!permit) return undefined
+
+    const uploadAddr = permit.uploadAddr || permit.upload_addr
+    const fileIds = permit.fileIds || permit.file_ids
+    if (uploadAddr !== permit.uploadAddr || fileIds !== permit.fileIds) {
+      return { ...permit, uploadAddr, fileIds }
     }
-    return undefined
+    return permit
   }
 
   private isValidXhsUploadPermit(permit: XhsUploadPermit | undefined): permit is XhsValidUploadPermit {
@@ -952,7 +1051,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
             original_metadata: originalMetadata
           }]
         },
-        entrance: 'web'
+        entrance: 'web',
+        replaced_video: false,
+        pk_cover_biz_relations: []
       }
     }
 
@@ -1002,7 +1103,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         )
       }
 
-      // Use axios directly with the same authenticated web session and creator-page headers.
+      // Use axios directly with the same authenticated web session and web API headers.
       const response = await axios.post<{
         success: boolean
         data?: { note_id: string }
@@ -1117,6 +1218,14 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     const submitResult = this.parseXhsSubmitSuccess(data, `built-in browser HTTP ${response.status}`)
     if (submitResult) return submitResult
 
+    if (response.status < 200 || response.status >= 300) {
+      logger.warn(
+        `[xiaohongshu] Built-in browser submit did not create a confirmed note: ` +
+        `HTTP ${response.status}, body=${response.text.substring(0, 300)}`
+      )
+      return null
+    }
+
     if (this.isXhsSubmitAccepted(data)) {
       throw this.createXhsUnconfirmedSubmitError(`built-in browser HTTP ${response.status}`, response.status, data)
     }
@@ -1133,10 +1242,6 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         `_webmsxyw=${response.hasWebmsxyw ? 'yes' : 'no'}, ` +
         `signedKeys=${response.signedKeys?.join(',') || 'none'}, pageUrl=${response.pageUrl || 'unknown'}`
       )
-      return null
-    }
-
-    if (response.status < 200 || response.status >= 300) {
       return null
     }
 
@@ -1210,7 +1315,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
     const noteId = this.extractXhsNoteId(data)
     if (!noteId) {
-      logger.warn(`[xiaohongshu] Submit acknowledged via ${source}, but note_id is missing; response=${JSON.stringify(data).substring(0, 500)}`)
+      logger.warn(
+        `[xiaohongshu] Submit acknowledged via ${source}, but note_id is missing; ` +
+        `treating as not created; response=${JSON.stringify(data).substring(0, 500)}`
+      )
       return null
     }
 
@@ -1239,8 +1347,8 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     const statusPart = typeof status === 'number' ? `HTTP ${status}` : source
     const msgPart = data?.msg ? `，平台消息：${data.msg}` : ''
     return new Error(
-      `内容提交状态无法确认: 小红书${source}返回成功标记但没有 note_id（${statusPart}）${msgPart}。` +
-      '已停止将该记录标记为成功，避免误报。请到小红书创作者中心的发布管理、审核中或草稿箱确认该视频是否已生成笔记。'
+      `内容提交失败: 小红书${source}返回成功标记但没有 note_id（${statusPart}）${msgPart}。` +
+      '实测该响应不会生成审核中或草稿箱记录，已停止标记为待确认。请保留日志并重试 API 发布；不要把本次响应视为发布成功。'
     )
   }
 

@@ -297,7 +297,8 @@ export function usePublishFlow() {
           accountId: account.id,
           platformId,
           filePath: video.filePath,
-          publishRunId
+          publishRunId,
+          hasCustomCover: !!coverFilePath
         })
 
         if (!uploadRes.success) {
@@ -321,7 +322,7 @@ export function usePublishFlow() {
         if (coverFilePath) {
           contentPayload.coverPath = coverFilePath
         }
-        const submitRes = await ipcInvoke<{ recordId: string }>(IPC_CHANNELS.PUBLISH_SUBMIT, {
+        const submitRes = await ipcInvoke<{ recordId: string; status?: string; message?: string }>(IPC_CHANNELS.PUBLISH_SUBMIT, {
           recordId,
           platformId,
           videoId,
@@ -330,7 +331,11 @@ export function usePublishFlow() {
         })
 
         if (submitRes.success) {
-          store.updateTask(task.id, { status: 'done', progress: 100 })
+          if (submitRes.data?.status === 'unconfirmed') {
+            store.updateTask(task.id, { status: 'unconfirmed', progress: 99, error: submitRes.data.message })
+          } else {
+            store.updateTask(task.id, { status: 'done', progress: 100 })
+          }
         } else {
           const errorMsg = toChineseMessage(submitRes.error)
           store.updateTask(task.id, { status: 'error', error: errorMsg })
@@ -344,9 +349,15 @@ export function usePublishFlow() {
       const current = usePublishStore.getState().tasks.find((ct) => ct.id === t.id)
       return current?.status === 'error'
     }).length
+    const unconfirmedCount = tasks.filter((t) => {
+      const current = usePublishStore.getState().tasks.find((ct) => ct.id === t.id)
+      return current?.status === 'unconfirmed'
+    }).length
 
-    if (errorCount === 0) {
+    if (errorCount === 0 && unconfirmedCount === 0) {
       message.success('发布流程完成')
+    } else if (errorCount === 0) {
+      message.warning(`${unconfirmedCount} 个平台已提交但待平台确认`)
     } else {
       message.warning(`发布完成，${errorCount} 个平台失败`)
     }
