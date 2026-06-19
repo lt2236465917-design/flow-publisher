@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  getSubmitFailureUpdate,
+  getSubmitFailureStatus,
+  resolveSubmittedVideoId,
   validateSubmitRelationship,
   validateUploadRelationship
 } from './publish-validation'
@@ -39,7 +42,7 @@ describe('publish relationship validation', () => {
     ).toThrow('发布记录账号与平台不匹配')
   })
 
-  it.each(['pending', 'uploading', 'submitting', 'done', 'error'])(
+  it.each(['pending', 'uploading', 'submitting', 'done', 'error', 'unconfirmed'])(
     'rejects records in %s state',
     (status) => {
       expect(() =>
@@ -47,4 +50,28 @@ describe('publish relationship validation', () => {
       ).toThrow('当前状态不允许提交')
     }
   )
+
+  it('marks failures after submit starts as unconfirmed', () => {
+    expect(getSubmitFailureStatus(true)).toBe('unconfirmed')
+    expect(getSubmitFailureStatus(false)).toBe('error')
+  })
+
+  it('does not mutate a record before relationship validation succeeds', () => {
+    expect(getSubmitFailureUpdate(null, false, new Error('rejected'))).toBeNull()
+    expect(getSubmitFailureUpdate('r1', false, new Error('failed'))).toEqual({
+      recordId: 'r1',
+      status: 'error',
+      message: 'Error: failed'
+    })
+  })
+
+  it('rejects a renderer-supplied video ID that differs from persisted upload state', () => {
+    expect(() => resolveSubmittedVideoId('persisted-id', 'other-id')).toThrow(
+      '视频标识不匹配'
+    )
+    expect(resolveSubmittedVideoId('persisted-id', 'persisted-id')).toBe(
+      'persisted-id'
+    )
+    expect(resolveSubmittedVideoId(undefined, 'legacy-id')).toBe('legacy-id')
+  })
 })

@@ -20,6 +20,8 @@ import {
 } from '../security/trusted-ipc'
 import { requireAllowedFile } from '../security/file-access-policy'
 import {
+  getSubmitFailureUpdate,
+  resolveSubmittedVideoId,
   validateSubmitRelationship,
   validateUploadRelationship
 } from '../services/publish/publish-validation'
@@ -273,10 +275,16 @@ export function registerPublishIpcHandlers(): void {
       const videoId = typeof result === 'string' ? result
         : (result && typeof result === 'object' && 'videoId' in result) ? (result as { videoId: string; meta: Record<string, unknown> }).videoId
         : undefined
+      if (!videoId) throw new Error('平台上传成功响应缺少 videoId')
       // Persist upload metadata so submit can recover from crashes
-      if (result && typeof result === 'object' && 'meta' in result) {
-        recordRepo.saveUploadMeta(record.id, (result as { meta: Record<string, unknown> }).meta)
-      }
+      const uploadMeta =
+        result && typeof result === 'object' && 'meta' in result
+          ? (result as { meta: Record<string, unknown> }).meta
+          : {}
+      recordRepo.saveUploadMeta(record.id, {
+        ...uploadMeta,
+        _videoId: videoId
+      })
 
       recordRepo.updateStatus(record.id, 'uploaded', 100)
       saveDatabase()
@@ -289,12 +297,6 @@ export function registerPublishIpcHandlers(): void {
         const recordRepo = getPublishRecordRepository()
         if (createdRecordId) {
           recordRepo.updateStatus(createdRecordId, 'error', undefined, String(err))
-        } else {
-          const allRecords = recordRepo.getAll()
-          const pendingRecord = allRecords.find(r => r.status === 'pending' && r.account_id === params.accountId)
-          if (pendingRecord) {
-            recordRepo.updateStatus(pendingRecord.id, 'error', undefined, String(err))
-          }
         }
         saveDatabase()
       } catch (cleanupErr) {
@@ -326,6 +328,8 @@ export function registerPublishIpcHandlers(): void {
       platformFields?: Record<string, unknown>
     }
   }): Promise<IpcResponse> => {
+    let submitStarted = false
+    let validatedRecordId: string | null = null
     try {
       logger.info(
         `[publish] Submit payload summary: ${JSON.stringify(
@@ -357,9 +361,16 @@ export function registerPublishIpcHandlers(): void {
       const account = accountRepo.getById(record.account_id)
       if (!account) return { success: false, error: '发布记录账号不存在' }
       validateSubmitRelationship(record, account, params.platformId)
-
-      recordRepo.updateStatus(params.recordId, 'submitting', undefined)
-      saveDatabase()
+      validatedRecordId = record.id
+      const uploadMeta = recordRepo.getUploadMeta(record.id)
+      const persistedVideoId =
+        typeof uploadMeta?._videoId === 'string'
+          ? uploadMeta._videoId
+          : undefined
+      const effectiveVideoId = resolveSubmittedVideoId(
+        persistedVideoId,
+        params.videoId
+      )
 
       const mainWindow = getMainWindow() || undefined
 
@@ -433,7 +444,7 @@ export function registerPublishIpcHandlers(): void {
                 stage: '正在上传封面...'
               })
               coverFileId = await adapter.uploadCoverImageAPI(client, params.content.coverPath)
-              logger.info(`[publish] Cover uploaded, fileId: ${coverFileId}`)
+              logger.info('[publish] Cover uploaded')
             } catch (e) {
               logger.warn(`[publish] Cover upload failed (non-fatal): ${e}`)
               // Non-fatal: continue without cover
@@ -444,7 +455,15 @@ export function registerPublishIpcHandlers(): void {
           const contentWithMeta = { ...params.content, videoMetadata, videoPath: record.video_path }
           // Pass recordId so adapter can read upload metadata from DB (H7 + H11 fix)
           const contentWithRecord = { ...contentWithMeta, recordId: params.recordId }
-          return await adapter.submitContentAPI!(client, contentWithRecord, params.videoId, coverFileId)
+          recordRepo.updateStatus(params.recordId, 'submitting', 90)
+          saveDatabase()
+          submitStarted = true
+          return await adapter.submitContentAPI!(
+            client,
+            contentWithRecord,
+            effectiveVideoId,
+            coverFileId
+          )
         }
       )
 
@@ -456,7 +475,7 @@ export function registerPublishIpcHandlers(): void {
 
       if (submitResult?.contentId) {
         recordRepo.updateContentId(params.recordId, submitResult.contentId)
-        logger.info(`[publish] Saved contentId: ${submitResult.contentId} for record: ${params.recordId}`)
+        logger.info(`[publish] Saved content ID for record: ${params.recordId}`)
       }
 
       recordRepo.updateStatus(params.recordId, 'done', 100)
@@ -482,10 +501,22 @@ export function registerPublishIpcHandlers(): void {
       return { success: true, data: { recordId: params.recordId } }
     } catch (err) {
       logger.error('PUBLISH_SUBMIT error:', err)
-      const recordRepo = getPublishRecordRepository()
-      recordRepo.updateStatus(params.recordId, 'error', undefined, String(err))
-      saveDatabase()
-      return { success: false, error: String(err) }
+      const failure = getSubmitFailureUpdate(
+        validatedRecordId,
+        submitStarted,
+        err
+      )
+      if (failure) {
+        const recordRepo = getPublishRecordRepository()
+        recordRepo.updateStatus(
+          failure.recordId,
+          failure.status,
+          undefined,
+          failure.message
+        )
+        saveDatabase()
+      }
+      return { success: false, error: failure?.message || String(err) }
     }
   })
 

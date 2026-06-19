@@ -1,3 +1,5 @@
+import { requireSecureOrLoopbackEndpoint } from '../../security/secure-transport'
+
 export type SignMode = 'self-hosted' | 'legacy-external'
 
 export const DEFAULT_SELF_HOSTED_SIGNER_URL = 'http://127.0.0.1:17321'
@@ -31,7 +33,7 @@ export function requiresWebSignature(platform: string): boolean {
 export function getSelfHostedSignerUrl(): string | null {
   const raw = process.env.FLOW_PUBLISHER_SIGNER_URL?.trim()
   if (raw === 'disabled' || raw === 'off') return null
-  return raw || DEFAULT_SELF_HOSTED_SIGNER_URL
+  return requireSecureOrLoopbackEndpoint(raw || DEFAULT_SELF_HOSTED_SIGNER_URL)
 }
 
 export function shouldStartManagedSelfHostedSigner(): boolean {

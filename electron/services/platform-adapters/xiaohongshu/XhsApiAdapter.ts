@@ -214,7 +214,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         // API 返回的字段名是 userName 和 userAvatar
         const nickname = data.userName || data.nickname || data.name || ''
         const avatarUrl = data.userAvatar || data.imageb || data.avatar || ''
-        logger.info(`[xiaohongshu] getAccountInfoAPI: nickname=${nickname}, avatarUrl=${avatarUrl ? 'yes' : 'no'}`)
+        logger.info(
+          `[xiaohongshu] getAccountInfoAPI: hasNickname=${Boolean(nickname)}, ` +
+          `avatarUrl=${avatarUrl ? 'yes' : 'no'}`
+        )
         return {
           displayName: nickname || undefined,
           avatarUrl: avatarUrl || undefined
@@ -328,7 +331,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     options?: UploadVideoOptions
   ): Promise<UploadResult> {
     if (!existsSync(filePath)) {
-      throw new Error(`视频文件不存在: ${filePath}`)
+      throw new Error('视频文件不存在')
     }
 
     const stats = statSync(filePath)
@@ -347,7 +350,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     const uploadAddr = permit.uploadAddr
     const token = permit.token || ''
 
-    logger.info(`[xiaohongshu] Upload permit: host=${uploadAddr}, fileId=${fileId}`)
+    logger.info(
+      `[xiaohongshu] Upload permit: hasHost=${Boolean(uploadAddr)}, ` +
+      `hasFileId=${Boolean(fileId)}`
+    )
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
@@ -389,7 +395,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       )
       throw new Error('初始化分片上传失败：未获取到 uploadId')
     }
-    logger.info(`[xiaohongshu] Multipart upload initiated, uploadId: ${uploadId}`)
+    logger.info(
+      `[xiaohongshu] Multipart upload initiated: hasUploadId=${Boolean(uploadId)}`
+    )
 
     // Step 2b: Upload parts (5MB each — matching yixiaoer's chunk size)
     const etags: string[] = new Array(totalParts)
@@ -503,7 +511,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     }
     sdkVideoId = this.readStringField(completeHeaders, ['x-ros-video-id', 'x-ros-videoid', 'x-ros-videoId'])
     if (sdkVideoId) {
-      logger.info(`[xiaohongshu] Multipart complete returned SDK videoId=${sdkVideoId}`)
+      logger.info(
+        `[xiaohongshu] Multipart complete returned SDK video ID: ${Boolean(
+          sdkVideoId
+        )}`
+      )
     }
 
     logger.info(`[xiaohongshu] Multipart upload completed`)
@@ -650,7 +662,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
   ): Promise<{ videoId: string; firstFrameFileId?: string; transcodeVideoFileId?: string }> {
     onProgress?.({ percent: 82, stage: '正在生成小红书视频ID...' })
     const videoId = sdkVideoId || await this.generateXhsVideoId(client, fileId)
-    logger.info(`[xiaohongshu] Generated videoId=${videoId} for fileId=${fileId}`)
+    logger.info(
+      `[xiaohongshu] Generated upload identifiers: hasVideoId=${Boolean(videoId)}, ` +
+      `hasFileId=${Boolean(fileId)}`
+    )
 
     onProgress?.({ percent: 84, stage: '等待小红书处理视频首帧...' })
     await delay(3000)
@@ -667,7 +682,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         const message = err?.message || String(err)
         logger.warn(
           `[xiaohongshu] query_transcode attempt ${attempt} failed (${message}); ` +
-          `continuing with uploaded videoId=${videoId}`
+          'continuing with uploaded video'
         )
         onProgress?.({ percent: 88, stage: '小红书视频已上传，转码状态不可查' })
         return { videoId, transcodeVideoFileId: lastTranscodeVideoFileId }
@@ -693,8 +708,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       logger.info(
         `[xiaohongshu] query_transcode attempt ${attempt}: ` +
         `hasFirstFrame=${hasFirstFrame ? 'yes' : 'no'}, ` +
-        `firstFrameFileId=${firstFrameFileId || 'none'}, ` +
-        `transcodeVideoFileId=${transcodeVideoFileId || 'none'}, progress=${progress || 'n/a'}`
+        `hasFirstFrameFileId=${Boolean(firstFrameFileId)}, ` +
+        `hasTranscodeVideoFileId=${Boolean(transcodeVideoFileId)}, ` +
+        `progress=${progress || 'n/a'}`
       )
 
       if (hasFirstFrame || firstFrameFileId) {
@@ -715,7 +731,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
     logger.warn(
       `[xiaohongshu] query_transcode did not return first-frame fields after ${maxAttempts} attempts; ` +
-      `continuing with videoId=${videoId}, last=${JSON.stringify(lastPayload).substring(0, 300)}`
+      `continuing with uploaded video, last=${JSON.stringify(
+        summarizePayload(lastPayload)
+      )}`
     )
     onProgress?.({ percent: 88, stage: '小红书视频已上传，未返回服务端首帧' })
     return { videoId, transcodeVideoFileId: lastTranscodeVideoFileId }
@@ -735,14 +753,14 @@ export class XhsApiAdapter extends BasePlatformAdapter {
           )}`
         )
         if (videoId && videoId !== '-1') return videoId
-        lastError = JSON.stringify(response).substring(0, 300)
+        lastError = JSON.stringify(summarizePayload(response))
       } catch (err: any) {
         lastError = err?.message || String(err)
         logger.warn(`[xiaohongshu] generate videoId attempt ${attempt} failed: ${lastError}`)
       }
       await delay(1500 * attempt)
     }
-    throw new Error(`小红书生成 videoId 失败: fileId=${fileId}, last=${lastError}`)
+    throw new Error(`小红书生成 videoId 失败: last=${lastError}`)
   }
 
   private async queryXhsTranscode(client: HttpClient, videoId: string, needTranscode: boolean): Promise<Record<string, unknown>> {
@@ -835,7 +853,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
       const permit = this.readXhsUploadPermit(response.data)
       if (response.status >= 200 && response.status < 300 && this.isValidXhsUploadPermit(permit)) {
-        logger.info(`[xiaohongshu] ${scene} upload permit via yixiaoer web/permit HTTP: host=${permit.uploadAddr}, fileId=${permit.fileIds[0]}`)
+        logger.info(
+          `[xiaohongshu] ${scene} upload permit via yixiaoer web/permit HTTP: ` +
+          `hasHost=${Boolean(permit.uploadAddr)}, hasFileId=${Boolean(permit.fileIds[0])}`
+        )
         return permit
       }
 
@@ -862,7 +883,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         const data = this.parseXhsUploadPermitPayload(browserResponse.text)
         const permit = this.readXhsUploadPermit(data)
         if (browserResponse.status >= 200 && browserResponse.status < 300 && this.isValidXhsUploadPermit(permit)) {
-          logger.info(`[xiaohongshu] ${scene} upload permit via signed creator browser: host=${permit.uploadAddr}, fileId=${permit.fileIds[0]}`)
+          logger.info(
+            `[xiaohongshu] ${scene} upload permit via signed creator browser: ` +
+            `hasHost=${Boolean(permit.uploadAddr)}, hasFileId=${Boolean(permit.fileIds[0])}`
+          )
           return permit
         }
 
@@ -903,7 +927,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
       const permit = this.readXhsUploadPermit(response.data)
       if (response.status >= 200 && response.status < 300 && this.isValidXhsUploadPermit(permit)) {
-        logger.info(`[xiaohongshu] ${scene} upload permit via signed creator HTTP: host=${permit.uploadAddr}, fileId=${permit.fileIds[0]}`)
+        logger.info(
+          `[xiaohongshu] ${scene} upload permit via signed creator HTTP: ` +
+          `hasHost=${Boolean(permit.uploadAddr)}, hasFileId=${Boolean(permit.fileIds[0])}`
+        )
         return permit
       }
 
@@ -998,7 +1025,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     const uploadAddr = permit.uploadAddr
     const token = permit.token || ''
 
-    logger.info(`[xiaohongshu] Cover upload permit: host=${uploadAddr}, fileId=${fileId}`)
+    logger.info(
+      `[xiaohongshu] Cover upload permit: hasHost=${Boolean(uploadAddr)}, ` +
+      `hasFileId=${Boolean(fileId)}`
+    )
 
     // Step 2: PUT image to COS (matching yixiaoer's uploadImage$8)
     const imageBuffer = readFileSync(imagePath)
@@ -1020,7 +1050,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       responseType: 'text'
     })
 
-    logger.info(`[xiaohongshu] Cover image uploaded, fileId: ${fileId}`)
+    logger.info('[xiaohongshu] Cover image uploaded')
     onProgress?.({ percent: 90, stage: '封面上传完成' })
 
     return fileId
@@ -1101,17 +1131,18 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       const loc = payload.platformFields.location
       if (typeof loc === 'object' && loc !== null && 'name' in loc) {
         const locObj = loc as { name: string; poi_id?: string; address?: string; extra?: Record<string, unknown> }
-        commonObj.post_loc = {
+        const postLocation = {
           poi_id: locObj.poi_id || '',
           name: locObj.name,
           poi_type: (locObj.extra?.poi_type as number) || 0,
           subname: locObj.address || ''
         }
+        commonObj.post_loc = postLocation
         logger.info(
           `[xiaohongshu] Location attached: hasPoiId=${Boolean(
-            commonObj.post_loc.poi_id
+            postLocation.poi_id
           )}, hasName=${Boolean(locObj.name)}, hasSubname=${Boolean(
-            commonObj.post_loc.subname
+            postLocation.subname
           )}`
         )
       } else if (typeof loc === 'string') {
@@ -1204,7 +1235,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         `transcodeVideoFileId=${transcodeVideoFileId || 'none'}`
       )
     }
-    logger.info(`[xiaohongshu] Submit video file_id=${effectiveVideoFileId || 'none'} (source=${uploadedFileId ? 'uploadedFileId' : videoId ? 'submitArg' : xhsVideoId ? 'xhsVideoId' : 'none'})`)
+    logger.info(
+      `[xiaohongshu] Submit video identifier available=${Boolean(
+        effectiveVideoFileId
+      )} (source=${uploadedFileId ? 'uploadedFileId' : videoId ? 'submitArg' : xhsVideoId ? 'xhsVideoId' : 'none'})`
+    )
     if (!effectiveVideoFileId) {
       throw new Error('内容提交失败: 小红书没有可用 video file_id。视频上传结果缺少 upload fileId。')
     }
@@ -1508,7 +1543,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
           .map((item) => item.contentId)
           .filter(Boolean)
       )
-      logger.info(`[xiaohongshu] Pre-submit title snapshot: title="${normalizedTitle}", matched=${ids.size}`)
+      logger.info(
+        `[xiaohongshu] Pre-submit title snapshot: titleLength=${normalizedTitle.length}, ` +
+        `matched=${ids.size}`
+      )
       return ids
     } catch (err: any) {
       logger.warn(`[xiaohongshu] Pre-submit title snapshot failed: ${err?.message || err}`)

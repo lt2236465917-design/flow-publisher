@@ -636,7 +636,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     coverPath: string
   ): Promise<{ uri: string; width: number; height: number } | null> {
     if (!existsSync(coverPath)) {
-      logger.warn(`[douyin] Cover file not found: ${coverPath}`)
+      logger.warn('[douyin] Cover file not found')
       return null
     }
 
@@ -854,7 +854,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     }
 
     if (!existsSync(filePath)) {
-      throw new Error(`视频文件不存在: ${filePath}`)
+      throw new Error('视频文件不存在')
     }
 
     const stats = statSync(filePath)
@@ -1164,7 +1164,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
     // Guard against IPC serializing undefined as the string "undefined"
     const coverPath = (payload.coverPath && payload.coverPath !== 'undefined') ? payload.coverPath : undefined
     if (coverPath && existsSync(coverPath)) {
-      logger.info(`[douyin] Uploading cover image: ${coverPath}`)
+      logger.info('[douyin] Uploading cover image')
       coverResult = await this.uploadCoverImage(client, coverPath)
       if (coverResult) {
         logger.info(`[douyin] Cover uploaded successfully: ${coverResult.uri}`)
@@ -1172,7 +1172,10 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         logger.warn('[douyin] Cover upload failed, proceeding without custom cover')
       }
     } else {
-      logger.warn(`[douyin] No cover to upload: coverPath="${coverPath}", exists=${coverPath ? existsSync(coverPath) : 'N/A'}`)
+      logger.warn(
+        `[douyin] No cover to upload: provided=${Boolean(coverPath)}, ` +
+        `exists=${coverPath ? existsSync(coverPath) : 'N/A'}`
+      )
     }
 
     // Build hashtags text_extra array and full text with inline hashtags
@@ -1457,7 +1460,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           }
 
           const awemeId = browserData.aweme_id || browserData.item_id
-          logger.info(`[douyin] Content submitted via built-in browser session, content_id: ${awemeId}`)
+          logger.info('[douyin] Content submitted via built-in browser session')
           return {
             contentId: awemeId,
             publishUrl: awemeId ? `https://www.douyin.com/video/${awemeId}` : undefined
@@ -1540,7 +1543,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       }
 
       const awemeId = response.data.aweme_id || response.data.item_id
-      logger.info(`[douyin] Content submitted, content_id: ${awemeId}`)
+      logger.info('[douyin] Content submitted')
 
       return {
         contentId: awemeId,

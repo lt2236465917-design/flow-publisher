@@ -418,9 +418,9 @@ export class WcApiAdapter extends BasePlatformAdapter {
     client: HttpClient,
     filePath: string,
     onProgress?: (p: UploadProgress) => void
-  ): Promise<string> {
+  ): Promise<UploadResult> {
     if (!existsSync(filePath)) {
-      throw new Error(`视频文件不存在: ${filePath}`)
+      throw new Error('视频文件不存在')
     }
 
     const stats = statSync(filePath)
@@ -509,7 +509,9 @@ export class WcApiAdapter extends BasePlatformAdapter {
       throw new Error('获取上传凭证失败，请检查登录状态')
     }
 
-    logger.info(`[wechat-channels] Upload auth key obtained, uin: ${uploadData.uin}`)
+    logger.info(
+      `[wechat-channels] Upload auth obtained: hasUin=${Boolean(uploadData.uin)}`
+    )
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
@@ -523,7 +525,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
       throw new Error('获取上传ID失败')
     }
 
-    logger.info(`[wechat-channels] Upload ID: ${uploadId}`)
+    logger.info(`[wechat-channels] Upload ID obtained: ${Boolean(uploadId)}`)
 
     // Step 3: Upload video chunks (get fresh authKey for each chunk)
     const downloadUrl = await this.uploadVideoChunks(client, filePath, stats.size, uploadData.authKey, uploadId, String(videoFileType), uploadUin, onProgress)
@@ -597,7 +599,10 @@ export class WcApiAdapter extends BasePlatformAdapter {
 
     const xArgs = `apptype=251&filetype=${fileType}&weixinnum=${weixinnum}&filekey=${encodeURIComponent(fileName)}&filesize=${fileSize}&taskid=${taskId}&scene=2`
 
-    logger.info(`[wechat-channels] getUploadId: fileSize=${fileSize}, weixinnum=${weixinnum}, taskId=${taskId}`)
+    logger.info(
+      `[wechat-channels] getUploadId: fileSize=${fileSize}, ` +
+      `hasWeixinNumber=${Boolean(weixinnum)}, hasTaskId=${Boolean(taskId)}`
+    )
     logger.info(
       `[wechat-channels] getUploadId request: body=${JSON.stringify(
         summarizePayload(body)
@@ -1009,7 +1014,11 @@ export class WcApiAdapter extends BasePlatformAdapter {
       if (respDraftId) {
         draftId = respDraftId
         clipKey = respClipKey
-        logger.info(`[wechat-channels] post_clip_video success, draftId: ${draftId}, clipKey: ${clipKey}`)
+        logger.info(
+          `[wechat-channels] post_clip_video success: hasDraftId=${Boolean(
+            draftId
+          )}, hasClipKey=${Boolean(clipKey)}`
+        )
       } else {
         logger.warn(
           `[wechat-channels] post_clip_video response: ${JSON.stringify(
@@ -1215,9 +1224,12 @@ export class WcApiAdapter extends BasePlatformAdapter {
 
       const feedId = respData?.data?.feedId || respData?.data?.objectId || respData?.data?.postId || respData?.data?.id
       if (feedId) {
-        logger.info(`[wechat-channels] Content submitted successfully, feedId: ${feedId}`)
+        logger.info('[wechat-channels] Content submitted successfully')
       } else {
-        logger.info(`[wechat-channels] Content accepted by post_create, but response did not include feedId (draftId=${draftId}, clipKey=${clipKey})`)
+        logger.info(
+          `[wechat-channels] Content accepted without feedId: ` +
+          `hasDraftId=${Boolean(draftId)}, hasClipKey=${Boolean(clipKey)}`
+        )
       }
 
       return {
@@ -1356,7 +1368,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
     finderUsername: string
   ): Promise<string> {
     if (!existsSync(coverPath)) {
-      logger.warn(`[wechat-channels] Cover file not found: ${coverPath}`)
+      logger.warn('[wechat-channels] Cover file not found')
       return ''
     }
 

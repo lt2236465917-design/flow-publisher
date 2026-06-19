@@ -19,6 +19,8 @@ import type { ScheduledTaskRow } from '../database/repositories/scheduled-task.r
 import type { ScheduledTaskRepository } from '../database/repositories/scheduled-task.repo'
 import { getMainWindow } from '../../security/trusted-ipc'
 import { decideScheduledPublishAction } from './scheduled-publish-policy'
+import type { SubmitResult } from '../../../shared/types/analytics'
+import { validateUploadRelationship } from '../publish/publish-validation'
 
 async function ensureSessionHealthy(
   adapter: IPlatformAdapter,
@@ -83,7 +85,10 @@ export class TaskQueue {
     this._currentTaskId = task.id
 
     logger.info(`[TaskQueue] Starting execution of task ${task.id}`)
-    logger.info(`[TaskQueue] Task details - title: "${task.title}", platforms: ${task.platforms}, scheduled_at: ${task.scheduled_at}`)
+    logger.info(
+      `[TaskQueue] Task details: platforms=${task.platforms}, ` +
+      `scheduled_at=${task.scheduled_at}, titleLength=${task.title.length}`
+    )
 
     const results: { platform: string; success: boolean; error?: string }[] = []
 
@@ -107,13 +112,24 @@ export class TaskQueue {
 
         const accountRepo = getAccountRepository()
         const account = accountRepo.getById(accountId)
-        if (!account || account.session_status !== 'logged_in') {
-          logger.error(`[TaskQueue] Platform ${platformId} account not logged in, skipping`)
-          results.push({ platform: platformId, success: false, error: '账号未登录' })
+        if (!account) {
+          logger.error(`[TaskQueue] Platform ${platformId} account missing, skipping`)
+          results.push({ platform: platformId, success: false, error: '账号不存在' })
+          continue
+        }
+        try {
+          validateUploadRelationship(account, platformId)
+        } catch (error) {
+          logger.error(`[TaskQueue] Platform ${platformId} account validation failed`)
+          results.push({
+            platform: platformId,
+            success: false,
+            error: String(error)
+          })
           continue
         }
 
-        logger.info(`[TaskQueue] Publishing to ${platformId} with account ${accountId}`)
+        logger.info(`[TaskQueue] Publishing to ${platformId} with configured account`)
 
         try {
           await this.publishToPlatform(
@@ -352,7 +368,7 @@ export class TaskQueue {
     // Pass recordId so adapter can read upload metadata from DB (H7 + H11 fix)
     const contentWithRecord = { ...content, recordId: record.id }
     let submitStarted = false
-    let submitResult
+    let submitResult: SubmitResult | undefined
     try {
       await ensureSessionHealthy(adapter, client, accountId, platformId)
       await ensureWebSignerReadyForScheduledTask(

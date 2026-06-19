@@ -10,6 +10,49 @@ interface PublishRecord {
   status: string
 }
 
+export type SubmitFailureStatus = 'error' | 'unconfirmed'
+
+export function getSubmitFailureStatus(
+  submitStarted: boolean
+): SubmitFailureStatus {
+  return submitStarted ? 'unconfirmed' : 'error'
+}
+
+export function getSubmitFailureUpdate(
+  validatedRecordId: string | null,
+  submitStarted: boolean,
+  error: unknown
+): {
+  recordId: string
+  status: SubmitFailureStatus
+  message: string
+} | null {
+  if (!validatedRecordId) return null
+  const status = getSubmitFailureStatus(submitStarted)
+  return {
+    recordId: validatedRecordId,
+    status,
+    message:
+      status === 'unconfirmed'
+        ? `提交结果无法确认，已停止自动重试: ${String(error)}`
+        : String(error)
+  }
+}
+
+export function resolveSubmittedVideoId(
+  persistedVideoId: string | undefined,
+  requestedVideoId: string | undefined
+): string | undefined {
+  if (
+    persistedVideoId &&
+    requestedVideoId &&
+    persistedVideoId !== requestedVideoId
+  ) {
+    throw new Error('提交视频标识不匹配')
+  }
+  return persistedVideoId || requestedVideoId
+}
+
 export function validateUploadRelationship(
   account: PublishAccount,
   platformId: string

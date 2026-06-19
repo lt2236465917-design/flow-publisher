@@ -1,11 +1,16 @@
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
-import { getScheduledTaskRepository, saveDatabase } from '../services/database'
+import {
+  getAccountRepository,
+  getScheduledTaskRepository,
+  saveDatabase
+} from '../services/database'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import { logger } from '../utils/logger'
 import dayjs from 'dayjs'
 import { registerTrustedIpcHandler } from '../security/trusted-ipc'
 import { requireAllowedFile } from '../security/file-access-policy'
 import { summarizePayload } from '../utils/log-redaction'
+import { validateUploadRelationship } from '../services/publish/publish-validation'
 
 export function registerSchedulerIpcHandlers(): void {
   // Create a scheduled task
@@ -31,6 +36,19 @@ export function registerSchedulerIpcHandlers(): void {
       }
       if (scheduledTime.isBefore(minTime)) {
         return { success: false, error: '定时时间必须在5分钟之后' }
+      }
+
+      const accountRepo = getAccountRepository()
+      for (const platformId of params.platforms) {
+        const accountId = params.accountIds[platformId]
+        if (!accountId) {
+          return { success: false, error: `平台 ${platformId} 未配置账号` }
+        }
+        const account = accountRepo.getById(accountId)
+        if (!account) {
+          return { success: false, error: `平台 ${platformId} 的账号不存在` }
+        }
+        validateUploadRelationship(account, platformId)
       }
 
       const repo = getScheduledTaskRepository()

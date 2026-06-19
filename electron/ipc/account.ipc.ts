@@ -162,7 +162,7 @@ export function registerAccountIpcHandlers(): void {
                 })()
               `)
               if (displayName) {
-                logger.info(`[account] Got displayName from page DOM: ${displayName}`)
+                logger.info('[account] Got display name from page DOM')
               }
             }
           } catch (e) {
@@ -196,7 +196,7 @@ export function registerAccountIpcHandlers(): void {
             const encrypted = encryptString(JSON.stringify(filteredCookies))
             repo.updateSession(accountId!, 'logged_in', encrypted, displayName)
             saveDatabase()
-            logger.info(`[account] Account name updated: ${displayName}`)
+            logger.info('[account] Account display name updated')
           } else {
             logger.warn('[account] Could not get displayName from any source')
           }

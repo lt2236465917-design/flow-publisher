@@ -434,7 +434,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
     onProgress?: (p: UploadProgress) => void
   ): Promise<string | UploadResult> {
     if (!existsSync(filePath)) {
-      throw new Error(`视频文件不存在: ${filePath}`)
+      throw new Error('视频文件不存在')
     }
 
     const stats = statSync(filePath)
@@ -812,7 +812,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
       videoFrameRate: d?.videoFrameRate || 0
     }
 
-    logger.info(`[kuaishou] Video uploaded, fileId: ${fileId}, photoId: ${photoId}`)
+    logger.info(
+      `[kuaishou] Video uploaded: hasFileId=${Boolean(fileId)}, ` +
+      `hasPhotoId=${Boolean(photoId)}`
+    )
     onProgress?.({ percent: 90, stage: '视频上传完成' })
 
     return { videoId: String(fileId || photoId || token), meta: uploadMeta }
@@ -1190,7 +1193,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
 
       if (responseData?.result === 1) {
         const submittedPhotoId = responseData?.data?.photoId || String(uploadMeta?.photoId || '')
-        logger.info(`[kuaishou] Content submitted successfully, photoId: ${submittedPhotoId}`)
+        logger.info(
+          `[kuaishou] Content submitted successfully: ` +
+          `hasPhotoId=${Boolean(submittedPhotoId)}`
+        )
         return {
           contentId: submittedPhotoId,
           publishUrl: submittedPhotoId ? `https://www.kuaishou.com/short-video/${submittedPhotoId}` : undefined

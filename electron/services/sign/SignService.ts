@@ -7,6 +7,7 @@ import { createHash } from 'crypto'
 import { logger } from '../../utils/logger'
 import { hardenPlatformWindow } from '../../security/platform-window-security'
 import { summarizePayload } from '../../utils/log-redaction'
+import { requireSecureOrLoopbackEndpoint } from '../../security/secure-transport'
 import {
   createSignerPreflightError,
   createSignerUnavailableError,
@@ -42,7 +43,7 @@ const YIXIAOER_SIGN_PORTS: Record<string, string[]> = {
   xiaohongshu: ['5096'],
   newxiaohongshu: ['5061', '5062', '5063']
 }
-const YIXIAOER_SIGN_BASE = 'http://qianming.yixiaoer.cn'
+const YIXIAOER_SIGN_BASE = 'https://qianming.yixiaoer.cn'
 
 export interface SelfHostedSignerHealth {
   available: boolean
@@ -1994,7 +1995,11 @@ export class SignService {
       ? portsRaw.split(',').map((port) => port.trim()).filter(Boolean)
       : YIXIAOER_SIGN_PORTS[externalPlatform] || []
 
-    return ports.map((port) => `${baseUrl.replace(/\/$/, '')}:${port}/Sign/GetSign`)
+    return ports.map((port) =>
+      requireSecureOrLoopbackEndpoint(
+        `${baseUrl.replace(/\/$/, '')}:${port}/Sign/GetSign`
+      )
+    )
   }
 
   private getLegacySignerEnvKeys(platform: string): string[] {
@@ -2019,8 +2024,11 @@ export class SignService {
   private normalizeLegacySignerEndpoint(url: string): string {
     const trimmed = url.trim().replace(/\/$/, '')
     if (!trimmed) return ''
-    if (trimmed.endsWith('/Sign/GetSign')) return trimmed
-    return `${trimmed}/Sign/GetSign`
+    return requireSecureOrLoopbackEndpoint(
+      trimmed.endsWith('/Sign/GetSign')
+        ? trimmed
+        : `${trimmed}/Sign/GetSign`
+    )
   }
 
   private maskLegacySignerEndpoint(url: string): string {
@@ -2572,10 +2580,12 @@ export class SignService {
         const urlPath = parsed.url || '/web_api/sns/v2/note'
         const bodyStr = parsed.body || ''
 
-        const newSignPorts = YIXIAOER_SIGN_PORTS['newxiaohongshu']
-        for (const port of newSignPorts) {
+        const endpoints = this.getLegacySignerEndpoints(
+          'xiaohongshu',
+          'newxiaohongshu'
+        )
+        for (const url of endpoints) {
           try {
-            const url = `${YIXIAOER_SIGN_BASE}:${port}/Sign/GetSign`
             const controller = new AbortController()
             const timeout = setTimeout(() => controller.abort(), 8000)
 
@@ -2602,7 +2612,10 @@ export class SignService {
 
             const result = (await response.json()) as { signature?: string }
             if (result.signature && result.signature !== 'null') {
-              logger.info(`[sign] XHS new external signature obtained via port ${port}`)
+              logger.info(
+                `[sign] XHS new external signature obtained via ` +
+                this.maskLegacySignerEndpoint(url)
+              )
               return result.signature
             }
           } catch {

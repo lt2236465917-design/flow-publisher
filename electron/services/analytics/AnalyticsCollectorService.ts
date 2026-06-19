@@ -93,7 +93,7 @@ export class AnalyticsCollectorService {
           contentIdMap.set(contentId, record)
           if (record.content_id !== contentId) {
             analyticsRepo.updateRecordContentId(record.id, contentId)
-            logger.info(`[AnalyticsCollector] 从发布链接修复 content_id: ${record.id} -> ${contentId}`)
+            logger.info(`[AnalyticsCollector] 从发布链接修复记录 ${record.id} 的 content_id`)
           }
         }
         // Kuaishou's public short-video URL id is different from the creator
@@ -113,7 +113,7 @@ export class AnalyticsCollectorService {
       const maxFetches = 10 // 防止无限循环
 
       // 记录数据库中的标题用于调试
-      logger.info(`[AnalyticsCollector] 数据库标题: ${doneRecords.map(r => `"${r.title}"`).join(', ')}`)
+      logger.info(`[AnalyticsCollector] 待匹配数据库记录数: ${doneRecords.length}`)
 
       while (hasMore && fetchCount < maxFetches) {
         try {
@@ -121,7 +121,7 @@ export class AnalyticsCollectorService {
 
           // 记录平台返回的标题用于调试
           if (fetchCount === 0) {
-            logger.info(`[AnalyticsCollector] 平台标题: ${listResult.items.map(i => `"${i.title}"`).join(', ')}`)
+            logger.info(`[AnalyticsCollector] 平台候选内容数: ${listResult.items.length}`)
           }
 
           for (const item of listResult.items) {
@@ -136,7 +136,7 @@ export class AnalyticsCollectorService {
                 const matchable = matchableRecords.find((candidate) => candidate.id === record!.id)
                 if (matchable) matchable.content_id = item.contentId
                 contentIdMap.set(item.contentId, record)
-                logger.info(`[AnalyticsCollector] 标题匹配成功: "${item.title}" -> "${record.title}" (${record.id})`)
+                logger.info(`[AnalyticsCollector] 标题匹配成功: record=${record.id}`)
               }
             }
 
@@ -251,7 +251,7 @@ export class AnalyticsCollectorService {
       let contentId = urlContentId || record.content_id
       if (urlContentId && urlContentId !== record.content_id) {
         analyticsRepo.updateRecordContentId(recordId, urlContentId)
-        logger.info(`[AnalyticsCollector] 从发布链接修复 content_id: ${recordId} -> ${urlContentId}`)
+        logger.info(`[AnalyticsCollector] 从发布链接修复记录 ${recordId} 的 content_id`)
       }
 
       // 如果没有 content_id，尝试通过平台视频列表匹配
@@ -262,7 +262,7 @@ export class AnalyticsCollectorService {
           contentId = matchedId
           // 保存匹配到的 content_id
           analyticsRepo.updateRecordContentId(recordId, contentId)
-          logger.info(`[AnalyticsCollector] 通过标题匹配到 content_id: ${contentId}`)
+          logger.info('[AnalyticsCollector] 通过标题匹配到 content_id')
         } else {
           result.errors.push(`记录 ${recordId} 没有平台内容ID，且无法通过标题匹配`)
           return result
@@ -309,7 +309,7 @@ export class AnalyticsCollectorService {
           if (matched) {
             contentId = matched.contentId
             analyticsRepo.updateRecordContentId(record.id, contentId)
-            logger.info(`[AnalyticsCollector] 通过快手数据接口修复 content_id: ${record.id} -> ${contentId}`)
+            logger.info(`[AnalyticsCollector] 通过快手数据接口修复记录 ${record.id} 的 content_id`)
           }
         }
         if (matched) {
@@ -443,7 +443,7 @@ export class AnalyticsCollectorService {
           // 如果标题匹配成功，更新 content_id
           if (matchedRecord && !(matchedRecord as any).content_id) {
             analyticsRepo.updateRecordContentId(matchedRecord.id, item.contentId)
-            logger.info(`[AnalyticsCollector] 标题匹配成功: "${item.title}" -> ${matchedRecord.id}`)
+            logger.info(`[AnalyticsCollector] 标题匹配成功: record=${matchedRecord.id}`)
           }
         }
 

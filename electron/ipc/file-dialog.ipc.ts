@@ -79,9 +79,8 @@ export function registerFileDialogIpcHandlers(): void {
       }
 
       const filePath = result.filePaths[0]
-      logger.info(`[FILE_SELECT_IMAGE] selected file: ${filePath}`)
       if (!existsSync(filePath)) {
-        logger.warn(`[FILE_SELECT_IMAGE] file not found: ${filePath}`)
+        logger.warn('[FILE_SELECT_IMAGE] selected file not found')
         return { success: false, error: '文件不存在' }
       }
 
