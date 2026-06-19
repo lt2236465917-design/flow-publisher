@@ -1,31 +1,70 @@
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
 import { useAccountStore } from '@/stores/accountStore'
 
+const STARTUP_DELAY_MS = 1_000
+const FOREGROUND_RECHECK_INTERVAL_MS = 10 * 60 * 1_000
+const ACTIVE_RECHECK_INTERVAL_MS = 30 * 60 * 1_000
+
+let lastSuccessfulCheckAt = 0
+
 /**
- * 应用启动时自动检查所有已登录账号的会话状态
- * 只在首次加载时执行一次
+ * 静默维护账号登录状态：
+ * - 应用启动后检查一次
+ * - 应用保持前台时定期检查
+ * - 从后台恢复、窗口重新聚焦或网络恢复时，状态过旧才检查
  */
 export function useAutoCheckSessions() {
-  const { checkAllSessions, checkingSessions } = useAccountStore()
-  const hasChecked = useRef(false)
+  const checkAllSessions = useAccountStore((state) => state.checkAllSessions)
 
   useEffect(() => {
-    console.log('[useAutoCheckSessions] Hook mounted, hasChecked:', hasChecked.current, 'checkingSessions:', checkingSessions)
+    const runCheck = async (force = false) => {
+      const now = Date.now()
+      const isFresh = now - lastSuccessfulCheckAt < FOREGROUND_RECHECK_INTERVAL_MS
 
-    // 只检查一次，避免重复检查
-    if (hasChecked.current || checkingSessions) {
-      console.log('[useAutoCheckSessions] Skipping - already checked or checking')
-      return
+      if (!force && isFresh) {
+        return
+      }
+
+      const success = await checkAllSessions()
+      if (success) {
+        lastSuccessfulCheckAt = Date.now()
+      }
     }
 
-    hasChecked.current = true
+    const startupTimer = window.setTimeout(() => {
+      void runCheck()
+    }, STARTUP_DELAY_MS)
 
-    // 延迟 1 秒执行，让应用先完成初始化
-    const timer = setTimeout(() => {
-      console.log('[useAutoCheckSessions] Starting session check...')
-      checkAllSessions()
-    }, 1000)
+    const activeTimer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void runCheck(true)
+      }
+    }, ACTIVE_RECHECK_INTERVAL_MS)
 
-    return () => clearTimeout(timer)
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    const handleForeground = () => {
+      if (document.visibilityState === 'visible') {
+        void runCheck()
+      }
+    }
+
+    const handleFocus = () => {
+      void runCheck()
+    }
+
+    const handleOnline = () => {
+      void runCheck()
+    }
+
+    document.addEventListener('visibilitychange', handleForeground)
+    window.addEventListener('focus', handleFocus)
+    window.addEventListener('online', handleOnline)
+
+    return () => {
+      window.clearTimeout(startupTimer)
+      window.clearInterval(activeTimer)
+      document.removeEventListener('visibilitychange', handleForeground)
+      window.removeEventListener('focus', handleFocus)
+      window.removeEventListener('online', handleOnline)
+    }
+  }, [checkAllSessions])
 }
