@@ -29,7 +29,7 @@ import type {
 
 function getPlatformName(platform: string): string {
   const info = PLATFORMS[platform as PlatformId]
-  return info ? `${info.icon} ${info.displayName}` : platform
+  return info ? info.displayName : platform
 }
 
 function getPlatformColor(platform: string): string {

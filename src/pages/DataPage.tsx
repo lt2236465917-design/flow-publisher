@@ -39,6 +39,7 @@ import TaskStatusTag from '@/components/records/TaskStatusTag'
 import EmptyState from '@/components/common/EmptyState'
 import { PLATFORMS } from '@/constants/platforms'
 import type { PlatformId } from '@/constants/platforms'
+import PlatformIcon from '@/components/common/PlatformIcon'
 import { toLocalFileUrl } from '@/utils/localFileUrl'
 import type {
   VideoGroupSummary,
@@ -51,7 +52,7 @@ const { Text, Paragraph } = Typography
 
 function getPlatformName(platform: string): string {
   const info = PLATFORMS[platform as PlatformId]
-  return info ? `${info.icon} ${info.displayName}` : platform
+  return info ? info.displayName : platform
 }
 
 function getPlatformColor(platform: string): string {
@@ -252,9 +253,12 @@ export default function DataPage() {
           {platforms.map((p) => {
             const info = PLATFORMS[p as PlatformId]
             return info ? (
-              <span key={p} title={info.displayName} style={{ fontSize: 16 }}>
-                {info.icon}
-              </span>
+              <PlatformIcon
+                key={p}
+                platformId={p as PlatformId}
+                size={16}
+                radius={4}
+              />
             ) : (
               <span key={p}>{p}</span>
             )

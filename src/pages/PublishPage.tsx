@@ -16,6 +16,7 @@ import { SectionCard, SectionTitle, Divider, PageHeader } from '@/components/com
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
+import PlatformIcon from '@/components/common/PlatformIcon'
 import { ipcInvoke } from '@/utils/ipc'
 
 interface AccountInfo {
@@ -255,7 +256,9 @@ export default function PublishPage() {
                       <div style={{ width: '100%' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                           <Space size={6}>
-                            <span style={{ fontSize: 15 }}>{info?.icon}</span>
+                            {info && (
+                              <PlatformIcon platformId={task.platform} size={16} radius={4} />
+                            )}
                             <span style={{ fontSize: 13, fontWeight: 500, color: '#1d1d1f' }}>{info?.displayName}</span>
                             <Tag color={
                               task.status === 'done' ? 'success' :
