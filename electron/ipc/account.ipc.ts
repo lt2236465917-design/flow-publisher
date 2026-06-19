@@ -4,8 +4,6 @@ import { CookieStore } from '../services/browser/CookieStore'
 import { ElectronLoginWindow } from '../services/browser/ElectronLoginWindow'
 import { getAdapter } from '../services/platform-adapters/PlatformAdapterRegistry'
 import { registerAdapter } from '../services/platform-adapters/PlatformAdapterRegistry'
-import { existsSync, rmSync } from 'fs'
-import { join } from 'path'
 import { DouyinApiAdapter } from '../services/platform-adapters/douyin/DouyinApiAdapter'
 import { XhsApiAdapter } from '../services/platform-adapters/xiaohongshu/XhsApiAdapter'
 import { WcApiAdapter } from '../services/platform-adapters/wechat-channels/WcApiAdapter'
@@ -18,6 +16,7 @@ import {
   getMainWindow,
   registerTrustedIpcHandler
 } from '../security/trusted-ipc'
+import { selectReusableAccount } from '../services/account/account-policy'
 
 const cookieStore = new CookieStore()
 
@@ -28,29 +27,6 @@ registerAdapter(new WcApiAdapter())
 registerAdapter(new KsApiAdapter())
 
 export function registerAccountIpcHandlers(): void {
-  // 启动时清理重复账号：每个平台只保留最新的一个
-  try {
-    const repo = getAccountRepository()
-    const all = repo.getAll()
-    const seen = new Map<string, string>() // platform -> latest id
-    for (const a of all) {
-      const existing = seen.get(a.platform)
-      if (!existing || a.updated_at > (all.find(x => x.id === existing)?.updated_at || '')) {
-        if (existing) repo.deleteById(existing)
-        seen.set(a.platform, a.id)
-      } else {
-        repo.deleteById(a.id)
-      }
-    }
-    const deleted = all.length - seen.size
-    if (deleted > 0) {
-      saveDatabase()
-      logger.info(`[account] Cleaned up ${deleted} duplicate accounts`)
-    }
-  } catch (e) {
-    logger.warn('[account] Failed to cleanup duplicate accounts:', e)
-  }
-
   // List all accounts
   registerTrustedIpcHandler(IPC_CHANNELS.ACCOUNT_LIST, async (): Promise<IpcResponse> => {
     try {
@@ -83,11 +59,12 @@ export function registerAccountIpcHandlers(): void {
 
       const repo = getAccountRepository()
       const existing = repo.getByPlatform(platformId)
+      const reusableAccount = selectReusableAccount(existing)
       let accountId: string
 
       // 复用已有账号，如果不存在则创建
-      if (existing.length > 0) {
-        accountId = existing[0].id
+      if (reusableAccount) {
+        accountId = reusableAccount.id
         logger.info(`[account] Reusing existing account for ${platformId}: ${accountId}`)
       } else {
         const account = repo.create({ platform: platformId, displayName: adapter.platformName })

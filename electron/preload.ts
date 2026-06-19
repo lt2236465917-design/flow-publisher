@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import { subscribeIpc } from './preload-listener'
 
 // Allowlist of IPC channels the renderer may invoke or listen to.
 const ALLOWED_INVOKE_CHANNELS = new Set([
@@ -86,8 +87,16 @@ try {
           console.error(`[preload] Blocked listener on unauthorized channel: ${channel}`)
           return () => {} // no-op unsubscribe
         }
-        ipcRenderer.on(channel, (_event, ...args) => listener(...args))
-        return () => { ipcRenderer.removeListener(channel, listener) }
+        return subscribeIpc(
+          (allowedChannel, wrapped) => {
+            ipcRenderer.on(allowedChannel, wrapped)
+          },
+          (allowedChannel, wrapped) => {
+            ipcRenderer.removeListener(allowedChannel, wrapped)
+          },
+          channel,
+          listener
+        )
       },
       once: (channel: string, listener: (...args: unknown[]) => void) => {
         if (!ALLOWED_LISTENER_CHANNELS.has(channel)) {

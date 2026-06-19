@@ -21,3 +21,5 @@ electron.vite.config.js
 tsconfig.node.tsbuildinfo
 screenshots/
 .worktrees/
+captured-*-payload.json
+*.har
