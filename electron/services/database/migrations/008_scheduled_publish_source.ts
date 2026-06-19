@@ -3,7 +3,10 @@ import { logger } from '../../../utils/logger'
 
 export function runMigration008(db: Database): void {
   const columns = db.exec("PRAGMA table_info('publish_records')")
-  const names = columns[0]?.values.map((row) => String(row[1])) || []
+  const names =
+    columns[0]?.values.map((row: (string | number | Uint8Array | null)[]) =>
+      String(row[1])
+    ) || []
   if (!names.includes('source_task_id')) {
     db.run('ALTER TABLE publish_records ADD COLUMN source_task_id TEXT')
   }

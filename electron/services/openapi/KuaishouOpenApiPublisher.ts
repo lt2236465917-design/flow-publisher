@@ -7,6 +7,7 @@ import type { SubmitResult } from '../../../shared/types/analytics'
 import { openChunkedReader } from '../../utils/chunked-reader'
 import { logger } from '../../utils/logger'
 import { requireSecureUploadEndpoint } from '../../security/secure-transport'
+import { summarizePayload } from '../../utils/log-redaction'
 
 const START_UPLOAD_URL = 'https://open.kuaishou.com/openapi/photo/start_upload'
 const PUBLISH_URL = 'https://open.kuaishou.com/openapi/photo/publish'
@@ -107,7 +108,11 @@ export class KuaishouOpenApiPublisher {
       }
     )
 
-    logger.info(`[kuaishou-openapi] publish response: ${JSON.stringify(response.data).substring(0, 500)}`)
+    logger.info(
+      `[kuaishou-openapi] publish response: ${JSON.stringify(
+        summarizePayload(response.data)
+      )}`
+    )
     if (response.data?.result !== 1) {
       throw new Error(`快手官方 OpenAPI 发布失败：${response.data?.error_msg || response.data?.message || `result=${response.data?.result}`}`)
     }
@@ -133,7 +138,11 @@ export class KuaishouOpenApiPublisher {
       }
     )
 
-    logger.info(`[kuaishou-openapi] start_upload response: ${JSON.stringify(response.data).substring(0, 500)}`)
+    logger.info(
+      `[kuaishou-openapi] start_upload response: ${JSON.stringify(
+        summarizePayload(response.data)
+      )}`
+    )
     if (response.data?.result !== 1) {
       throw new Error(`快手官方 OpenAPI 发起上传失败：${response.data?.error_msg || response.data?.message || `result=${response.data?.result}`}`)
     }
@@ -153,7 +162,11 @@ export class KuaishouOpenApiPublisher {
         validateStatus: () => true
       }
     )
-    logger.info(`[kuaishou-openapi] direct upload response: ${JSON.stringify(response.data).substring(0, 500)}`)
+    logger.info(
+      `[kuaishou-openapi] direct upload response: ${JSON.stringify(
+        summarizePayload(response.data)
+      )}`
+    )
     if (response.data?.result !== 1) {
       throw new Error(`快手官方 OpenAPI 视频上传失败：${response.data?.error_msg || response.data?.message || `result=${response.data?.result}`}`)
     }
@@ -199,7 +212,11 @@ export class KuaishouOpenApiPublisher {
           validateStatus: () => true
         }
       )
-      logger.info(`[kuaishou-openapi] complete upload response: ${JSON.stringify(completeResponse.data).substring(0, 500)}`)
+      logger.info(
+        `[kuaishou-openapi] complete upload response: ${JSON.stringify(
+          summarizePayload(completeResponse.data)
+        )}`
+      )
       if (completeResponse.data?.result !== 1) {
         throw new Error(`快手官方 OpenAPI 完成上传失败：${completeResponse.data?.error_msg || completeResponse.data?.message || `result=${completeResponse.data?.result}`}`)
       }

@@ -37,7 +37,13 @@ export function assertTrustedIpcSender(event: IpcMainInvokeEvent): void {
 
   const senderWindow = BrowserWindow.fromWebContents(event.sender)
   const senderFrame = event.senderFrame
+  if (!senderFrame) {
+    throw new Error('拒绝无法识别来源页面的 IPC 请求')
+  }
   const topFrame = senderFrame.top
+  if (!topFrame) {
+    throw new Error('拒绝无法识别顶层页面的 IPC 请求')
+  }
   const trusted = isTrustedIpcSender({
     senderUrl: senderFrame.url,
     topFrameUrl: topFrame.url,

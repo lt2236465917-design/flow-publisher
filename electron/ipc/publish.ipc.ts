@@ -23,6 +23,7 @@ import {
   validateSubmitRelationship,
   validateUploadRelationship
 } from '../services/publish/publish-validation'
+import { summarizePayload } from '../utils/log-redaction'
 
 const cookieStore = new CookieStore()
 const SIGN_FALLBACK_CONFIRM_TIMEOUT_MS = 180_000
@@ -326,10 +327,11 @@ export function registerPublishIpcHandlers(): void {
     }
   }): Promise<IpcResponse> => {
     try {
-      // DEBUG: log incoming params to trace encoding issues
-      logger.info(`[publish] Submit params: title="${params.content.title}", hashtags=${JSON.stringify(params.content.hashtags)}, descLen=${params.content.description?.length}`)
-      logger.info(`[publish] Submit content keys: ${Object.keys(params.content).join(', ')}`)
-      logger.info(`[publish] coverPath="${params.content.coverPath}", platformFields=${JSON.stringify(params.content.platformFields)}`)
+      logger.info(
+        `[publish] Submit payload summary: ${JSON.stringify(
+          summarizePayload(params.content)
+        )}`
+      )
 
       // Guard: IPC may serialize undefined as the string "undefined"
       if (params.content.coverPath === 'undefined') {
@@ -395,7 +397,11 @@ export function registerPublishIpcHandlers(): void {
           bitrate: probe.bitrate,
           format: probe.format
         }
-        logger.info(`[publish] Video metadata: ${JSON.stringify(videoMetadata)}`)
+        logger.info(
+          `[publish] Video metadata: ${JSON.stringify(
+            summarizePayload(videoMetadata)
+          )}`
+        )
       } catch (e) {
         logger.warn(`[publish] Failed to probe video metadata: ${e}`)
       }
@@ -514,7 +520,11 @@ export function registerPublishIpcHandlers(): void {
     lng?: number
   }): Promise<IpcResponse> => {
     try {
-      logger.info(`[publish] PUBLISH_GET_RECOMMEND_LOCATIONS called with params:`, params)
+      logger.info(
+        `[publish] PUBLISH_GET_RECOMMEND_LOCATIONS called: ${JSON.stringify(
+          summarizePayload(params)
+        )}`
+      )
 
       const adapter = getAdapter(params.platformId)
       if (!adapter?.getRecommendLocations) {

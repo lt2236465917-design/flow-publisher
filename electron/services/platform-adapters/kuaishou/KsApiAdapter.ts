@@ -15,6 +15,7 @@ import { computeFileMd5 } from '../../../utils/file-hash'
 import { openChunkedReader } from '../../../utils/chunked-reader'
 import { getSignService } from '../../sign/SignService'
 import { KuaishouOpenApiPublisher } from '../../openapi/KuaishouOpenApiPublisher'
+import { redactUrl, summarizePayload } from '../../../utils/log-redaction'
 
 // Kuaishou Creator API endpoints (reverse-engineered from browser)
 const API = {
@@ -152,7 +153,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
     })
 
     await delay(3000)
-    logger.info(`[kuaishou] Browser page created, current URL: ${page.url()}`)
+    logger.info(`[kuaishou] Browser page created, current URL: ${redactUrl(page.url())}`)
 
     // Kuaishou requires clicking a login button before QR code appears
     try {
@@ -184,7 +185,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
       try {
         const url = page.url()
         if (i % 10 === 0) {
-          logger.info(`[kuaishou] QR check #${i}, URL: ${url}`)
+          logger.info(`[kuaishou] QR check #${i}, URL: ${redactUrl(url)}`)
         }
 
         if (url === 'about:blank' || !url.includes('kuaishou')) {
@@ -230,7 +231,11 @@ export class KsApiAdapter extends BasePlatformAdapter {
         hasAuthCookie = ksCookies.some((c: any) => authNames.includes(c.name) && c.value)
 
         if (this.loginCheckCount % 10 === 0) {
-          logger.info(`[kuaishou] CDP cookies: ${ksCookies.length} ks | names: ${ksCookies.map((c: any) => c.name).join(', ')} | url: ${url}`)
+          logger.info(
+            `[kuaishou] CDP cookies: ${ksCookies.length} ks | ` +
+            `names: ${ksCookies.map((c: any) => c.name).join(', ')} | ` +
+            `url: ${redactUrl(url)}`
+          )
         }
       } catch (e) {
         if (this.loginCheckCount % 20 === 0) {
@@ -312,7 +317,11 @@ export class KsApiAdapter extends BasePlatformAdapter {
         { referer: REFERER, Origin: ORIGIN, 'Content-Type': 'application/json' }
       )
 
-      logger.info(`[kuaishou] getAccountInfoAPI response: ${JSON.stringify(response.data).substring(0, 500)}`)
+      logger.info(
+        `[kuaishou] getAccountInfoAPI response: ${JSON.stringify(
+          summarizePayload(response.data)
+        )}`
+      )
 
       if (response.data?.result === 1 && response.data?.data) {
         const data = response.data.data
@@ -481,14 +490,22 @@ export class KsApiAdapter extends BasePlatformAdapter {
           '获取上传凭证 upload/pre'
         )
 
-        logger.info(`[kuaishou] Upload pre response: ${JSON.stringify(preResponseData)}`)
+        logger.info(
+          `[kuaishou] Upload pre response: ${JSON.stringify(
+            summarizePayload(preResponseData)
+          )}`
+        )
 
         if (preResponseData?.result === 1 && preResponseData?.data?.token) {
           preData = preResponseData.data
           break
         }
 
-        logger.warn(`[kuaishou] Upload pre attempt ${attempt + 1} failed: ${JSON.stringify(preResponseData).substring(0, 300)}`)
+        logger.warn(
+          `[kuaishou] Upload pre attempt ${attempt + 1} failed: ${JSON.stringify(
+            summarizePayload(preResponseData)
+          )}`
+        )
         preErrors.push(
           `第 ${attempt + 1} 次接口返回 result=${preResponseData?.result}, ` +
           `message=${preResponseData?.message || preResponseData?.error_msg || 'no token'}`
@@ -517,7 +534,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
     }
 
     const { token, fileId: preFileId, photoId: prePhotoId } = preData
-    logger.info(`[kuaishou] Upload token obtained: ${token.substring(0, 30)}..., fileId: ${preFileId || 'N/A'}, photoId: ${prePhotoId || 'N/A'}`)
+    logger.info(
+      `[kuaishou] Upload credential obtained: fileId=${preFileId || 'N/A'}, ` +
+      `photoId=${prePhotoId || 'N/A'}`
+    )
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
@@ -628,7 +648,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
           req.write(completeBody)
           req.end()
         })
-        logger.info(`[kuaishou] CDN upload/complete response (attempt ${cdnAttempt + 1}): ${JSON.stringify(completeRes).substring(0, 500)}`)
+        logger.info(
+          `[kuaishou] CDN upload/complete response (attempt ${cdnAttempt + 1}): ` +
+          JSON.stringify(summarizePayload(completeRes))
+        )
 
         // Check for success — result=1 or HTTP-level acknowledgment
         if (completeRes?.result === 1 || completeRes?.status === 'ok' || completeRes?.success) {
@@ -640,7 +663,11 @@ export class KsApiAdapter extends BasePlatformAdapter {
           cdnCompleteOk = true
           break
         }
-        logger.warn(`[kuaishou] CDN upload/complete returned non-success: ${JSON.stringify(completeRes).substring(0, 200)}`)
+        logger.warn(
+          `[kuaishou] CDN upload/complete returned non-success: ${JSON.stringify(
+            summarizePayload(completeRes)
+          )}`
+        )
       } catch (e: any) {
         logger.warn(`[kuaishou] CDN upload/complete attempt ${cdnAttempt + 1} error: ${e.message}`)
       }
@@ -726,7 +753,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
         { requireSig3: true, action: '上传完成确认 upload/finish' }
       )
 
-      logger.info(`[kuaishou] Upload finish response (attempt ${finishAttempt}): ${JSON.stringify(responseData)}`)
+      logger.info(
+        `[kuaishou] Upload finish response (attempt ${finishAttempt}): ` +
+        JSON.stringify(summarizePayload(responseData))
+      )
 
       if (responseData?.result === 1) {
         finishResponse = responseData
@@ -831,7 +861,11 @@ export class KsApiAdapter extends BasePlatformAdapter {
             { referer: REFERER, Origin: ORIGIN, 'Content-Type': 'application/json' },
             '获取封面上传凭证 upload/pre'
           )
-          logger.info(`[kuaishou] Cover upload/pre response: ${JSON.stringify(preResponseData).substring(0, 300)}`)
+          logger.info(
+            `[kuaishou] Cover upload/pre response: ${JSON.stringify(
+              summarizePayload(preResponseData)
+            )}`
+          )
           if (preResponseData?.result === 1 && preResponseData?.data?.token) {
             token = preResponseData.data.token
             break
@@ -903,7 +937,11 @@ export class KsApiAdapter extends BasePlatformAdapter {
           let data = ''
           res.on('data', (c: Buffer) => { data += c.toString() })
           res.on('end', () => {
-            logger.info(`[kuaishou] Cover CDN complete response: ${data.substring(0, 300)}`)
+            logger.info(
+              `[kuaishou] Cover CDN complete response: ${JSON.stringify(
+                summarizePayload(data)
+              )}`
+            )
             resolve() // CDN complete is best-effort
           })
         })
@@ -942,7 +980,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
           finishHeaders,
           { requireSig3: true, action: '封面上传完成确认 upload/finish' }
         )
-        logger.info(`[kuaishou] Cover upload/finish response (attempt ${attempt + 1}): ${JSON.stringify(responseData).substring(0, 500)}`)
+        logger.info(
+          `[kuaishou] Cover upload/finish response (attempt ${attempt + 1}): ` +
+          JSON.stringify(summarizePayload(responseData))
+        )
 
         if (responseData?.result === 1 && responseData?.data) {
           // Extract coverKey from the finish response
@@ -1069,7 +1110,9 @@ export class KsApiAdapter extends BasePlatformAdapter {
         latitude = locObj.lat ? String(locObj.lat) : ''
         poiId = locObj.poi_id || 0
         declareInfo.location = locObj.name
-        logger.info(`[kuaishou] Added location: ${locObj.name}, poiId=${poiId}`)
+        logger.info(
+          `[kuaishou] Added location: hasName=${Boolean(locObj.name)}, hasPoiId=${Boolean(poiId)}`
+        )
       }
     }
 
@@ -1108,7 +1151,11 @@ export class KsApiAdapter extends BasePlatformAdapter {
       disableNearbyShow
     }
 
-    logger.info(`[kuaishou] Submitting: fileId=${fileId}, coverKey=${coverFileId || (uploadMeta?.coverKey as string) || 'auto'}, caption=${caption.substring(0, 80)}`)
+    logger.info(
+      `[kuaishou] Submitting: fileId=${fileId}, ` +
+      `cover=${coverFileId || uploadMeta?.coverKey ? 'provided' : 'auto'}, ` +
+      `captionLength=${caption.length}`
+    )
 
     // Submit via HttpClient + SignService with __NS_sig3
     const submitBody = JSON.stringify(params)
@@ -1135,7 +1182,11 @@ export class KsApiAdapter extends BasePlatformAdapter {
         { requireSig3: true, action: '内容提交 submit' }
       )
 
-      logger.info(`[kuaishou] Submit response (attempt ${attempt + 1}): ${JSON.stringify(responseData).substring(0, 500)}`)
+      logger.info(
+        `[kuaishou] Submit response (attempt ${attempt + 1}): ${JSON.stringify(
+          summarizePayload(responseData)
+        )}`
+      )
 
       if (responseData?.result === 1) {
         const submittedPhotoId = responseData?.data?.photoId || String(uploadMeta?.photoId || '')
@@ -1420,7 +1471,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
             "kuaishou.web.cp.api_ph": apiPh
           })
 
-          logger.info(`[kuaishou] POI nearby request:`, { url: nearbyUrl, body: nearbyBody })
+          logger.info(
+            `[kuaishou] POI nearby request: url=${redactUrl(nearbyUrl)}, ` +
+            `body=${JSON.stringify(summarizePayload(nearbyBody))}`
+          )
 
           const nearbyResponse = await client.post<any>(nearbyUrl, nearbyBody, {
             referer: REFERER, 'Content-Type': 'application/json'
@@ -1458,7 +1512,11 @@ export class KsApiAdapter extends BasePlatformAdapter {
           const cityResponse = await client.post<any>(cityUrl, cityBody, {
             referer: REFERER, 'Content-Type': 'application/json'
           }, { responseType: 'text' })
-          logger.info(`[kuaishou] ip2poi raw response (first 500):`, typeof cityResponse.data === 'string' ? cityResponse.data.substring(0, 500) : JSON.stringify(cityResponse.data).substring(0, 500))
+          logger.info(
+            `[kuaishou] ip2poi response: ${JSON.stringify(
+              summarizePayload(cityResponse.data)
+            )}`
+          )
 
           try {
             const parsed = typeof cityResponse.data === 'string' ? JSON.parse(cityResponse.data) : cityResponse.data
@@ -1502,7 +1560,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
         "kuaishou.web.cp.api_ph": apiPh
       })
 
-      logger.info(`[kuaishou] POI search request:`, { url: searchUrl, body })
+      logger.info(
+        `[kuaishou] POI search request: url=${redactUrl(searchUrl)}, ` +
+        `body=${JSON.stringify(summarizePayload(body))}`
+      )
 
       const response = await client.post<any>(
         searchUrl,

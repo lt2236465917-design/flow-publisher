@@ -12,6 +12,7 @@ import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import { HttpClient } from '../services/http/HttpClient'
 import { encryptString } from '../utils/crypto-store'
 import { logger } from '../utils/logger'
+import { summarizePayload } from '../utils/log-redaction'
 import {
   getMainWindow,
   registerTrustedIpcHandler
@@ -176,7 +177,11 @@ export function registerAccountIpcHandlers(): void {
               const apiClient = new HttpClient({ cookies: cookieStr, platform: platformId, accountId: accountId! })
               if ('getAccountInfoAPI' in adapter && typeof (adapter as any).getAccountInfoAPI === 'function') {
                 const apiInfo = await (adapter as any).getAccountInfoAPI(apiClient)
-                logger.info(`[account] getAccountInfoAPI result: ${JSON.stringify(apiInfo)}`)
+                logger.info(
+                  `[account] getAccountInfoAPI result: ${JSON.stringify(
+                    summarizePayload(apiInfo)
+                  )}`
+                )
                 if (apiInfo?.displayName) {
                   displayName = apiInfo.displayName
                 }

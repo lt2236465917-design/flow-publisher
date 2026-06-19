@@ -5,6 +5,7 @@ import { execSync } from 'child_process'
 import { STEALTH_ARGS, STEALTH_SCRIPTS } from './StealthConfig'
 import { BrowserLaunchError } from '../../utils/errors'
 import { logger } from '../../utils/logger'
+import { redactUrl, summarizePayload } from '../../utils/log-redaction'
 
 function getUserDataDir(): string {
   const { app } = require('electron')
@@ -100,14 +101,11 @@ export class BrowserManager {
       if (url.includes('channels.weixin.qq.com') && url.includes('/cgi-bin/')) {
         const method = request.method()
         const postData = request.postData()
-        logger.info(`[NET-MON] ${method} ${url}`)
+        logger.info(`[NET-MON] ${method} ${redactUrl(url)}`)
         if (postData) {
-          try {
-            const parsed = JSON.parse(postData)
-            logger.info(`[NET-MON] Body: ${JSON.stringify(parsed, null, 2).substring(0, 2000)}`)
-          } catch {
-            logger.info(`[NET-MON] Body (raw): ${postData.substring(0, 500)}`)
-          }
+          logger.info(
+            `[NET-MON] Body summary: ${JSON.stringify(summarizePayload(postData))}`
+          )
         }
       }
     })
@@ -115,8 +113,10 @@ export class BrowserManager {
       const url = response.url()
       if (url.includes('channels.weixin.qq.com') && url.includes('/cgi-bin/')) {
         response.text().then((body) => {
-          logger.info(`[NET-MON] Response ${response.status()} ${url}`)
-          logger.info(`[NET-MON] Resp body: ${body.substring(0, 3000)}`)
+          logger.info(
+            `[NET-MON] Response ${response.status()} ${redactUrl(url)}, ` +
+            `body=${JSON.stringify(summarizePayload(body))}`
+          )
         }).catch(() => {})
       }
     })

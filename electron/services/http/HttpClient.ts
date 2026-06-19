@@ -2,6 +2,7 @@ import axios, { type AxiosRequestConfig, type AxiosResponse } from 'axios'
 import { logger } from '../../utils/logger'
 import { getAccountRepository, saveDatabase } from '../database'
 import { encryptString, decryptString } from '../../utils/crypto-store'
+import { redactUrl, summarizePayload } from '../../utils/log-redaction'
 
 const DEFAULT_TIMEOUT = 30_000
 const UPLOAD_TIMEOUT = 300_000
@@ -62,22 +63,17 @@ const BROWSER_HEADERS: Record<string, string> = {
 
 const SENSITIVE_LOG_HEADERS = new Set([
   'authorization',
+  '__ns_sig3',
   'bd-ticket-guard-client-data',
   'bd-ticket-guard-ree-public-key',
   'cookie',
   'proxy-authorization',
-  'x-secsdk-csrf-token'
+  'x-rap-param',
+  'x-s',
+  'x-s-common',
+  'x-secsdk-csrf-token',
+  'x-t'
 ])
-
-function summarizeData(data: unknown, maxLength = 1000): string {
-  if (data === undefined || data === null) return ''
-  if (typeof data === 'string') return data.substring(0, maxLength)
-  try {
-    return JSON.stringify(data).substring(0, maxLength)
-  } catch {
-    return String(data).substring(0, maxLength)
-  }
-}
 
 export class HttpClient {
   private context: CookieContext
@@ -143,7 +139,7 @@ export class HttpClient {
 
     try {
       // Log the actual request for debugging
-      logger.info(`[HttpClient] ${options.method} ${options.url}`)
+      logger.info(`[HttpClient] ${options.method} ${redactUrl(options.url)}`)
       // Log headers without Cookie value to avoid credential leakage
       const safeHeaders: Record<string, unknown> = { ...config.headers }
       for (const key of Object.keys(safeHeaders)) {
@@ -152,13 +148,21 @@ export class HttpClient {
         }
       }
       logger.info(`[HttpClient] Headers: ${JSON.stringify(safeHeaders)}`)
-      if (typeof options.data === 'string') {
-        logger.info(`[HttpClient] Body (string, first 3000): ${options.data.substring(0, 3000)}`)
+      if (options.data !== undefined) {
+        logger.info(
+          `[HttpClient] Body summary: ${JSON.stringify(summarizePayload(options.data))}`
+        )
       }
 
       const response: AxiosResponse<T> = await axios(config)
 
-      logger.info(`[HttpClient] Response: status=${response.status}, url=${response.request?.res?.responseUrl || response.config?.url || 'unknown'}`)
+      logger.info(
+        `[HttpClient] Response: status=${response.status}, url=${redactUrl(
+          response.request?.res?.responseUrl ||
+            response.config?.url ||
+            'unknown'
+        )}`
+      )
 
       // Detect clear authentication expiry. A 403 is often platform risk-control
       // or signature rejection, so don't mark the account expired from 403 alone.
@@ -190,19 +194,17 @@ export class HttpClient {
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         const status = err.response?.status
-        const data = err.response?.data
         const code = err.code || 'none'
         const message = err.message || 'unknown error'
-        const dataSummary = summarizeData(data)
+        const dataSummary = summarizePayload(err.response?.data)
         logger.error(
-          `[${this.context.platform}] HTTP ${options.method} ${options.url} failed: ` +
-          `status=${status ?? 'none'}, code=${code}, message=${message}`,
-          data
+          `[${this.context.platform}] HTTP ${options.method} ${redactUrl(options.url)} failed: ` +
+          `status=${status ?? 'none'}, code=${code}, message=${message}, ` +
+          `response=${JSON.stringify(dataSummary)}`
         )
         throw new Error(
-          `HTTP ${options.method} ${options.url} failed: ` +
-          `status=${status ?? 'none'} code=${code} message=${message}` +
-          (dataSummary ? ` data=${dataSummary}` : '')
+          `HTTP ${options.method} ${redactUrl(options.url)} failed: ` +
+          `status=${status ?? 'none'} code=${code} message=${message}`
         )
       }
       throw err

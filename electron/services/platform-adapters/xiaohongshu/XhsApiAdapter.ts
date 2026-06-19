@@ -23,6 +23,7 @@ import {
   shouldUseXhsBrowserHttpTransport,
   type XhsSubmitResponse
 } from './xhs-response'
+import { summarizePayload } from '../../../utils/log-redaction'
 
 // Xiaohongshu Creator API endpoints (reverse-engineered from yixiaoer)
 const API = {
@@ -202,7 +203,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         }
       )
 
-      logger.info(`[xiaohongshu] getAccountInfoAPI response: ${JSON.stringify(response.data).substring(0, 500)}`)
+      logger.info(
+        `[xiaohongshu] getAccountInfoAPI response: ${JSON.stringify(
+          summarizePayload(response.data)
+        )}`
+      )
 
       if (response.data?.success && response.data?.data) {
         const data = response.data.data
@@ -259,7 +264,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         return []
       }
       if (response.status < 200 || response.status >= 300) {
-        logger.warn(`[xiaohongshu] Collections browser request failed: HTTP ${response.status}, body=${response.text.substring(0, 300)}`)
+        logger.warn(
+          `[xiaohongshu] Collections browser request failed: HTTP ${response.status}, ` +
+          `body=${JSON.stringify(summarizePayload(response.text))}`
+        )
         return []
       }
 
@@ -279,7 +287,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       try {
         data = JSON.parse(response.text)
       } catch {
-        logger.warn(`[xiaohongshu] Collections returned non-JSON: ${response.text.substring(0, 300)}`)
+        logger.warn(
+          `[xiaohongshu] Collections returned non-JSON: ${JSON.stringify(
+            summarizePayload(response.text)
+          )}`
+        )
         return []
       }
 
@@ -298,7 +310,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         }))
     } catch (err: any) {
       if (err?.response) {
-        logger.error(`[xiaohongshu] getCollections error: status=${err.response.status}, data=${JSON.stringify(err.response.data)?.substring(0, 500)}`)
+        logger.error(
+          `[xiaohongshu] getCollections error: status=${err.response.status}, ` +
+          `data=${JSON.stringify(summarizePayload(err.response.data))}`
+        )
       } else {
         logger.error('[xiaohongshu] getCollections error:', err?.message || err)
       }
@@ -367,7 +382,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     const uploadIdMatch = initXml.match(/<UploadId>(.*?)<\/UploadId>/)
     const uploadId = uploadIdMatch?.[1]
     if (!uploadId) {
-      logger.error(`[xiaohongshu] Multipart init response: ${initXml.substring(0, 500)}`)
+      logger.error(
+        `[xiaohongshu] Multipart init response: ${JSON.stringify(
+          summarizePayload(initXml)
+        )}`
+      )
       throw new Error('初始化分片上传失败：未获取到 uploadId')
     }
     logger.info(`[xiaohongshu] Multipart upload initiated, uploadId: ${uploadId}`)
@@ -467,13 +486,20 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       responseType: 'text'
     })
     const completeText = typeof completeResponse.data === 'string' ? completeResponse.data : String(completeResponse.data || '')
-    logger.info(`[xiaohongshu] Multipart complete response: status=${completeResponse.status}, body=${completeText.substring(0, 500)}`)
+    logger.info(
+      `[xiaohongshu] Multipart complete response: status=${completeResponse.status}, ` +
+      `body=${JSON.stringify(summarizePayload(completeText))}`
+    )
     const completeHeaders = (completeResponse.headers || {}) as Record<string, unknown>
     const rosHeaders = Object.fromEntries(
       Object.entries(completeHeaders).filter(([key]) => key.toLowerCase().startsWith('x-ros-'))
     )
     if (Object.keys(rosHeaders).length > 0) {
-      logger.info(`[xiaohongshu] Multipart complete x-ros headers: ${JSON.stringify(rosHeaders).substring(0, 500)}`)
+      logger.info(
+        `[xiaohongshu] Multipart complete x-ros headers: ${JSON.stringify(
+          summarizePayload(rosHeaders)
+        )}`
+      )
     }
     sdkVideoId = this.readStringField(completeHeaders, ['x-ros-video-id', 'x-ros-videoid', 'x-ros-videoId'])
     if (sdkVideoId) {
@@ -703,7 +729,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         const response = await this.getXhsSignedJson(client, urlPath)
         const payload = this.extractXhsDataObject(response)
         const videoId = this.readStringField(payload, ['videoId', 'video_id'])
-        logger.info(`[xiaohongshu] videoid response attempt ${attempt}: ${JSON.stringify(response).substring(0, 500)}`)
+        logger.info(
+          `[xiaohongshu] videoid response attempt ${attempt}: ${JSON.stringify(
+            summarizePayload(response)
+          )}`
+        )
         if (videoId && videoId !== '-1') return videoId
         lastError = JSON.stringify(response).substring(0, 300)
       } catch (err: any) {
@@ -811,7 +841,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
       const body = this.summarizeXhsPayload(response.data)
       failures.push(`web-http=HTTP ${response.status}${body ? ` ${body}` : ''}`)
-      logger.warn(`[xiaohongshu] ${scene} upload permit via yixiaoer web/permit HTTP failed: HTTP ${response.status}${body ? `, body=${body}` : ''}`)
+      logger.warn(
+        `[xiaohongshu] ${scene} upload permit via yixiaoer web/permit HTTP failed: ` +
+        `HTTP ${response.status}, body=${JSON.stringify(summarizePayload(body))}`
+      )
     } catch (err: any) {
       const detail = err?.message || String(err)
       failures.push(`web-http=error ${detail}`)
@@ -835,7 +868,12 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
         const body = this.summarizeXhsPayload(data || browserResponse.text)
         failures.push(`browser=HTTP ${browserResponse.status}${body ? ` ${body}` : ''}`)
-        logger.warn(`[xiaohongshu] ${scene} upload permit via signed creator browser failed: HTTP ${browserResponse.status}${body ? `, body=${body}` : ''}`)
+        logger.warn(
+          `[xiaohongshu] ${scene} upload permit via signed creator browser failed: ` +
+          `HTTP ${browserResponse.status}, body=${JSON.stringify(
+            summarizePayload(body)
+          )}`
+        )
       } else {
         failures.push('browser=unavailable')
       }
@@ -871,7 +909,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
       const body = this.summarizeXhsPayload(response.data)
       failures.push(`signed-http=HTTP ${response.status}${body ? ` ${body}` : ''}`)
-      logger.warn(`[xiaohongshu] ${scene} upload permit via signed creator HTTP failed: HTTP ${response.status}${body ? `, body=${body}` : ''}`)
+      logger.warn(
+        `[xiaohongshu] ${scene} upload permit via signed creator HTTP failed: ` +
+        `HTTP ${response.status}, body=${JSON.stringify(summarizePayload(body))}`
+      )
     } catch (err: any) {
       const detail = err?.message || String(err)
       failures.push(`signed-http=error ${detail}`)
@@ -1011,7 +1052,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     // Add collection if provided (through noteCollectionBind)
     if (payload.platformFields?.collection) {
       businessBinds.noteCollectionBind = { id: payload.platformFields.collection }
-      logger.info(`[xiaohongshu] Added collection: ${payload.platformFields.collection}`)
+      logger.info('[xiaohongshu] Added collection binding')
     }
 
     // Add original declaration if provided (through optionRelationList)
@@ -1066,15 +1107,24 @@ export class XhsApiAdapter extends BasePlatformAdapter {
           poi_type: (locObj.extra?.poi_type as number) || 0,
           subname: locObj.address || ''
         }
-        logger.info(`[xiaohongshu] Location: poi_id=${commonObj.post_loc.poi_id}, name=${locObj.name}, subname=${commonObj.post_loc.subname}`)
+        logger.info(
+          `[xiaohongshu] Location attached: hasPoiId=${Boolean(
+            commonObj.post_loc.poi_id
+          )}, hasName=${Boolean(locObj.name)}, hasSubname=${Boolean(
+            commonObj.post_loc.subname
+          )}`
+        )
       } else if (typeof loc === 'string') {
         commonObj.post_loc = { poi_id: '', name: loc, subname: '' }
       }
     } else {
-      logger.info(`[xiaohongshu] No location provided, platformFields.location=${JSON.stringify(payload.platformFields?.location)}`)
+      logger.info('[xiaohongshu] No location provided')
     }
 
-    logger.info(`[xiaohongshu] post_loc=${JSON.stringify(commonObj.post_loc)}, desc (first 200)=${descText.substring(0, 200)}, hash_tag count=${payload.hashtags.length}`)
+    logger.info(
+      `[xiaohongshu] submit fields: hasLocation=${Boolean(commonObj.post_loc)}, ` +
+      `descriptionLength=${descText.length}, hashtagCount=${payload.hashtags.length}`
+    )
 
     // Add content type declaration if provided (through userDeclarationBind)
     const contentTypeDeclarations = payload.platformFields?.contentTypeDeclaration as string[] || []
@@ -1244,9 +1294,13 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         })
       const hasRapParam = extraSignHeaders.some((name) => name.toLowerCase() === 'x-rap-param')
       logger.info(`[xiaohongshu] Submit headers: X-s=${signHeaders['X-s'] ? 'yes' : 'no'}, X-t=${signHeaders['X-t'] ? 'yes' : 'no'}, X-S-Common=${signHeaders['X-S-Common'] ? 'yes' : 'no'}, x-rap-param=${hasRapParam ? 'yes' : 'no'}, extra=${extraSignHeaders.join(',') || 'none'}, a1_replaced=${!!a1}`)
-      logger.info(`[xiaohongshu] Submit common.desc (first 300)=${(commonObj.desc as string)?.substring(0, 300)}`)
-      logger.info(`[xiaohongshu] Submit common.post_loc=${JSON.stringify(commonObj.post_loc)}`)
-      logger.info(`[xiaohongshu] Submit common.hash_tag=${JSON.stringify(commonObj.hash_tag)}`)
+      logger.info(
+        `[xiaohongshu] Submit description length=${String(commonObj.desc || '').length}`
+      )
+      logger.info(
+        `[xiaohongshu] Submit common: hasPostLocation=${Boolean(commonObj.post_loc)}, ` +
+        `hashTagCount=${Array.isArray(commonObj.hash_tag) ? commonObj.hash_tag.length : 0}`
+      )
 
       if (!signHeaders['X-s'] || !signHeaders['X-t'] || !signHeaders['X-S-Common']) {
         throw new Error(
@@ -1283,7 +1337,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         }
       )
 
-      logger.info(`[xiaohongshu] Submit response: ${JSON.stringify(response.data).substring(0, 500)}`)
+      logger.info(
+        `[xiaohongshu] Submit response: ${JSON.stringify(
+          summarizePayload(response.data)
+        )}`
+      )
 
       const submitResult = this.parseXhsSubmitSuccess(response.data, 'signed HTTP')
       if (submitResult) return submitResult
@@ -1301,7 +1359,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       if (axios.isAxiosError(err)) {
         const status = err.response?.status
         const data = err.response?.data
-        logger.error(`[xiaohongshu] Submit HTTP error: ${status}`, JSON.stringify(data).substring(0, 500))
+        logger.error(
+          `[xiaohongshu] Submit HTTP error: ${status}, ` +
+          `data=${JSON.stringify(summarizePayload(data))}`
+        )
         const submitResult = this.parseXhsSubmitSuccess(data, `HTTP ${status}`)
         if (submitResult) return submitResult
 
@@ -1365,7 +1426,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     const response = await getSignService().postXhsInBuiltinBrowser(cookie, urlPath, bodyStr, signHeaders, accountId)
     if (!response) return null
 
-    logger.info(`[xiaohongshu] Built-in browser submit response: status=${response.status}, body=${response.text.substring(0, 500)}`)
+    logger.info(
+      `[xiaohongshu] Built-in browser submit response: status=${response.status}, ` +
+      `body=${JSON.stringify(summarizePayload(response.text))}`
+    )
 
     let data: XhsSubmitResponse | null = null
     try {
@@ -1394,7 +1458,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     if (response.status < 200 || response.status >= 300) {
       logger.warn(
         `[xiaohongshu] Built-in browser submit did not create a confirmed note: ` +
-        `HTTP ${response.status}, body=${response.text.substring(0, 300)}`
+        `HTTP ${response.status}, body=${JSON.stringify(
+          summarizePayload(response.text)
+        )}`
       )
       return null
     }
@@ -1415,7 +1481,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     }
 
     if (!data) {
-      logger.warn(`[xiaohongshu] Built-in browser submit returned non-JSON: ${response.text.substring(0, 300)}`)
+      logger.warn(
+        `[xiaohongshu] Built-in browser submit returned non-JSON: ${JSON.stringify(
+          summarizePayload(response.text)
+        )}`
+      )
       throw new Error(`内容提交失败: 小红书浏览器提交返回非 JSON 响应（HTTP ${response.status}）`)
     }
 
@@ -1699,7 +1769,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       result += i + 2 < inputBytes.length ? CUSTOM_B64_ALPHABET[b2 & 0x3f] : '='
     }
 
-    logger.info(`[xiaohongshu] Local signing: X-s=${result.substring(0, 10)}..., X-t=${timestamp}`)
+    logger.info(
+      `[xiaohongshu] Local signing completed: timestampAvailable=${Boolean(timestamp)}`
+    )
     return {
       'X-s': result,
       'X-t': String(timestamp)
@@ -1728,7 +1800,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         type: 3
       }
 
-      logger.info(`[xiaohongshu] POI recommend request body:`, body)
+      logger.info(
+        `[xiaohongshu] POI recommend request body: ${JSON.stringify(
+          summarizePayload(body)
+        )}`
+      )
 
       const response = await axios.post<{
         success: boolean
@@ -1777,7 +1853,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       // Log first item to debug field names
       const firstItem = response.data.data.poi_list[0]
       if (firstItem) {
-        logger.info(`[xiaohongshu] First POI item fields:`, JSON.stringify(firstItem).substring(0, 500))
+        logger.info(
+          `[xiaohongshu] First POI item fields: ${Object.keys(firstItem).join(',')}`
+        )
       }
 
       const results: import('../IPlatformAdapter').LocationResult[] = response.data.data.poi_list.map((item) => ({
@@ -1819,7 +1897,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         type: 3
       }
 
-      logger.info(`[xiaohongshu] POI search request body:`, body)
+      logger.info(
+        `[xiaohongshu] POI search request body: ${JSON.stringify(
+          summarizePayload(body)
+        )}`
+      )
 
       const response = await axios.post<{
         success: boolean
@@ -1868,7 +1950,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       // Log first search result to debug field names
       const firstItem = response.data.data.poi_list[0]
       if (firstItem) {
-        logger.info(`[xiaohongshu] First search POI fields:`, JSON.stringify(firstItem).substring(0, 500))
+        logger.info(
+          `[xiaohongshu] First search POI fields: ${Object.keys(firstItem).join(',')}`
+        )
       }
 
       return response.data.data.poi_list.map((item) => ({

@@ -12,6 +12,7 @@ import { delay, retry } from '../../../utils/delays'
 import { existsSync, statSync, createReadStream, readFileSync } from 'fs'
 import { createHash, createPrivateKey, createSign, randomBytes, createHmac } from 'crypto'
 import aws4 from 'aws4'
+import { redactUrl, summarizePayload } from '../../../utils/log-redaction'
 
 // Douyin Creator API endpoints (reverse-engineered from yixiaoer)
 const API = {
@@ -115,7 +116,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
 
       const url = `https://creator.douyin.com/web/api/mix/list/?${params.toString()}`
 
-      logger.info(`[douyin] Fetching collections from: ${url}`)
+      logger.info(`[douyin] Fetching collections from: ${redactUrl(url)}`)
 
       const response = await client.get<{
         mix_list?: Array<{
@@ -131,7 +132,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         }
       )
 
-      logger.info(`[douyin] Collections response: ${JSON.stringify(response.data).substring(0, 1000)}`)
+      logger.info(
+        `[douyin] Collections response: ${JSON.stringify(
+          summarizePayload(response.data)
+        )}`
+      )
 
       if (!response.data?.mix_list) {
         logger.warn(`[douyin] Collections fetch failed: no mix_list`)
@@ -349,7 +354,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
   protected async extractAccountInfo(page: Page): Promise<{ displayName?: string; avatarUrl?: string }> {
     try {
       const currentUrl = page.url()
-      logger.info(`[douyin] extractAccountInfo: current URL = ${currentUrl}`)
+      logger.info(`[douyin] extractAccountInfo: current URL = ${redactUrl(currentUrl)}`)
 
       let nameFound = false
       try {
@@ -438,7 +443,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       const data = response.data
       // Log the actual response for debugging
       const preview = JSON.stringify(data || {}).substring(0, 300)
-      logger.info(`[douyin] checkSessionAPI response: ${preview}`)
+      logger.info(
+        `[douyin] checkSessionAPI response: ${JSON.stringify(
+          summarizePayload(preview)
+        )}`
+      )
 
       // The API can return different response formats
       if (data?.status_code === 0 && data?.user) return true
@@ -466,7 +475,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       }).toString()}`
       const signedUrl = await this.signUrl(baseUrl, cookie)
 
-      logger.info(`[douyin] getAccountInfoAPI request: ${signedUrl.substring(0, 100)}...`)
+      logger.info(`[douyin] getAccountInfoAPI request: ${redactUrl(signedUrl)}`)
 
       const response = await client.get<{
         status_code: number
@@ -487,12 +496,16 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         }
       )
 
-      logger.info(`[douyin] getAccountInfoAPI response: ${JSON.stringify(response.data).substring(0, 500)}`)
+      logger.info(
+        `[douyin] getAccountInfoAPI response: ${JSON.stringify(
+          summarizePayload(response.data)
+        )}`
+      )
 
       // 优先使用 user 字段，如果没有则使用 douyin_user_verify_info 字段
       if (response.data?.user) {
         const user = response.data.user
-        logger.info(`[douyin] getAccountInfoAPI success (user): nickname=${user.nickname}`)
+        logger.info('[douyin] getAccountInfoAPI success (user present)')
         return {
           displayName: user.nickname,
           avatarUrl: user.avatar_thumb?.url_list?.[0]
@@ -595,7 +608,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         const accessKeyId = authObj.AccessKeyID || authObj.AccessKeyId || ak
         const secretAccessKey = authObj.SecretAccessKey || ''
         const sessionToken = authObj.SessionToken || ''
-        logger.info(`[douyin] Parsed flat auth format, AccessKeyID: ${accessKeyId.substring(0, 10)}...`)
+        logger.info('[douyin] Parsed flat upload auth format')
         return { AccessKeyID: accessKeyId, SecretAccessKey: secretAccessKey, SessionToken: sessionToken }
       } catch (e) {
         logger.warn('[douyin] Failed to parse auth JSON, using ak directly')
@@ -603,7 +616,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       }
     }
 
-    logger.error('[douyin] uploadAuth missing credentials:', JSON.stringify(resData).substring(0, 300))
+    logger.error(
+      `[douyin] uploadAuth missing credentials: ${JSON.stringify(
+        summarizePayload(resData)
+      )}`
+    )
     throw new Error('获取上传凭证失败：服务器未返回认证信息')
   }
 
@@ -674,7 +691,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         Origin: 'https://creator.douyin.com'
       }, true)
 
-      logger.info(`[douyin] ApplyImageUpload response: ${JSON.stringify(applyResponse.data).substring(0, 500)}`)
+      logger.info(
+        `[douyin] ApplyImageUpload response: ${JSON.stringify(
+          summarizePayload(applyResponse.data)
+        )}`
+      )
 
       // Handle both response formats (InnerUploadAddress vs UploadAddress)
       const innerAddr = applyResponse.data?.Result?.InnerUploadAddress
@@ -702,7 +723,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         auth = storeInfos[0].Auth
         sessionKey = outerAddr?.SessionKey || ''
       } else {
-        logger.error('[douyin] ApplyImageUpload failed:', JSON.stringify(applyResponse.data).substring(0, 500))
+        logger.error(
+          `[douyin] ApplyImageUpload failed: ${JSON.stringify(
+            summarizePayload(applyResponse.data)
+          )}`
+        )
         return null
       }
 
@@ -733,10 +758,16 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         noCookie: true
       })
 
-      logger.info(`[douyin] Image upload response: status=${uploadResponse.status}, data=${JSON.stringify(uploadResponse.data).substring(0, 300)}`)
+      logger.info(
+        `[douyin] Image upload response: status=${uploadResponse.status}, ` +
+        `data=${JSON.stringify(summarizePayload(uploadResponse.data))}`
+      )
 
       if (uploadResponse.status !== 200) {
-        logger.error(`[douyin] Image upload failed: status=${uploadResponse.status}, data=${JSON.stringify(uploadResponse.data)}`)
+        logger.error(
+          `[douyin] Image upload failed: status=${uploadResponse.status}, ` +
+          `data=${JSON.stringify(summarizePayload(uploadResponse.data))}`
+        )
         return null
       }
 
@@ -793,7 +824,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
 
       const result = commitResponse.data?.Result?.Results?.[0]
       if (!result?.Uri) {
-        logger.error('[douyin] CommitImageUpload failed:', JSON.stringify(commitResponse.data).substring(0, 500))
+        logger.error(
+          `[douyin] CommitImageUpload failed: ${JSON.stringify(
+            summarizePayload(commitResponse.data)
+          )}`
+        )
         return null
       }
 
@@ -833,7 +868,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
 
     // Step 1: Get STS credentials from Douyin (with retry)
     const stsAuth = await retry(() => this.getUploadAuth(client), { maxAttempts: 3, delayMs: 2000, backoff: 2 })
-    logger.info(`[douyin] STS credentials obtained, AccessKeyID: ${stsAuth.AccessKeyID.substring(0, 10)}...`)
+    logger.info('[douyin] STS credentials obtained')
 
     // Step 2: Call ApplyUploadInner with AWS4 signing
     const userId = await this.getCreatorUserId(client)
@@ -896,7 +931,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
 
       const innerAddress = vodResponse.data?.Result?.InnerUploadAddress
       if (!innerAddress?.UploadNodes?.length) {
-        logger.error('[douyin] ApplyUploadInner failed:', JSON.stringify(vodResponse.data).substring(0, 500))
+        logger.error(
+          `[douyin] ApplyUploadInner failed: ${JSON.stringify(
+            summarizePayload(vodResponse.data)
+          )}`
+        )
         throw new Error('获取上传地址失败')
       }
 
@@ -1036,7 +1075,11 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         ...uploadHeaders,
         'Content-Type': 'text/plain'
       }, 60_000), { maxAttempts: 3, delayMs: 2000, backoff: 2 })
-      logger.info(`[douyin] Upload finish response: ${JSON.stringify(finishResult).substring(0, 300)}`)
+      logger.info(
+        `[douyin] Upload finish response: ${JSON.stringify(
+          summarizePayload(finishResult)
+        )}`
+      )
 
     } catch (err) {
       logger.error('[douyin] VOD chunked upload error:', err)
@@ -1107,9 +1150,14 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
   async submitContentAPI(client: HttpClient, payload: SubmitContentPayload, videoId?: string): Promise<SubmitResult> {
     let cookie = client.getCookieString()
 
-    logger.info(`[douyin] submitContentAPI called, payload.coverPath="${payload.coverPath}", videoId="${videoId}"`)
+    logger.info(
+      `[douyin] submitContentAPI called: hasCoverPath=${Boolean(payload.coverPath)}, ` +
+      `hasVideoId=${Boolean(videoId)}`
+    )
     logger.info(`[douyin] payload keys: ${Object.keys(payload).join(', ')}`)
-    logger.info(`[douyin] payload.platformFields: ${JSON.stringify(payload.platformFields)}`)
+    logger.info(
+      `[douyin] payload summary: ${JSON.stringify(summarizePayload(payload))}`
+    )
 
     // Upload cover image via ImageX if coverPath is provided
     let coverResult: { uri: string; width: number; height: number } | null = null
@@ -1272,7 +1320,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           mix_id: payload.platformFields.collection as string,
           mix_order: 0
         }
-        logger.info(`[douyin] Added collection: ${payload.platformFields.collection}`)
+        logger.info('[douyin] Added collection binding')
       }
 
       // POI Location: matching yixiaoer's anchor format (NOT common.poi_info)
@@ -1357,7 +1405,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       if (!msToken) {
         msToken = this.extractMsToken(effectiveCookie)
       }
-      logger.info(`[douyin] Using msToken: ${msToken ? `${msToken.substring(0, 15)}...` : 'none'}`)
+      logger.info(`[douyin] msToken available: ${msToken ? 'yes' : 'no'}`)
       const queryParams = new URLSearchParams({
         read_aid: '2906',
         ...COMMON_PARAMS,
@@ -1391,7 +1439,12 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         }
       )
       if (browserSubmit) {
-        logger.info(`[douyin] built-in browser create_v2 response: status=${browserSubmit.status}, body=${browserSubmit.text.substring(0, 1000) || '""'}`)
+        logger.info(
+          `[douyin] built-in browser create_v2 response: ` +
+          `status=${browserSubmit.status}, body=${JSON.stringify(
+            summarizePayload(browserSubmit.text)
+          )}`
+        )
         const browserData = this.parseJsonText(browserSubmit.text) as {
           status_code?: number
           status_msg?: string
@@ -1683,7 +1736,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         }
       )
       const uid = response.data?.user?.uid || response.data?.user?.id_str || ''
-      logger.info(`[douyin] Creator user ID: ${uid}`)
+      logger.info(`[douyin] Creator user ID available: ${Boolean(uid)}`)
       return uid || '0'
     } catch (err) {
       logger.warn('[douyin] Failed to get creator user ID, falling back to cookie extraction:', err)
@@ -1829,7 +1882,9 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
         }
       }
 
-      logger.warn(`[douyin] Failed to parse security-sdk cookie ${name}, decodedPrefix="${decoded.slice(0, 12)}", length=${decoded.length}`)
+      logger.warn(
+        `[douyin] Failed to parse security-sdk cookie ${name}, length=${decoded.length}`
+      )
     }
     return null
   }
@@ -1931,7 +1986,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
       const url = `${API.poiSearch}?${params.toString()}`
       const signedUrl = await this.signUrl(url, cookie)
 
-      logger.debug(`[douyin] POI recommend URL: ${signedUrl}`)
+      logger.debug(`[douyin] POI recommend URL: ${redactUrl(signedUrl)}`)
 
       const response = await client.get<{
         status_code: number

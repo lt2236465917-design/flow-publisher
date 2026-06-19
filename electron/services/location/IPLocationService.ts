@@ -41,7 +41,10 @@ export class IPLocationService {
         if (location) {
           this.cachedLocation = location
           this.cacheTime = Date.now()
-          logger.info(`[IPLocationService] Location obtained: ${location.city}, ${location.province}`)
+          logger.info(
+            `[IPLocationService] Location obtained: hasCity=${Boolean(location.city)}, ` +
+            `hasProvince=${Boolean(location.province)}`
+          )
           return location
         }
       } catch (err) {

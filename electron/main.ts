@@ -129,9 +129,9 @@ function createWindow(): void {
     mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
       const source = sourceId ? `${sourceId}:${line}` : `line ${line}`
       const prefix = `[renderer:${level}] ${source}`
-      if (level === 'error') {
+      if (level === 3) {
         logger.error(prefix, message)
-      } else if (level === 'warning') {
+      } else if (level === 2) {
         logger.warn(prefix, message)
       } else {
         logger.info(prefix, message)

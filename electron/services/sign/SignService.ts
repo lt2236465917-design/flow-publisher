@@ -6,6 +6,7 @@ import { execSync } from 'child_process'
 import { createHash } from 'crypto'
 import { logger } from '../../utils/logger'
 import { hardenPlatformWindow } from '../../security/platform-window-security'
+import { summarizePayload } from '../../utils/log-redaction'
 import {
   createSignerPreflightError,
   createSignerUnavailableError,
@@ -2382,7 +2383,7 @@ export class SignService {
           const match = requestUrl.match(/__NS_sig3=([^&]+)/)
           if (match?.[1]) {
             capturedSig3 = decodeURIComponent(match[1])
-            logger.info(`[sign] Kuaishou Electron __NS_sig3 captured: ${capturedSig3.substring(0, 20)}...`)
+            logger.info('[sign] Kuaishou Electron __NS_sig3 captured')
             return true
           }
           logger.info(`[sign] Kuaishou Electron intercepted ${method || 'request'} without __NS_sig3`)
@@ -2472,7 +2473,7 @@ export class SignService {
         const xsCommon = headers['x-s-common']
         if (xsCommon) {
           capturedXSCommon = xsCommon
-          logger.info(`[sign] XHS X-S-Common captured: ${capturedXSCommon.substring(0, 30)}...`)
+          logger.info('[sign] XHS X-S-Common captured')
         }
         // Also log all custom headers for debugging
         const customHeaders = Object.keys(headers).filter(h => h.startsWith('x-'))
@@ -2641,7 +2642,7 @@ export class SignService {
         const match = reqUrl.match(/__NS_sig3=([^&]+)/)
         if (match && match[1]) {
           capturedSig3 = match[1]
-          logger.info(`[sign] Kuaishou __NS_sig3 captured: ${capturedSig3.substring(0, 20)}...`)
+          logger.info('[sign] Kuaishou __NS_sig3 captured')
         }
         // Abort — we only needed the signature
         await route.abort()
@@ -2913,7 +2914,11 @@ export class SignService {
             };
           })()
         `, true).catch((err) => ({ error: String(err && err.message ? err.message : err) }))
-        logger.info(`[sign] xiaohongshu signer candidate diagnostics: ${JSON.stringify(diagnostics).substring(0, 500)}`)
+        logger.info(
+          `[sign] xiaohongshu signer candidate diagnostics: ${JSON.stringify(
+            summarizePayload(diagnostics)
+          )}`
+        )
       } catch (err) {
         logger.warn(`[sign] Failed to load xiaohongshu signer candidate ${candidate}:`, err)
       }

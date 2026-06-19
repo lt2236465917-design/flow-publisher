@@ -5,6 +5,7 @@ import { logger } from '../utils/logger'
 import dayjs from 'dayjs'
 import { registerTrustedIpcHandler } from '../security/trusted-ipc'
 import { requireAllowedFile } from '../security/file-access-policy'
+import { summarizePayload } from '../utils/log-redaction'
 
 export function registerSchedulerIpcHandlers(): void {
   // Create a scheduled task
@@ -37,9 +38,12 @@ export function registerSchedulerIpcHandlers(): void {
       saveDatabase()
 
       logger.info('[Scheduler] Scheduled task created:', task.id)
-      logger.info('[Scheduler] Task details - platforms:', params.platforms, 'scheduledAt:', params.scheduledAt)
-      logger.info('[Scheduler] Video path:', params.videoPath)
-      logger.info('[Scheduler] Title:', params.title)
+      logger.info(
+        `[Scheduler] Create task: platforms=${params.platforms.length}, ` +
+        `scheduledAt=${params.scheduledAt}, payload=${JSON.stringify(
+          summarizePayload(params)
+        )}`
+      )
       return { success: true, data: task }
     } catch (err) {
       logger.error('SCHEDULE_CREATE error:', err)

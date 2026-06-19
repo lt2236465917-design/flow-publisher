@@ -4,6 +4,7 @@ import { AnalyticsCollectorService } from '../services/analytics/AnalyticsCollec
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import type { AnalyticsQuery, VideoGroupQuery } from '../../shared/contracts/analytics.contract'
 import { logger } from '../utils/logger'
+import { summarizePayload } from '../utils/log-redaction'
 import { registerTrustedIpcHandler } from '../security/trusted-ipc'
 
 let collectorService: AnalyticsCollectorService | null = null
@@ -103,7 +104,11 @@ export function registerAnalyticsIpcHandlers(): void {
     try {
       const repo = getAnalyticsRepository()
       const result = repo.getVideoGroups(query)
-      logger.info(`[Analytics] VIDEO_GROUPS: query=${JSON.stringify(query)}, groups=${result.groups.length}, total=${result.total}`)
+      logger.info(
+        `[Analytics] VIDEO_GROUPS: query=${JSON.stringify(
+          summarizePayload(query)
+        )}, groups=${result.groups.length}, total=${result.total}`
+      )
       return { success: true, data: result }
     } catch (err) {
       logger.error('ANALYTICS_VIDEO_GROUPS error:', err)
