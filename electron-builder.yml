@@ -44,7 +44,7 @@ mac:
         - x64
         - arm64
 dmg:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: ${name}-${version}-mac-${arch}.${ext}
 asar: true
 asarUnpack:
   - resources/**
