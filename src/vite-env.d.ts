@@ -50,7 +50,7 @@ interface Window {
     publish: ApiPublish
     schedule: ApiSchedule
     file: ApiFile
-    getPathForFile: (file: File) => string
+    getPathForFile: (file: File) => Promise<string>
   }
 }
 

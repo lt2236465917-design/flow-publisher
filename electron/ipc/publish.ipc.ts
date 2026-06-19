@@ -18,6 +18,7 @@ import {
   getMainWindow,
   registerTrustedIpcHandler
 } from '../security/trusted-ipc'
+import { requireAllowedFile } from '../security/file-access-policy'
 
 const cookieStore = new CookieStore()
 const SIGN_FALLBACK_CONFIRM_TIMEOUT_MS = 180_000
@@ -138,7 +139,7 @@ export function registerPublishIpcHandlers(): void {
   // Probe video metadata
   registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_PROBE_VIDEO, async (_event, filePath: string): Promise<IpcResponse> => {
     try {
-      const probe = await ffmpegService.probeVideo(filePath)
+      const probe = await ffmpegService.probeVideo(requireAllowedFile(filePath))
       return { success: true, data: probe }
     } catch (err) {
       logger.error('PUBLISH_PROBE_VIDEO error:', err)
@@ -149,7 +150,10 @@ export function registerPublishIpcHandlers(): void {
   // Extract cover frames
   registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_EXTRACT_FRAMES, async (_event, filePath: string, count?: number): Promise<IpcResponse> => {
     try {
-      const frames = await ffmpegService.extractFrames(filePath, count || 8)
+      const frames = await ffmpegService.extractFrames(
+        requireAllowedFile(filePath),
+        count || 8
+      )
       return { success: true, data: frames }
     } catch (err) {
       logger.error('PUBLISH_EXTRACT_FRAMES error:', err)
@@ -160,7 +164,7 @@ export function registerPublishIpcHandlers(): void {
   // Validate video for platform
   registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_VALIDATE_VIDEO, async (_event, filePath: string, platformId: string): Promise<IpcResponse> => {
     try {
-      const probe = await ffmpegService.probeVideo(filePath)
+      const probe = await ffmpegService.probeVideo(requireAllowedFile(filePath))
       const result = validateVideo(probe, platformId)
       return { success: true, data: result }
     } catch (err) {
@@ -179,6 +183,7 @@ export function registerPublishIpcHandlers(): void {
   }): Promise<IpcResponse> => {
     let createdRecordId: string | null = null
     try {
+      const videoPath = requireAllowedFile(params.filePath)
       const adapter = getAdapter(params.platformId)
       if (!adapter) {
         return { success: false, error: `不支持的平台: ${params.platformId}` }
@@ -202,7 +207,7 @@ export function registerPublishIpcHandlers(): void {
         platform: params.platformId,
         title: '',
         description: '',
-        videoPath: params.filePath
+        videoPath
       })
       createdRecordId = record.id
       saveDatabase()
@@ -247,7 +252,7 @@ export function registerPublishIpcHandlers(): void {
           await ensureWebSignerReadyForUpload(params.platformId, record.id, mainWindow)
           return await adapter.uploadVideoAPI!(
             client,
-            params.filePath,
+            videoPath,
             (progress) => {
               recordRepo.updateStatus(record.id, 'uploading', progress.percent)
               saveDatabase()
@@ -327,6 +332,9 @@ export function registerPublishIpcHandlers(): void {
       // Guard: IPC may serialize undefined as the string "undefined"
       if (params.content.coverPath === 'undefined') {
         params.content.coverPath = undefined
+      }
+      if (params.content.coverPath) {
+        params.content.coverPath = requireAllowedFile(params.content.coverPath)
       }
 
       const adapter = getAdapter(params.platformId)

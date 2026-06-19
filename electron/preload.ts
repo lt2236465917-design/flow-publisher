@@ -51,7 +51,15 @@ const api = {
     selectImage: () => ipcRenderer.invoke('file:select-image')
   },
   // Utility: get absolute file path from a File object (for drag-drop)
-  getPathForFile: (file: File): string => webUtils.getPathForFile(file)
+  getPathForFile: async (file: File): Promise<string> => {
+    const filePath = webUtils.getPathForFile(file)
+    if (!filePath) throw new Error('无法读取拖拽文件路径')
+    const response = await ipcRenderer.invoke('file:authorize-dropped-path', filePath)
+    if (!response?.success) {
+      throw new Error(response?.error || '拖拽文件授权失败')
+    }
+    return filePath
+  }
 }
 
 // contextIsolation is REQUIRED for security. The allowlist-based IPC gateway

@@ -4,6 +4,7 @@ import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import { logger } from '../utils/logger'
 import dayjs from 'dayjs'
 import { registerTrustedIpcHandler } from '../security/trusted-ipc'
+import { requireAllowedFile } from '../security/file-access-policy'
 
 export function registerSchedulerIpcHandlers(): void {
   // Create a scheduled task
@@ -20,6 +21,8 @@ export function registerSchedulerIpcHandlers(): void {
     scheduledAt: string
   }): Promise<IpcResponse> => {
     try {
+      params.videoPath = requireAllowedFile(params.videoPath)
+      if (params.coverPath) params.coverPath = requireAllowedFile(params.coverPath)
       const scheduledTime = dayjs(params.scheduledAt)
       const minTime = dayjs().add(5, 'minute')
       if (!scheduledTime.isValid()) {

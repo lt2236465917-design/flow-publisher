@@ -1,14 +1,17 @@
 import { app, BrowserWindow, protocol, net, nativeImage, shell } from 'electron'
-import { join, resolve, sep } from 'path'
+import { join } from 'path'
 import { pathToFileURL } from 'url'
-import { realpathSync, existsSync } from 'fs'
+import { existsSync } from 'fs'
 import { initDatabase, closeDatabase, backupDatabase } from './services/database'
 import { registerAccountIpcHandlers } from './ipc/account.ipc'
 import { registerPublishIpcHandlers } from './ipc/publish.ipc'
 import { registerFileDialogIpcHandlers } from './ipc/file-dialog.ipc'
 import { registerSchedulerIpcHandlers } from './ipc/scheduler.ipc'
 import { registerAnalyticsIpcHandlers } from './ipc/analytics.ipc'
-import { getScheduledTaskRepository } from './services/database'
+import {
+  getPublishRecordRepository,
+  getScheduledTaskRepository
+} from './services/database'
 import { TaskQueue } from './services/scheduler/TaskQueue'
 import { PublishScheduler } from './services/scheduler/PublishScheduler'
 import { getSignService } from './services/sign/SignService'
@@ -22,6 +25,10 @@ import {
   isSecureRemoteUrl,
   isTrustedMainRendererUrl
 } from './security/navigation-policy'
+import {
+  configureFileAccessPolicy,
+  requireAllowedFile
+} from './security/file-access-policy'
 
 const isDev = !app.isPackaged
 const APP_NAME = 'Flow'
@@ -156,64 +163,36 @@ app.whenReady().then(async () => {
   app.setAppUserModelId('com.flow.publisher')
   applyAppBranding()
 
+  const fileAccessPolicy = configureFileAccessPolicy(
+    [app.getPath('userData')],
+    [join(app.getPath('temp'), 'videosync-frames')]
+  )
+
   // Handle local-file:// protocol to serve local files
-  // Security: only allow paths within app-owned directories or the current user's home.
-  // Uses realpathSync to resolve symlinks/junction points before whitelist comparison,
-  // and appends path separator to prevent prefix-confusion bypasses.
-  const allowedRoots = [
-    app.getPath('userData'),
-    app.getPath('temp'),
-    app.getPath('home')
-  ].map(root => {
-    const resolvedRoot = resolve(root)
-    return existsSync(resolvedRoot) ? realpathSync(resolvedRoot) : resolvedRoot
-  })
   protocol.handle('local-file', (request) => {
     try {
       const url = new URL(request.url)
       const filePath = decodeURIComponent(url.host ? `/${url.host}${url.pathname}` : url.pathname)
       // On Windows, pathname starts with /C:/..., remove leading /
       const normalizedPath = process.platform === 'win32' && filePath.startsWith('/') ? filePath.slice(1) : filePath
-      let resolvedPath = resolve(normalizedPath)
-      if (!existsSync(resolvedPath)) {
-        const homeRoot = resolve(app.getPath('home'))
-        const homeParts = homeRoot.split(sep).filter(Boolean)
-        const pathParts = resolvedPath.split(sep).filter(Boolean)
-        const matchesHome = homeParts.every((part, index) =>
-          pathParts[index]?.toLowerCase() === part.toLowerCase()
-        )
-        if (matchesHome) {
-          resolvedPath = sep + [...homeParts, ...pathParts.slice(homeParts.length)].join(sep)
-        }
-      }
-
-      // If file exists, resolve symlinks/junction points for security validation
-      const canonicalPath = existsSync(resolvedPath) ? realpathSync(resolvedPath) : resolvedPath
-
-      // Validate path is within allowed directories — append sep to prevent prefix confusion
-      const canonicalPathWithSep = canonicalPath + sep
-      const isAllowed = allowedRoots.some(root => {
-        const rootWithSep = root.endsWith(sep) ? root : root + sep
-        if (process.platform === 'darwin') {
-          return canonicalPathWithSep.toLowerCase().startsWith(rootWithSep.toLowerCase())
-        }
-        return canonicalPathWithSep.startsWith(rootWithSep)
-      })
-      if (!isAllowed) {
-        logger.warn(`[local-file] Blocked access to path outside allowed directories: ${canonicalPath}`)
-        return new Response('Forbidden', { status: 403 })
-      }
-
+      const canonicalPath = requireAllowedFile(normalizedPath)
       const fileUrl = pathToFileURL(canonicalPath).toString()
       return net.fetch(fileUrl)
     } catch (err) {
-      // URIError (malformed %-encoding), TypeError, or net.fetch error
-      logger.warn(`[local-file] Request error:`, err)
-      return new Response('Bad Request', { status: 400 })
+      logger.warn('[local-file] Blocked or invalid request:', err)
+      return new Response('Forbidden', { status: 403 })
     }
   })
 
   await initDatabase()
+  for (const record of getPublishRecordRepository().getAll()) {
+    fileAccessPolicy.authorize(record.video_path)
+    if (record.cover_path) fileAccessPolicy.authorize(record.cover_path)
+  }
+  for (const task of getScheduledTaskRepository().getAll()) {
+    fileAccessPolicy.authorize(task.video_path)
+    if (task.cover_path) fileAccessPolicy.authorize(task.cover_path)
+  }
 
   // Backup database on startup (non-blocking)
   backupDatabase()
