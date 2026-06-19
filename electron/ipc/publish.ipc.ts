@@ -19,6 +19,10 @@ import {
   registerTrustedIpcHandler
 } from '../security/trusted-ipc'
 import { requireAllowedFile } from '../security/file-access-policy'
+import {
+  validateSubmitRelationship,
+  validateUploadRelationship
+} from '../services/publish/publish-validation'
 
 const cookieStore = new CookieStore()
 const SIGN_FALLBACK_CONFIRM_TIMEOUT_MS = 180_000
@@ -196,9 +200,7 @@ export function registerPublishIpcHandlers(): void {
       const accountRepo = getAccountRepository()
       const account = accountRepo.getById(params.accountId)
       if (!account) return { success: false, error: '账号不存在' }
-      if (account.session_status !== 'logged_in') {
-        return { success: false, error: '账号未登录，请先登录' }
-      }
+      validateUploadRelationship(account, params.platformId)
 
       // Create publish record
       const recordRepo = getPublishRecordRepository()
@@ -349,6 +351,10 @@ export function registerPublishIpcHandlers(): void {
       const recordRepo = getPublishRecordRepository()
       const record = recordRepo.getById(params.recordId)
       if (!record) return { success: false, error: '发布记录不存在' }
+      const accountRepo = getAccountRepository()
+      const account = accountRepo.getById(record.account_id)
+      if (!account) return { success: false, error: '发布记录账号不存在' }
+      validateSubmitRelationship(record, account, params.platformId)
 
       recordRepo.updateStatus(params.recordId, 'submitting', undefined)
       saveDatabase()
