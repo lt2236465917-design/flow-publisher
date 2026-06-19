@@ -1,5 +1,6 @@
 import { BrowserWindow, session } from 'electron'
 import { logger } from '../../utils/logger'
+import { hardenPlatformWindow } from '../../security/platform-window-security'
 
 /**
  * 使用Electron内置BrowserWindow进行登录
@@ -55,9 +56,11 @@ export class ElectronLoginWindow {
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
+        sandbox: true,
         partition
       }
     })
+    hardenPlatformWindow(this.loginWindow, this.platformId)
 
     // 为视频号设置微信浏览器的User-Agent
     if (this.platformId === 'wechat-channels') {

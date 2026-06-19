@@ -1,4 +1,3 @@
-import { ipcMain, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
 import { getAccountRepository, saveDatabase } from '../services/database'
 import { CookieStore } from '../services/browser/CookieStore'
@@ -15,6 +14,10 @@ import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import { HttpClient } from '../services/http/HttpClient'
 import { encryptString } from '../utils/crypto-store'
 import { logger } from '../utils/logger'
+import {
+  getMainWindow,
+  registerTrustedIpcHandler
+} from '../security/trusted-ipc'
 
 const cookieStore = new CookieStore()
 
@@ -49,7 +52,7 @@ export function registerAccountIpcHandlers(): void {
   }
 
   // List all accounts
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_LIST, async (): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ACCOUNT_LIST, async (): Promise<IpcResponse> => {
     try {
       const repo = getAccountRepository()
       const rows = repo.getAll()
@@ -70,7 +73,7 @@ export function registerAccountIpcHandlers(): void {
 
   // Start login flow for a platform.
   // Use Electron BrowserWindow with an isolated session partition per account.
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_LOGIN, async (event, platformId: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ACCOUNT_LOGIN, async (event, platformId: string): Promise<IpcResponse> => {
     let loginWindow: ElectronLoginWindow | null = null
     try {
       const adapter = getAdapter(platformId)
@@ -101,7 +104,7 @@ export function registerAccountIpcHandlers(): void {
       await loginWindow.open(adapter.loginUrl)
 
       // 通知渲染进程
-      const mainWindow = BrowserWindow.getAllWindows()[0]
+      const mainWindow = getMainWindow() || undefined
       mainWindow?.webContents.send('account:qr-code', {
         accountId, platformId,
         qrDataUrl: null,
@@ -239,7 +242,7 @@ export function registerAccountIpcHandlers(): void {
   })
 
   // Check session status — call platform API to verify real login status
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_CHECK_SESSION, async (_event, accountId: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ACCOUNT_CHECK_SESSION, async (_event, accountId: string): Promise<IpcResponse> => {
     try {
       const repo = getAccountRepository()
       const account = repo.getById(accountId)
@@ -302,7 +305,7 @@ export function registerAccountIpcHandlers(): void {
   })
 
   // Batch check all logged-in accounts (for startup auto-check)
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_CHECK_ALL_SESSIONS, async (): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ACCOUNT_CHECK_ALL_SESSIONS, async (): Promise<IpcResponse> => {
     try {
       const repo = getAccountRepository()
       const allAccounts = repo.getAll()
@@ -354,7 +357,7 @@ export function registerAccountIpcHandlers(): void {
   })
 
   // Logout
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_LOGOUT, async (_event, accountId: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ACCOUNT_LOGOUT, async (_event, accountId: string): Promise<IpcResponse> => {
     try {
       const repo = getAccountRepository()
       const account = repo.getById(accountId)

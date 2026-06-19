@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, protocol, net, nativeImage } from 'electron'
+import { app, BrowserWindow, protocol, net, nativeImage, shell } from 'electron'
 import { join, resolve, sep } from 'path'
 import { pathToFileURL } from 'url'
 import { realpathSync, existsSync } from 'fs'
@@ -14,6 +14,14 @@ import { PublishScheduler } from './services/scheduler/PublishScheduler'
 import { getSignService } from './services/sign/SignService'
 import { getManagedSelfHostedSignerServer } from './services/sign/ManagedSelfHostedSignerServer'
 import { logger } from './utils/logger'
+import {
+  registerTrustedIpcHandler,
+  setMainRendererSecurityContext
+} from './security/trusted-ipc'
+import {
+  isSecureRemoteUrl,
+  isTrustedMainRendererUrl
+} from './security/navigation-policy'
 
 const isDev = !app.isPackaged
 const APP_NAME = 'Flow'
@@ -84,6 +92,27 @@ function createWindow(): void {
       nodeIntegration: false
     }
   })
+  const devRendererUrl = isDev ? process.env['ELECTRON_RENDERER_URL'] : undefined
+  const rendererRoot = join(__dirname, '../renderer')
+  setMainRendererSecurityContext(mainWindow, devRendererUrl)
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!isTrustedMainRendererUrl(url, devRendererUrl, rendererRoot)) {
+      event.preventDefault()
+      logger.warn(`[security] Blocked main-window navigation to ${url}`)
+    }
+  })
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (isSecureRemoteUrl(url)) {
+      void shell.openExternal(url)
+    } else {
+      logger.warn(`[security] Blocked main-window open request to ${url}`)
+    }
+    return { action: 'deny' }
+  })
+  mainWindow.webContents.session.setPermissionRequestHandler(
+    (_webContents, _permission, callback) => callback(false)
+  )
 
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
@@ -198,7 +227,7 @@ app.whenReady().then(async () => {
   await getManagedSelfHostedSignerServer().start()
 
   // App-level IPC handlers
-  ipcMain.handle('app:get-version', () => {
+  registerTrustedIpcHandler('app:get-version', () => {
     return { success: true, data: { version: app.getVersion() } }
   })
 

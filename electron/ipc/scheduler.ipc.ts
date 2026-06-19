@@ -1,13 +1,13 @@
-import { ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
 import { getScheduledTaskRepository, saveDatabase } from '../services/database'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import { logger } from '../utils/logger'
 import dayjs from 'dayjs'
+import { registerTrustedIpcHandler } from '../security/trusted-ipc'
 
 export function registerSchedulerIpcHandlers(): void {
   // Create a scheduled task
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_CREATE, async (_event, params: {
+  registerTrustedIpcHandler(IPC_CHANNELS.SCHEDULE_CREATE, async (_event, params: {
     platforms: string[]
     accountIds: Record<string, string>
     videoPath: string
@@ -45,7 +45,7 @@ export function registerSchedulerIpcHandlers(): void {
   })
 
   // List all scheduled tasks
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_LIST, async (): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.SCHEDULE_LIST, async (): Promise<IpcResponse> => {
     try {
       const repo = getScheduledTaskRepository()
       const tasks = repo.getAll()
@@ -58,7 +58,7 @@ export function registerSchedulerIpcHandlers(): void {
   })
 
   // Cancel a pending scheduled task
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_CANCEL, async (_event, taskId: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.SCHEDULE_CANCEL, async (_event, taskId: string): Promise<IpcResponse> => {
     try {
       const repo = getScheduledTaskRepository()
       const task = repo.getById(taskId)
@@ -78,7 +78,7 @@ export function registerSchedulerIpcHandlers(): void {
   })
 
   // Delete a scheduled task (only completed/failed/cancelled/partial)
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_DELETE, async (_event, taskId: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.SCHEDULE_DELETE, async (_event, taskId: string): Promise<IpcResponse> => {
     try {
       const repo = getScheduledTaskRepository()
       const task = repo.getById(taskId)

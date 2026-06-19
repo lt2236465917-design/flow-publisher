@@ -1,16 +1,20 @@
-import { ipcMain, dialog, BrowserWindow, app } from 'electron'
+import { dialog, app } from 'electron'
 import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync } from 'fs'
 import { extname, join, resolve, sep } from 'path'
 import { randomBytes } from 'crypto'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import { logger } from '../utils/logger'
+import {
+  getMainWindow,
+  registerTrustedIpcHandler
+} from '../security/trusted-ipc'
 
 export function registerFileDialogIpcHandlers(): void {
   // Select video file
-  ipcMain.handle(IPC_CHANNELS.FILE_SELECT_VIDEO, async (): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.FILE_SELECT_VIDEO, async (): Promise<IpcResponse> => {
     try {
-      const mainWindow = BrowserWindow.getAllWindows()[0]
+      const mainWindow = getMainWindow() || undefined
       if (!mainWindow) return { success: false, error: '窗口未就绪' }
 
       const result = await dialog.showOpenDialog(mainWindow, {
@@ -34,10 +38,10 @@ export function registerFileDialogIpcHandlers(): void {
   })
 
   // Select image file and return as data URL (for cover)
-  ipcMain.handle(IPC_CHANNELS.FILE_SELECT_IMAGE, async (): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.FILE_SELECT_IMAGE, async (): Promise<IpcResponse> => {
     try {
       logger.info('[FILE_SELECT_IMAGE] >>> handler invoked')
-      const mainWindow = BrowserWindow.getAllWindows()[0]
+      const mainWindow = getMainWindow() || undefined
       if (!mainWindow) {
         logger.warn('[FILE_SELECT_IMAGE] no main window')
         return { success: false, error: '窗口未就绪' }
@@ -91,7 +95,7 @@ export function registerFileDialogIpcHandlers(): void {
   })
 
   // Read file as data URL (for image preview/crop)
-  ipcMain.handle(IPC_CHANNELS.FILE_READ_DATA_URL, async (_event, filePath: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.FILE_READ_DATA_URL, async (_event, filePath: string): Promise<IpcResponse> => {
     try {
       if (!filePath || typeof filePath !== 'string') return { success: false, error: '无效的文件路径' }
       if (!existsSync(filePath)) return { success: false, error: '文件不存在' }
@@ -125,7 +129,7 @@ export function registerFileDialogIpcHandlers(): void {
 
   // Convert data URL to a persistent app-owned file for API/HTTP cover upload
   // and later display in the analytics list.
-  ipcMain.handle(IPC_CHANNELS.FILE_DATA_URL_TO_TEMP, async (_event, dataUrl: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.FILE_DATA_URL_TO_TEMP, async (_event, dataUrl: string): Promise<IpcResponse> => {
     try {
       logger.info(`[FILE_DATA_URL_TO_TEMP] called, dataUrl length: ${dataUrl?.length}, starts with: ${dataUrl?.substring(0, 50)}`)
       const match = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/)

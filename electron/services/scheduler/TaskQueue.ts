@@ -1,4 +1,3 @@
-import { BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../../src/constants/ipc-channels'
 import { getPublishRecordRepository, getAccountRepository, saveDatabase } from '../database'
 import { CookieStore } from '../browser/CookieStore'
@@ -12,6 +11,7 @@ import { retry } from '../../utils/delays'
 import { logger } from '../../utils/logger'
 import type { ScheduledTaskRow } from '../database/repositories/scheduled-task.repo'
 import type { ScheduledTaskRepository } from '../database/repositories/scheduled-task.repo'
+import { getMainWindow } from '../../security/trusted-ipc'
 
 async function ensureSessionHealthy(
   adapter: IPlatformAdapter,
@@ -147,7 +147,7 @@ export class TaskQueue {
       saveDatabase()
 
       // Send summary to frontend
-      const mainWindow = BrowserWindow.getAllWindows()[0]
+      const mainWindow = getMainWindow() || undefined
       mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
         taskId: task.id,
         percent: 100,
@@ -194,7 +194,7 @@ export class TaskQueue {
     })
     saveDatabase()
 
-    const mainWindow = BrowserWindow.getAllWindows()[0]
+    const mainWindow = getMainWindow() || undefined
 
     // Upload via API
     logger.info(`[TaskQueue] Uploading to ${platformId} via API`)

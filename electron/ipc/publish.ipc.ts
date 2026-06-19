@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow } from 'electron'
+import { BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
 import { getAccountRepository, getPublishRecordRepository, saveDatabase } from '../services/database'
 import { CookieStore } from '../services/browser/CookieStore'
@@ -14,6 +14,10 @@ import { getPublishRiskGuard } from '../services/risk/PublishRiskGuard'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import type { IPlatformAdapter, VideoMetadata } from '../services/platform-adapters/IPlatformAdapter'
 import { logger } from '../utils/logger'
+import {
+  getMainWindow,
+  registerTrustedIpcHandler
+} from '../security/trusted-ipc'
 
 const cookieStore = new CookieStore()
 const SIGN_FALLBACK_CONFIRM_TIMEOUT_MS = 180_000
@@ -125,14 +129,14 @@ async function ensureWebSignerReadyForUpload(
 
 export function registerPublishIpcHandlers(): void {
   // Sign-fallback confirmation — renderer responds when user dismisses the warning dialog
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_CONFIRM_SIGN_FALLBACK, (_event, confirmed: boolean) => {
+  registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_CONFIRM_SIGN_FALLBACK, (_event, confirmed: boolean) => {
     logger.info(`[publish] Sign fallback confirmation: ${confirmed ? 'accepted' : 'denied'}`)
     resolvePendingSignConfirm(confirmed)
     return { success: true }
   })
 
   // Probe video metadata
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_PROBE_VIDEO, async (_event, filePath: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_PROBE_VIDEO, async (_event, filePath: string): Promise<IpcResponse> => {
     try {
       const probe = await ffmpegService.probeVideo(filePath)
       return { success: true, data: probe }
@@ -143,7 +147,7 @@ export function registerPublishIpcHandlers(): void {
   })
 
   // Extract cover frames
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_EXTRACT_FRAMES, async (_event, filePath: string, count?: number): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_EXTRACT_FRAMES, async (_event, filePath: string, count?: number): Promise<IpcResponse> => {
     try {
       const frames = await ffmpegService.extractFrames(filePath, count || 8)
       return { success: true, data: frames }
@@ -154,7 +158,7 @@ export function registerPublishIpcHandlers(): void {
   })
 
   // Validate video for platform
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_VALIDATE_VIDEO, async (_event, filePath: string, platformId: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_VALIDATE_VIDEO, async (_event, filePath: string, platformId: string): Promise<IpcResponse> => {
     try {
       const probe = await ffmpegService.probeVideo(filePath)
       const result = validateVideo(probe, platformId)
@@ -166,7 +170,7 @@ export function registerPublishIpcHandlers(): void {
   })
 
   // Upload video to platform (API mode)
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_UPLOAD, async (_event, params: {
+  registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_UPLOAD, async (_event, params: {
     accountId: string
     platformId: string
     filePath: string
@@ -203,7 +207,7 @@ export function registerPublishIpcHandlers(): void {
       createdRecordId = record.id
       saveDatabase()
 
-      const mainWindow = BrowserWindow.getAllWindows()[0]
+      const mainWindow = getMainWindow() || undefined
 
       logger.info(`[publish] Uploading to ${params.platformId} via API`)
 
@@ -293,7 +297,7 @@ export function registerPublishIpcHandlers(): void {
   })
 
   // Submit content (API mode)
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_SUBMIT, async (_event, params: {
+  registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_SUBMIT, async (_event, params: {
     recordId: string
     platformId: string
     videoId?: string
@@ -341,7 +345,7 @@ export function registerPublishIpcHandlers(): void {
       recordRepo.updateStatus(params.recordId, 'submitting', undefined)
       saveDatabase()
 
-      const mainWindow = BrowserWindow.getAllWindows()[0]
+      const mainWindow = getMainWindow() || undefined
 
       logger.info(`[publish] Submitting to ${params.platformId} via API`)
 
@@ -466,7 +470,7 @@ export function registerPublishIpcHandlers(): void {
   })
 
   // Get platform-specific field definitions
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_GET_PLATFORM_FIELDS, async (_event, platformId: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_GET_PLATFORM_FIELDS, async (_event, platformId: string): Promise<IpcResponse> => {
     try {
       const adapter = getAdapter(platformId)
       const fields = adapter?.getPlatformFields?.() ?? []
@@ -478,7 +482,7 @@ export function registerPublishIpcHandlers(): void {
   })
 
   // Get IP location
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_GET_IP_LOCATION, async (): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_GET_IP_LOCATION, async (): Promise<IpcResponse> => {
     try {
       const location = await ipLocationService.getLocation()
       return { success: true, data: location }
@@ -489,7 +493,7 @@ export function registerPublishIpcHandlers(): void {
   })
 
   // Get recommend locations for a platform
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_GET_RECOMMEND_LOCATIONS, async (_event, params: {
+  registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_GET_RECOMMEND_LOCATIONS, async (_event, params: {
     platformId: string
     accountId: string
     lat?: number
@@ -553,7 +557,7 @@ export function registerPublishIpcHandlers(): void {
   })
 
   // Search POI locations for a platform
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_SEARCH_LOCATION, async (_event, params: {
+  registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_SEARCH_LOCATION, async (_event, params: {
     platformId: string
     accountId: string
     keyword: string
@@ -597,7 +601,7 @@ export function registerPublishIpcHandlers(): void {
   })
 
   // Get collections for a platform (e.g. Douyin)
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_GET_COLLECTIONS, async (_event, params: {
+  registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_GET_COLLECTIONS, async (_event, params: {
     platformId: string
     accountId: string
   }): Promise<IpcResponse> => {
@@ -634,7 +638,7 @@ export function registerPublishIpcHandlers(): void {
   })
 
   // List publish records
-  ipcMain.handle(IPC_CHANNELS.PUBLISH_LIST_RECORDS, async (): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.PUBLISH_LIST_RECORDS, async (): Promise<IpcResponse> => {
     try {
       const recordRepo = getPublishRecordRepository()
       const records = recordRepo.getAll()

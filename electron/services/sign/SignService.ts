@@ -5,6 +5,7 @@ import { existsSync, mkdirSync } from 'fs'
 import { execSync } from 'child_process'
 import { createHash } from 'crypto'
 import { logger } from '../../utils/logger'
+import { hardenPlatformWindow } from '../../security/platform-window-security'
 import {
   createSignerPreflightError,
   createSignerUnavailableError,
@@ -703,9 +704,11 @@ export class SignService {
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
+        sandbox: true,
         partition
       }
     })
+    hardenPlatformWindow(win, 'douyin')
 
     try {
       await win.loadURL(DOUYIN_SIGN_CONTEXT_URL)
@@ -2861,9 +2864,11 @@ export class SignService {
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
+        sandbox: true,
         partition
       }
     })
+    hardenPlatformWindow(win, platform)
 
     win.webContents.setUserAgent(REALISTIC_UA)
     win.on('closed', () => {
