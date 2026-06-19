@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Table,
   Empty,
@@ -74,6 +74,79 @@ function formatNumber(num: number): string {
   return num.toString()
 }
 
+function VideoCover({
+  coverPath,
+  videoPath,
+  width = 80,
+  height = 45,
+  aspectRatio
+}: {
+  coverPath?: string
+  videoPath?: string
+  width?: number | string
+  height?: number | string
+  aspectRatio?: string
+}) {
+  const [coverFailed, setCoverFailed] = useState(false)
+  const [videoFailed, setVideoFailed] = useState(false)
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  useEffect(() => {
+    setCoverFailed(false)
+    setVideoFailed(false)
+  }, [coverPath, videoPath])
+
+  const showCover = !!coverPath && !coverFailed
+  const showVideo = !showCover && !!videoPath && !videoFailed
+
+  return (
+    <div
+      style={{
+        width,
+        height: aspectRatio ? undefined : height,
+        aspectRatio,
+        borderRadius: 6,
+        background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        position: 'relative',
+        overflow: 'hidden'
+      }}
+    >
+      {showCover && (
+        <img
+          src={toLocalFileUrl(coverPath)}
+          alt="视频封面"
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          onError={() => setCoverFailed(true)}
+        />
+      )}
+      {showVideo && (
+        <video
+          ref={videoRef}
+          src={toLocalFileUrl(videoPath)}
+          muted
+          playsInline
+          preload="metadata"
+          aria-label="视频画面缩略图"
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          onLoadedMetadata={() => {
+            const video = videoRef.current
+            if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return
+            video.currentTime = Math.min(1, Math.max(0.1, video.duration * 0.05))
+          }}
+          onError={() => setVideoFailed(true)}
+        />
+      )}
+      {!showCover && !showVideo && (
+        <PlayCircleOutlined style={{ fontSize: 20, color: 'rgba(255,255,255,0.9)' }} />
+      )}
+    </div>
+  )
+}
+
 export default function DataPage() {
   // 视频数据相关
   const {
@@ -84,7 +157,6 @@ export default function DataPage() {
     videoDetail,
     videoDetailLoading,
     collecting,
-    collectResult,
     fetchVideoGroups,
     fetchVideoDetail,
     collectAll,
@@ -120,20 +192,23 @@ export default function DataPage() {
 
   const handleCollect = async () => {
     try {
+      let result
       if (selectedGroup) {
         // 在详情页，采集当前视频的数据
-        await collectVideoGroup(selectedGroup)
+        result = await collectVideoGroup(selectedGroup)
       } else {
         // 在列表页，采集所有数据
-        await collectAll()
+        result = await collectAll()
       }
-      if (collectResult?.errors.length) {
-        message.warning(`采集完成，但有 ${collectResult.errors.length} 个错误`)
+      if (result.errors.length) {
+        message.warning(`采集完成：更新 ${result.updatedRecords} 条，${result.errors[0]}`)
+      } else if (result.updatedRecords === 0) {
+        message.info('没有采集到可更新的数据')
       } else {
-        message.success('数据采集完成')
+        message.success(`数据采集完成，更新 ${result.updatedRecords} 条`)
       }
-    } catch {
-      message.error('数据采集失败')
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '数据采集失败')
     }
   }
 
@@ -257,34 +332,7 @@ export default function DataPage() {
       width: 350,
       render: (title: string, record: VideoGroupSummary) => (
         <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-          {/* 视频封面 */}
-          <div
-            style={{
-              width: 80,
-              height: 45,
-              borderRadius: 6,
-              background: record.coverPath ? '#000' : 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-              position: 'relative',
-              overflow: 'hidden'
-            }}
-          >
-            {record.coverPath ? (
-              <img
-                src={toLocalFileUrl(record.coverPath)}
-                alt="cover"
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                onError={(e) => {
-                  ;(e.target as HTMLImageElement).style.display = 'none'
-                }}
-              />
-            ) : (
-              <PlayCircleOutlined style={{ fontSize: 20, color: 'rgba(255,255,255,0.9)' }} />
-            )}
-          </div>
+          <VideoCover coverPath={record.coverPath} videoPath={record.videoPath} />
           {/* 标题和时间 */}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -511,39 +559,12 @@ function VideoDetailView({
         <Row gutter={24}>
           {/* 封面 */}
           <Col span={4}>
-            <div
-              style={{
-                width: '100%',
-                aspectRatio: '16/9',
-                borderRadius: 8,
-                background: '#f0f0f0',
-                overflow: 'hidden'
-              }}
-            >
-              {detail.coverPath ? (
-                <img
-                  src={toLocalFileUrl(detail.coverPath)}
-                  alt="cover"
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                  onError={(e) => {
-                    ;(e.target as HTMLImageElement).style.display = 'none'
-                  }}
-                />
-              ) : (
-                <div
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    color: '#86868b'
-                  }}
-                >
-                  <FileTextOutlined style={{ fontSize: 24 }} />
-                </div>
-              )}
-            </div>
+            <VideoCover
+              coverPath={detail.coverPath}
+              videoPath={detail.videoPath}
+              width="100%"
+              aspectRatio="16 / 9"
+            />
           </Col>
           {/* 信息 */}
           <Col span={20}>

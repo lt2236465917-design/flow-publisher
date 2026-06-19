@@ -10,7 +10,12 @@ import { getAnalyticsRepository, getAccountRepository, getPublishRecordRepositor
 import { getAdapter } from '../platform-adapters/PlatformAdapterRegistry'
 import { HttpClient } from '../http/HttpClient'
 import { CookieStore } from '../browser/CookieStore'
-import type { CollectResult } from '../../../shared/types/analytics'
+import type { CollectResult, VideoListItem } from '../../../shared/types/analytics'
+import {
+  chooseRecordForVideo,
+  extractContentIdFromPublishUrl,
+  type MatchablePublishRecord
+} from './analytics-matching'
 
 export class AnalyticsCollectorService {
 
@@ -19,7 +24,7 @@ export class AnalyticsCollectorService {
   /**
    * 创建 HttpClient（通过 CookieStore 加载并解密 cookies）
    */
-  private createClient(platform: string, accountId: string): HttpClient {
+  private async createClient(platform: string, accountId: string): Promise<HttpClient> {
     const accountRepo = getAccountRepository()
     const account = accountRepo.getById(accountId)
     if (!account) {
@@ -27,7 +32,7 @@ export class AnalyticsCollectorService {
     }
 
     // Use CookieStore to decrypt and format cookies (handles encrypted storage)
-    const cookieStr = this.cookieStore.getCookieString(accountId)
+    const cookieStr = await this.cookieStore.getCookieStringWithSessionFallback(accountId)
     if (!cookieStr) {
       throw new Error(`账号 ${accountId} 缺少有效 cookies`)
     }
@@ -67,21 +72,39 @@ export class AnalyticsCollectorService {
         return result
       }
 
-      const client = this.createClient(account.platform, accountId)
-
       // 获取该账号所有已完成的发布记录
       const records = publishRecordRepo.getByAccount(accountId)
       const doneRecords = records.filter(r => r.status === 'done')
       result.totalRecords = doneRecords.length
+      if (doneRecords.length === 0) {
+        return result
+      }
 
-      // 构建 contentId -> record 的映射
+      const client = await this.createClient(account.platform, accountId)
+
+      // Build a content-id map. publish_url is authoritative because older
+      // title matching could save the wrong id when several records shared a title.
       const contentIdMap = new Map<string, typeof doneRecords[0]>()
+      const matchableRecords: MatchablePublishRecord[] = []
       for (const record of doneRecords) {
-        const contentId = (record as any).content_id
+        const urlContentId = extractContentIdFromPublishUrl(account.platform, record.publish_url)
+        const contentId = urlContentId || record.content_id
         if (contentId) {
           contentIdMap.set(contentId, record)
+          if (record.content_id !== contentId) {
+            analyticsRepo.updateRecordContentId(record.id, contentId)
+            logger.info(`[AnalyticsCollector] 从发布链接修复 content_id: ${record.id} -> ${contentId}`)
+          }
         }
+        // Kuaishou's public short-video URL id is different from the creator
+        // analytics photoId. Let the analytics response repair stale ids by
+        // title and publish time while still honoring an exact photoId match.
+        matchableRecords.push({
+          ...record,
+          content_id: account.platform === 'kuaishou' ? null : contentId || null
+        })
       }
+      const usedRecordIds = new Set<string>()
 
       // 从平台获取视频列表
       let cursor = ''
@@ -105,26 +128,20 @@ export class AnalyticsCollectorService {
             // 先通过 contentId 匹配
             let record = contentIdMap.get(item.contentId)
 
-            // 如果没有 contentId 匹配，尝试标题匹配（包含匹配）
+            // If no stable id exists, perform one-to-one title/time matching.
             if (!record && item.title?.trim()) {
-              const platformTitle = item.title.trim().toLowerCase()
-              // 先尝试精确匹配
-              record = doneRecords.find(r => r.title?.trim().toLowerCase() === platformTitle)
-              // 如果没有精确匹配，尝试包含匹配（平台标题包含数据库标题）
-              if (!record) {
-                record = doneRecords.find(r => {
-                  const dbTitle = r.title?.trim().toLowerCase()
-                  return dbTitle && (platformTitle.startsWith(dbTitle) || platformTitle.includes(dbTitle))
-                })
-              }
+              record = chooseRecordForVideo(item, matchableRecords, usedRecordIds) || undefined
               if (record) {
-                // 标题匹配成功，更新 content_id
                 analyticsRepo.updateRecordContentId(record.id, item.contentId)
+                const matchable = matchableRecords.find((candidate) => candidate.id === record!.id)
+                if (matchable) matchable.content_id = item.contentId
+                contentIdMap.set(item.contentId, record)
                 logger.info(`[AnalyticsCollector] 标题匹配成功: "${item.title}" -> "${record.title}" (${record.id})`)
               }
             }
 
-            if (!record) continue
+            if (!record || usedRecordIds.has(record.id)) continue
+            usedRecordIds.add(record.id)
 
             // 创建快照
             analyticsRepo.createSnapshot({
@@ -175,7 +192,16 @@ export class AnalyticsCollectorService {
 
     try {
       const accountRepo = getAccountRepository()
-      const accounts = accountRepo.getAll().filter(a => a.session_status === 'logged_in')
+      const publishRecordRepo = getPublishRecordRepository()
+      const accounts = accountRepo.getAll().filter((account) =>
+        account.session_status === 'logged_in' ||
+        publishRecordRepo.getByAccount(account.id).some((record) => record.status === 'done')
+      )
+
+      if (accounts.length === 0) {
+        result.errors.push('没有可采集的已发布记录或已登录账号')
+        return result
+      }
 
       for (const account of accounts) {
         const accountResult = await this.collectAccountData(account.id)
@@ -221,7 +247,12 @@ export class AnalyticsCollectorService {
         return result
       }
 
-      let contentId = (record as any).content_id
+      const urlContentId = extractContentIdFromPublishUrl(record.platform, record.publish_url)
+      let contentId = urlContentId || record.content_id
+      if (urlContentId && urlContentId !== record.content_id) {
+        analyticsRepo.updateRecordContentId(recordId, urlContentId)
+        logger.info(`[AnalyticsCollector] 从发布链接修复 content_id: ${recordId} -> ${urlContentId}`)
+      }
 
       // 如果没有 content_id，尝试通过平台视频列表匹配
       if (!contentId) {
@@ -245,7 +276,7 @@ export class AnalyticsCollectorService {
       }
 
       // 优先使用 getVideoDetail，如果没有则使用 getVideoList 匹配
-      const client = this.createClient(record.platform, record.account_id)
+      const client = await this.createClient(record.platform, record.account_id)
 
       if (adapter.getVideoDetail) {
         const detail = await adapter.getVideoDetail(client, contentId)
@@ -265,8 +296,22 @@ export class AnalyticsCollectorService {
         }
       } else if (adapter.getVideoList) {
         // 从视频列表中查找匹配的视频
-        const listResult = await adapter.getVideoList(client, { pageSize: 50 })
-        const matched = listResult.items.find(item => item.contentId === contentId)
+        const items = await this.fetchVideoItems(adapter, client)
+        let matched = items.find(item => item.contentId === contentId)
+        if (!matched && record.platform === 'kuaishou') {
+          matched = items.find((item) =>
+            chooseRecordForVideo(
+              item,
+              [{ ...record, content_id: null }],
+              new Set()
+            )
+          )
+          if (matched) {
+            contentId = matched.contentId
+            analyticsRepo.updateRecordContentId(record.id, contentId)
+            logger.info(`[AnalyticsCollector] 通过快手数据接口修复 content_id: ${record.id} -> ${contentId}`)
+          }
+        }
         if (matched) {
           analyticsRepo.createSnapshot({
             recordId: record.id,
@@ -303,30 +348,44 @@ export class AnalyticsCollectorService {
       const adapter = getAdapter(record.platform as any)
       if (!adapter?.getVideoList) return null
 
-      const client = this.createClient(record.platform, record.account_id)
-      const listResult = await adapter.getVideoList(client, { pageSize: 50 })
-
-      const recordTitle = record.title?.trim().toLowerCase()
-      if (!recordTitle) return null
-
-      // 尝试精确匹配
-      let matched = listResult.items.find(item =>
-        item.title?.trim().toLowerCase() === recordTitle
-      )
-
-      // 如果没有精确匹配，尝试包含匹配
-      if (!matched) {
-        matched = listResult.items.find(item => {
-          const itemTitle = item.title?.trim().toLowerCase()
-          return itemTitle && (itemTitle.includes(recordTitle) || recordTitle.includes(itemTitle))
-        })
-      }
-
-      return matched?.contentId || null
+      const client = await this.createClient(record.platform, record.account_id)
+      const items = await this.fetchVideoItems(adapter, client)
+      const matched = items
+        .map((item) => ({ item, record: chooseRecordForVideo(item, [{ ...record, content_id: null }], new Set()) }))
+        .filter((candidate) => candidate.record)
+        .sort((a, b) => {
+          if (!a.item.publishTime || !b.item.publishTime) return 0
+          const recordTime = Date.parse(record.created_at)
+          return Math.abs(a.item.publishTime * 1000 - recordTime) - Math.abs(b.item.publishTime * 1000 - recordTime)
+        })[0]
+      return matched?.item.contentId || null
     } catch (err) {
       logger.warn(`[AnalyticsCollector] 通过标题匹配 content_id 失败:`, err)
       return null
     }
+  }
+
+  private async fetchVideoItems(
+    adapter: { getVideoList: NonNullable<ReturnType<typeof getAdapter>['getVideoList']> },
+    client: HttpClient,
+    maxFetches = 10
+  ): Promise<VideoListItem[]> {
+    const items: VideoListItem[] = []
+    let cursor = ''
+    let hasMore = true
+    let fetchCount = 0
+    const seenCursors = new Set<string>()
+
+    while (hasMore && fetchCount < maxFetches) {
+      const page = await adapter.getVideoList(client, { cursor, pageSize: 20 })
+      items.push(...page.items)
+      fetchCount++
+      hasMore = page.hasMore
+      if (!hasMore || seenCursors.has(page.cursor)) break
+      seenCursors.add(page.cursor)
+      cursor = page.cursor
+    }
+    return items
   }
 
   /**
@@ -358,7 +417,7 @@ export class AnalyticsCollectorService {
         return result
       }
 
-      const client = this.createClient(account.platform, accountId)
+      const client = await this.createClient(account.platform, accountId)
 
       // 获取该账号所有已完成的发布记录
       const records = publishRecordRepo.getByAccount(accountId)

@@ -40,9 +40,9 @@ interface AnalyticsState {
   fetchVideoGroups: (query?: VideoGroupQuery) => Promise<void>
   fetchVideoDetail: (groupId: string) => Promise<void>
   fetchRecordTrend: (recordId: string, days?: number) => Promise<void>
-  collectAccount: (accountId: string) => Promise<void>
-  collectAll: () => Promise<void>
-  collectVideoGroup: (groupId: string) => Promise<void>
+  collectAccount: (accountId: string) => Promise<CollectResult>
+  collectAll: () => Promise<CollectResult>
+  collectVideoGroup: (groupId: string) => Promise<CollectResult>
   clearVideoDetail: () => void
   clearCollectResult: () => void
 }
@@ -165,48 +165,57 @@ export const useAnalyticsStore = create<AnalyticsState>((set, get) => ({
   },
 
   collectAccount: async (accountId: string) => {
-    if (get().collecting) return
+    if (get().collecting) throw new Error('数据采集正在进行中')
     set({ collecting: true, collectResult: null })
     try {
       const res = await ipcInvoke<CollectResult>(IPC_CHANNELS.ANALYTICS_COLLECT, { accountId })
       if (res.success && res.data) {
         set({ collectResult: res.data })
-        get().fetchVideoGroups()
+        await get().fetchVideoGroups()
+        return res.data
       }
-    } catch {
+      throw new Error(res.error || '数据采集失败')
+    } catch (err) {
       set({ collectResult: null })
+      throw err
     } finally {
       set({ collecting: false })
     }
   },
 
   collectAll: async () => {
-    if (get().collecting) return
+    if (get().collecting) throw new Error('数据采集正在进行中')
     set({ collecting: true, collectResult: null })
     try {
       const res = await ipcInvoke<CollectResult>(IPC_CHANNELS.ANALYTICS_COLLECT_ALL)
       if (res.success && res.data) {
         set({ collectResult: res.data })
-        get().fetchVideoGroups()
+        await get().fetchVideoGroups()
+        return res.data
       }
-    } catch {
+      throw new Error(res.error || '数据采集失败')
+    } catch (err) {
       set({ collectResult: null })
+      throw err
     } finally {
       set({ collecting: false })
     }
   },
 
   collectVideoGroup: async (groupId: string) => {
-    if (get().collecting) return
+    if (get().collecting) throw new Error('数据采集正在进行中')
     set({ collecting: true, collectResult: null })
     try {
       const res = await ipcInvoke<CollectResult>(IPC_CHANNELS.ANALYTICS_COLLECT_GROUP, { groupId })
       if (res.success && res.data) {
         set({ collectResult: res.data })
-        get().fetchVideoDetail(groupId)
+        await get().fetchVideoDetail(groupId)
+        return res.data
       }
-    } catch {
+      throw new Error(res.error || '数据采集失败')
+    } catch (err) {
       set({ collectResult: null })
+      throw err
     } finally {
       set({ collecting: false })
     }

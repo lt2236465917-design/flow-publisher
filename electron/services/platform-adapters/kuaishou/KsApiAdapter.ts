@@ -1170,7 +1170,9 @@ export class KsApiAdapter extends BasePlatformAdapter {
   async getVideoList(client: HttpClient, options?: { cursor?: string; pageSize?: number }): Promise<VideoListResult> {
     const cookie = client.getCookieString()
     const page = options?.cursor ? parseInt(options.cursor) : 0
-    const count = options?.pageSize || 10
+    // The creator analytics endpoint serves at most 10 items per page.
+    // Keep this independent from the signed works-list/publishing endpoints.
+    const count = Math.min(options?.pageSize || 10, 10)
 
     // 提取 api_ph token
     const apiPh = this.extractApiPh(cookie)
@@ -1183,15 +1185,6 @@ export class KsApiAdapter extends BasePlatformAdapter {
       page,
       'kuaishou.web.cp.api_ph': apiPh
     }
-
-    // 计算签名
-    const signService = getSignService()
-    const bodyStr = JSON.stringify(body)
-    const sig3 = await signService.getSignature('kuaishou', cookie, bodyStr, bodyStr, client.getAccountId())
-
-    const url = sig3
-      ? `https://cp.kuaishou.com/rest/cp/creator/analysis/pc/photo/list?__NS_sig3=${sig3}`
-      : 'https://cp.kuaishou.com/rest/cp/creator/analysis/pc/photo/list'
 
     const response = await client.post<{
       result: number
@@ -1213,7 +1206,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
         }
       }
     }>(
-      url,
+      'https://cp.kuaishou.com/rest/cp/creator/analysis/pc/photo/list',
       body,
       {
         headers: {
@@ -1237,7 +1230,10 @@ export class KsApiAdapter extends BasePlatformAdapter {
       contentId: photo.photoId,
       title: photo.title,
       coverUrl: photo.cover,
-      publishTime: photo.publishTime,
+      // Kuaishou returns milliseconds here, while VideoListItem uses seconds.
+      publishTime: photo.publishTime > 10_000_000_000
+        ? Math.floor(photo.publishTime / 1000)
+        : photo.publishTime,
       views: photo.playCount || 0,
       likes: photo.likeCount || 0,
       comments: photo.commentCount || 0,

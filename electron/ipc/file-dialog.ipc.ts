@@ -1,7 +1,6 @@
 import { ipcMain, dialog, BrowserWindow, app } from 'electron'
-import { readFileSync, existsSync, writeFileSync, statSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, statSync } from 'fs'
 import { extname, join, resolve, sep } from 'path'
-import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
@@ -124,7 +123,8 @@ export function registerFileDialogIpcHandlers(): void {
     }
   })
 
-  // Convert data URL to temp file on disk for API/HTTP cover upload.
+  // Convert data URL to a persistent app-owned file for API/HTTP cover upload
+  // and later display in the analytics list.
   ipcMain.handle(IPC_CHANNELS.FILE_DATA_URL_TO_TEMP, async (_event, dataUrl: string): Promise<IpcResponse> => {
     try {
       logger.info(`[FILE_DATA_URL_TO_TEMP] called, dataUrl length: ${dataUrl?.length}, starts with: ${dataUrl?.substring(0, 50)}`)
@@ -137,9 +137,11 @@ export function registerFileDialogIpcHandlers(): void {
       const ext = match[1] === 'jpeg' ? 'jpg' : match[1]
       const buf = Buffer.from(match[2], 'base64')
       const fileName = `cover-${randomBytes(8).toString('hex')}.${ext}`
-      const filePath = join(tmpdir(), fileName)
+      const coversDir = join(app.getPath('userData'), 'covers')
+      if (!existsSync(coversDir)) mkdirSync(coversDir, { recursive: true })
+      const filePath = join(coversDir, fileName)
       writeFileSync(filePath, buf)
-      logger.info(`[FILE_DATA_URL_TO_TEMP] Saved cover to: ${filePath}, size: ${buf.length} bytes`)
+      logger.info(`[FILE_DATA_URL_TO_TEMP] Saved persistent cover to: ${filePath}, size: ${buf.length} bytes`)
 
       return { success: true, data: { filePath } }
     } catch (err) {

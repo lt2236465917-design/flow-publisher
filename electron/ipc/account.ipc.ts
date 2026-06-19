@@ -245,7 +245,7 @@ export function registerAccountIpcHandlers(): void {
       const account = repo.getById(accountId)
       if (!account) return { success: false, error: '账号不存在' }
 
-      const cookieStr = cookieStore.getCookieString(accountId)
+      const cookieStr = await cookieStore.getCookieStringWithSessionFallback(accountId)
       if (!cookieStr || account.session_status !== 'logged_in') {
         return { success: true, data: { sessionStatus: 'not_logged_in' } }
       }
@@ -314,10 +314,11 @@ export function registerAccountIpcHandlers(): void {
 
       for (const account of loggedInAccounts) {
         try {
-          const cookieStr = cookieStore.getCookieString(account.id)
+          const cookieStr = await cookieStore.getCookieStringWithSessionFallback(account.id)
           if (!cookieStr) {
-            repo.updateSession(account.id, 'not_logged_in', '[]')
-            results.push({ accountId: account.id, platform: account.platform, sessionStatus: 'not_logged_in' })
+            // An unreadable safeStorage payload is not proof that the remote
+            // session expired. Never destroy credentials during a health check.
+            results.push({ accountId: account.id, platform: account.platform, sessionStatus: account.session_status })
             continue
           }
 

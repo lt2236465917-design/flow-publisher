@@ -132,10 +132,13 @@ app.whenReady().then(async () => {
   // Uses realpathSync to resolve symlinks/junction points before whitelist comparison,
   // and appends path separator to prevent prefix-confusion bypasses.
   const allowedRoots = [
-    resolve(app.getPath('userData')),
-    resolve(app.getPath('temp')),
-    resolve(app.getPath('home'))
-  ]
+    app.getPath('userData'),
+    app.getPath('temp'),
+    app.getPath('home')
+  ].map(root => {
+    const resolvedRoot = resolve(root)
+    return existsSync(resolvedRoot) ? realpathSync(resolvedRoot) : resolvedRoot
+  })
   protocol.handle('local-file', (request) => {
     try {
       const url = new URL(request.url)
