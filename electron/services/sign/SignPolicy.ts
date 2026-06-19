@@ -88,6 +88,14 @@ export function createSignerPreflightError(platform: string, reason?: string): E
   const platformName = getPlatformName(platform)
   const detail = reason ? `当前检测结果：${reason}。` : ''
 
+  if (platform === 'xiaohongshu') {
+    return new Error(
+      `${platformName}发布前签名预检失败。${detail}` +
+      '小红书 note create 必须使用当前创作页生成的完整网页签名（X-s / X-t，并包含 X-S-Common 或 x-rap-param）；' +
+      '请启动本机自托管 signer（默认 http://127.0.0.1:17321/sign），或在确认数据外发风险后配置小红书蚁小二兼容 signer。'
+    )
+  }
+
   return new Error(
     `${platformName}发布前签名预检失败。${detail}` +
     '该平台的网页 API 需要动态签名参数；请先启动本机 signer（默认 http://127.0.0.1:17321/sign），' +
@@ -100,5 +108,6 @@ export function shouldRethrowSignError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   return message.includes('本机自托管签名服务不可用') ||
     message.includes('已取消发布') ||
-    message.includes('签名预检失败')
+    message.includes('签名预检失败') ||
+    message.includes('签名不完整')
 }

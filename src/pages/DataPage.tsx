@@ -39,6 +39,7 @@ import TaskStatusTag from '@/components/records/TaskStatusTag'
 import EmptyState from '@/components/common/EmptyState'
 import { PLATFORMS } from '@/constants/platforms'
 import type { PlatformId } from '@/constants/platforms'
+import { toLocalFileUrl } from '@/utils/localFileUrl'
 import type {
   VideoGroupSummary,
   VideoGroupDetail,
@@ -273,7 +274,7 @@ export default function DataPage() {
           >
             {record.coverPath ? (
               <img
-                src={`local-file:///${record.coverPath.replace(/\\/g, '/')}`}
+                src={toLocalFileUrl(record.coverPath)}
                 alt="cover"
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 onError={(e) => {
@@ -521,7 +522,7 @@ function VideoDetailView({
             >
               {detail.coverPath ? (
                 <img
-                  src={`local-file:///${detail.coverPath.replace(/\\/g, '/')}`}
+                  src={toLocalFileUrl(detail.coverPath)}
                   alt="cover"
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   onError={(e) => {

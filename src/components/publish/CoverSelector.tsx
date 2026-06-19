@@ -40,6 +40,7 @@ export default function CoverSelector({
       message.error('选择的文件不是有效图片')
       return
     }
+    onSelectFrame(null)
     openCrop(target, dataUrl)
   }
 

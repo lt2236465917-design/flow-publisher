@@ -1,6 +1,6 @@
 import { ipcMain, dialog, BrowserWindow, app } from 'electron'
 import { readFileSync, existsSync, writeFileSync, statSync } from 'fs'
-import { extname, join, resolve } from 'path'
+import { extname, join, resolve, sep } from 'path'
 import { tmpdir } from 'os'
 import { randomBytes } from 'crypto'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
@@ -98,12 +98,11 @@ export function registerFileDialogIpcHandlers(): void {
       if (!existsSync(filePath)) return { success: false, error: '文件不存在' }
 
       // Validate path is within allowed directories (same as local-file protocol)
-      const allowedRoots = [app.getPath('userData'), app.getPath('temp')]
+      const allowedRoots = [app.getPath('userData'), app.getPath('temp'), app.getPath('home')]
       const resolvedPath = resolve(filePath)
       const isAllowed = allowedRoots.some(root => {
-        const sep = require('path').sep
-        const normalizedRoot = resolvedPath.endsWith(sep) ? resolvedPath : resolvedPath + sep
-        return normalizedRoot.startsWith(resolve(root) + sep)
+        const normalizedPath = resolvedPath.endsWith(sep) ? resolvedPath : resolvedPath + sep
+        return normalizedPath.startsWith(resolve(root) + sep)
       })
       if (!isAllowed) {
         logger.warn(`[FILE_READ_DATA_URL] Blocked access to path outside allowed directories: ${resolvedPath}`)
@@ -125,7 +124,7 @@ export function registerFileDialogIpcHandlers(): void {
     }
   })
 
-  // Convert data URL to temp file on disk (for Playwright setInputFiles)
+  // Convert data URL to temp file on disk for API/HTTP cover upload.
   ipcMain.handle(IPC_CHANNELS.FILE_DATA_URL_TO_TEMP, async (_event, dataUrl: string): Promise<IpcResponse> => {
     try {
       logger.info(`[FILE_DATA_URL_TO_TEMP] called, dataUrl length: ${dataUrl?.length}, starts with: ${dataUrl?.substring(0, 50)}`)

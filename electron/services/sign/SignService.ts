@@ -21,7 +21,15 @@ const SIGN_PREFLIGHT_TIMEOUT = 2_500
 const DOUYIN_SIGN_CONTEXT_URL = 'https://creator.douyin.com/creator-micro/content/publish?enter_from=publish_page'
 const XHS_SIGN_CONTEXT_URL =
   process.env.FLOW_PUBLISHER_XHS_SIGN_CONTEXT_URL?.trim() ||
-  'https://creator.xiaohongshu.com/publish/publish?from=menu&target=video'
+  'https://creator.xiaohongshu.com/new/publish'
+const XHS_SIGN_CONTEXT_FALLBACK_URLS = [
+  XHS_SIGN_CONTEXT_URL,
+  'https://creator.xiaohongshu.com/publish/publish?from=menu&target=video',
+  'https://creator.xiaohongshu.com/publish/publish',
+  'https://creator.xiaohongshu.com/creator/home',
+  'https://www.xiaohongshu.com/explore',
+  'https://www.xiaohongshu.com/'
+].filter((url, index, urls) => urls.indexOf(url) === index)
 const REALISTIC_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14'
 
@@ -65,16 +73,16 @@ export interface XhsBrowserPostResult {
 /**
  * Signature service.
  *
- * The default path is self-hosted: first try a local signer endpoint, then the
- * yixiaoer-compatible Kuaishou sig3 path, then the built-in local browser signer
- * after user confirmation. Other legacy third-party yixiaoer services remain
- * disabled unless FLOW_PUBLISHER_ALLOW_LEGACY_EXTERNAL_SIGNER=true.
+ * The default path is self-hosted, except Xiaohongshu note creation which uses
+ * yixiaoer's `newxiaohongshu` signer format because the current creator page no
+ * longer yields the portable X-S-Common header required by the HTTP endpoint.
  */
 export class SignService {
   private contexts = new Map<string, BrowserContext>()
   private pages = new Map<string, Page>()
   private electronWindows = new Map<string, BrowserWindow>()
   private electronCookieFingerprints = new Map<string, string>()
+  private xhsSignatureQueues = new Map<string, Promise<void>>()
   private initializing = new Map<string, Promise<void>>()
   private cookieFingerprints = new Map<string, string>()
   private fallbackConfirmer: ((platform: string) => Promise<boolean>) | null = null
@@ -182,6 +190,16 @@ export class SignService {
       }
     }
 
+    if (this.isXhsYixiaoerSignerAllowed(platform)) {
+      logger.warn('[sign] xiaohongshu signer preflight will use yixiaoer-compatible newxiaohongshu signer')
+      return {
+        platform,
+        required: true,
+        mode: 'legacy-external',
+        detail: 'note create 仅发送接口路径和最终请求 body，不发送登录 Cookie'
+      }
+    }
+
     if (isLegacyExternalSignerEnabled()) {
       logger.warn(`[sign] ${platform} signer preflight will use explicitly enabled legacy external signer`)
       return {
@@ -190,6 +208,13 @@ export class SignService {
         mode: 'legacy-external',
         detail: healthDetail
       }
+    }
+
+    if (platform === 'xiaohongshu') {
+      throw createSignerPreflightError(
+        platform,
+        `${healthDetail}；需要当前小红书创作页生成的 X-s / X-t 与 X-S-Common 或 x-rap-param`
+      )
     }
 
     if (!isBuiltinLocalSignerEnabled()) {
@@ -230,9 +255,31 @@ export class SignService {
       // For douyin, the data parameter IS the full URL to sign
       const urlToSign = platform === 'douyin' ? data : ''
 
+      if (this.isXhsYixiaoerNoteSignerRequired(platform, data)) {
+        logger.warn('[sign] Using yixiaoer-compatible newxiaohongshu signer for note create')
+        signature = await this.getExternalSignature(platform, cookie, data, body, urlToSign)
+        if (!signature || !this.hasCompleteXhsPortableSignature(signature)) {
+          throw new Error(
+            '小红书签名失败：蚁小二 newxiaohongshu signer 未返回完整的 X-s / X-t / X-S-Common。'
+          )
+        }
+        return signature
+      }
+
       signature = await this.getSelfHostedSignature(platform, cookie, data, body, urlToSign, accountId)
 
       if (signature) {
+        if (platform === 'xiaohongshu' && !this.hasXhsPublishSignatureHeaders(signature, data)) {
+          logger.warn('[sign] xiaohongshu self-hosted signature missing usable publish headers')
+          if (isLegacyExternalSignerEnabled()) {
+            logger.warn('[sign] Trying explicitly enabled legacy external signer after incomplete xiaohongshu self-hosted signature')
+            const externalSignature = await this.getExternalSignature(platform, cookie, data, body, urlToSign)
+            if (externalSignature) return externalSignature
+          }
+          throw new Error(
+            '小红书签名不完整：当前 signer 未返回 X-s / X-t，或未返回 X-S-Common / x-rap-param。'
+          )
+        }
         logger.info(`[sign] ${platform} signature from self-hosted signer`)
         return signature
       }
@@ -240,7 +287,13 @@ export class SignService {
       if (this.isKuaishouYixiaoerSignerAllowed(platform)) {
         logger.warn('[sign] Trying yixiaoer-compatible kuaishou __NS_sig3 signer')
         signature = await this.getExternalSignature(platform, cookie, data, body, urlToSign)
-        if (signature) return signature
+        if (signature) {
+          if (platform === 'xiaohongshu' && !this.hasXhsPublishSignatureHeaders(signature, data)) {
+            logger.warn('[sign] xiaohongshu legacy external signature missing usable publish headers')
+          } else {
+            return signature
+          }
+        }
       }
 
       if (isLegacyExternalSignerEnabled() && (platform === 'kuaishou' || platform === 'xiaohongshu')) {
@@ -273,7 +326,14 @@ export class SignService {
         logger.info(`[sign] Self-hosted signer unavailable for ${platform}, trying built-in local signing...`)
         signature = await this.getBuiltinLocalSignature(platform, cookie, data, body, accountId)
 
-        if (signature) return signature
+        if (signature) {
+          if (platform === 'xiaohongshu' && !this.hasXhsPublishSignatureHeaders(signature, data)) {
+            logger.warn('[sign] xiaohongshu built-in local signature uses current creator-page headers without X-S-Common')
+            if (!isLegacyExternalSignerEnabled()) return signature
+          } else {
+            return signature
+          }
+        }
       }
 
       if (isLegacyExternalSignerEnabled()) {
@@ -289,6 +349,64 @@ export class SignService {
       }
       logger.error(`[sign] Failed to get signature for ${platform}:`, err)
       return ''
+    }
+  }
+
+  private hasXhsPublishSignatureHeaders(signature: string, data?: string): boolean {
+    try {
+      const parsed = this.parseSignatureObject(signature)
+      if (!parsed) return false
+      const xs = this.getHeaderValue(parsed, 'x-s')
+      const xt = this.getHeaderValue(parsed, 'x-t')
+      const xsCommon = this.getHeaderValue(parsed, 'x-s-common')
+      const rapParam = this.getHeaderValue(parsed, 'x-rap-param')
+      let requiresPublishHeader = true
+      if (data) {
+        try {
+          const request = JSON.parse(data) as { body?: string }
+          requiresPublishHeader = Boolean(request.body)
+        } catch {
+          // Keep publish-level validation for unknown payload shapes.
+        }
+      }
+      if (!requiresPublishHeader) return Boolean(xs && xt)
+      return Boolean(xs && xt && (xsCommon || rapParam))
+    } catch {
+      return false
+    }
+  }
+
+  private hasCompleteXhsPortableSignature(signature: string): boolean {
+    const parsed = this.parseSignatureObject(signature)
+    if (!parsed) return false
+    return Boolean(
+      this.getHeaderValue(parsed, 'x-s') &&
+      this.getHeaderValue(parsed, 'x-t') &&
+      this.getHeaderValue(parsed, 'x-s-common')
+    )
+  }
+
+  private isXhsYixiaoerNoteSignerRequired(platform: string, data: string): boolean {
+    if (!this.isXhsYixiaoerSignerAllowed(platform)) return false
+    try {
+      const request = JSON.parse(data) as { url?: string; body?: string }
+      return request.url === '/web_api/sns/v2/note' && Boolean(request.body)
+    } catch {
+      return false
+    }
+  }
+
+  private parseSignatureObject(signature: string): Record<string, string> | null {
+    const normalized = signature.trim()
+    if (!normalized) return null
+    try {
+      return JSON.parse(normalized) as Record<string, string>
+    } catch {
+      try {
+        return JSON.parse(normalized.replace(/\\/g, '"')) as Record<string, string>
+      } catch {
+        return null
+      }
     }
   }
 
@@ -745,7 +863,7 @@ export class SignService {
           const safeHeaders: Record<string, string> = {}
           for (const [name, value] of Object.entries(headers)) {
             const lower = name.toLowerCase()
-            if (!value || forbiddenHeaders.has(lower)) continue
+            if (!value || forbiddenHeaders.has(lower) || lower === 'x-rap-param') continue
             safeHeaders[name] = value
           }
           if (!Object.keys(safeHeaders).some((name) => name.toLowerCase() === 'content-type')) {
@@ -942,7 +1060,7 @@ export class SignService {
           const safeHeaders = {};
           for (const [name, value] of Object.entries(headers || {})) {
             const lower = String(name).toLowerCase();
-            if (!value || forbiddenHeaders.has(lower)) continue;
+            if (!value || forbiddenHeaders.has(lower) || lower === 'x-rap-param') continue;
             safeHeaders[name] = value;
           }
           if (!Object.keys(safeHeaders).some((name) => String(name).toLowerCase() === 'content-type')) {
@@ -1846,6 +1964,12 @@ export class SignService {
     return !['0', 'false', 'off', 'disabled'].includes(raw || '')
   }
 
+  private isXhsYixiaoerSignerAllowed(platform: string): boolean {
+    if (platform !== 'xiaohongshu') return false
+    const raw = process.env.FLOW_PUBLISHER_XHS_YIXIAOER_SIGNER?.trim().toLowerCase()
+    return !['0', 'false', 'off', 'disabled'].includes(raw || '')
+  }
+
   private getLegacySignerEndpoints(platform: string, externalPlatform: string): string[] {
     const keys = this.getLegacySignerEnvKeys(platform)
     const specificUrl = this.firstEnv(keys.map((key) => `FLOW_PUBLISHER_${key}_LEGACY_SIGNER_URL`))
@@ -1905,145 +2029,291 @@ export class SignService {
   }
 
   private async getXhsSignatureInElectron(cookie: string, data: string, accountId?: string): Promise<string> {
-    const win = await this.getOrCreateElectronWindow(
-      'xiaohongshu',
-      cookie,
-      XHS_SIGN_CONTEXT_URL,
-      accountId
-    )
+    const queueKey = accountId || this.getCookieFingerprint(cookie)
+    return await this.withXhsSignatureLock(queueKey, async () => {
+      const win = await this.getOrCreateElectronWindow(
+        'xiaohongshu',
+        cookie,
+        XHS_SIGN_CONTEXT_URL,
+        accountId
+      )
 
-    try {
-      const requestData = JSON.parse(data) as { url?: string; body?: string }
-      const urlPath = requestData.url || '/web_api/sns/v2/note'
-      const bodyStr = requestData.body || ''
+      try {
+        const requestData = JSON.parse(data) as { url?: string; body?: string }
+        const urlPath = requestData.url || '/web_api/sns/v2/note'
+        const bodyStr = requestData.body || ''
+        const requestUrl = urlPath.startsWith('http')
+          ? urlPath
+          : `https://edith.xiaohongshu.com${urlPath}`
+        const candidates = [
+          win.webContents.getURL(),
+          ...XHS_SIGN_CONTEXT_FALLBACK_URLS
+        ].filter((candidate, index, urls) => candidate && urls.indexOf(candidate) === index)
 
-      const signature = await win.webContents.executeJavaScript(`
-        (function() {
-          try {
-            if (typeof window._webmsxyw !== 'function') return '';
-            const urlPath = ${JSON.stringify(urlPath)};
-            const bodyStr = ${JSON.stringify(bodyStr)};
-            const bodyValue = (function() {
-              if (!bodyStr) return undefined;
-              try { return JSON.parse(bodyStr); } catch (err) { return bodyStr; }
-            })();
-            let signed = window._webmsxyw(urlPath, bodyValue);
-            if (!signed) {
-              const legacyPayload = bodyStr
-                ? JSON.stringify([urlPath, encodeURIComponent(bodyStr)])
-                : JSON.stringify([urlPath]);
-              signed = window._webmsxyw(legacyPayload) || {};
-            }
-            if (typeof signed === 'string') {
-              return JSON.stringify({ 'X-s': signed, 'X-t': String(Date.now()) });
-            }
-            return JSON.stringify(signed || {});
-          } catch (err) {
-            return '';
+        for (const candidate of candidates) {
+          if (win.webContents.getURL() !== candidate) {
+            logger.info(`[sign] Trying alternate XHS signing context: ${candidate}`)
+            await win.loadURL(candidate)
+            await this.waitForElectronSignerReady(win, 'xiaohongshu')
           }
-        })()
-      `, true) as string
 
-      let parsed: Record<string, string> = {}
-      if (signature) {
-        parsed = JSON.parse(signature) as Record<string, string>
-        logger.info(`[sign] XHS Electron _webmsxyw returned keys: ${Object.keys(parsed).join(', ')}`)
+          const parsed = await this.generateXhsPageSignature(win, urlPath, bodyStr)
+          const capturedXHeaders = await this.captureXhsFinalRequestHeaders(
+            win,
+            requestUrl,
+            bodyStr,
+            parsed
+          )
+          this.mergeXhsSignatureHeaders(parsed, capturedXHeaders)
+
+          const xs = this.getHeaderValue(parsed, 'x-s')
+          const xt = this.getHeaderValue(parsed, 'x-t')
+          const xsCommon = this.getHeaderValue(parsed, 'x-s-common')
+          const rapParam = this.getHeaderValue(parsed, 'x-rap-param')
+          logger.info(
+            `[sign] XHS signing context result: page=${candidate}, ` +
+            `X-s=${xs ? 'yes' : 'no'}, X-t=${xt ? 'yes' : 'no'}, ` +
+            `X-S-Common=${xsCommon ? 'yes' : 'no'}, x-rap-param=${rapParam ? 'yes' : 'no'}`
+          )
+
+          if (xs && xt && (!bodyStr || xsCommon || rapParam)) {
+            return JSON.stringify(parsed)
+          }
+        }
+
+        logger.warn('[sign] No XHS official signing context produced a usable current publish signature')
+        return ''
+      } catch (err) {
+        logger.warn('[sign] XHS Electron signing failed:', err)
+        this.resetElectronWindow('xiaohongshu', accountId)
+        return ''
       }
+    })
+  }
 
-      const xs = parsed['X-s'] || parsed['x-s'] || ''
-      const xt = parsed['X-t'] || parsed['x-t'] || ''
-      let capturedXSCommon = ''
-      const capturedXHeaders: Record<string, string> = {}
+  private async generateXhsPageSignature(
+    win: BrowserWindow,
+    urlPath: string,
+    body: string
+  ): Promise<Record<string, string>> {
+    const signature = await win.webContents.executeJavaScript(`
+      (function() {
+        try {
+          if (typeof window._webmsxyw !== 'function') return '';
+          const urlPath = ${JSON.stringify(urlPath)};
+          const bodyStr = ${JSON.stringify(body)};
+          const bodyValue = (function() {
+            if (!bodyStr) return undefined;
+            try { return JSON.parse(bodyStr); } catch (err) { return bodyStr; }
+          })();
+          let signed = window._webmsxyw(urlPath, bodyValue);
+          if (!signed) {
+            const legacyPayload = bodyStr
+              ? JSON.stringify([urlPath, encodeURIComponent(bodyStr)])
+              : JSON.stringify([urlPath]);
+            signed = window._webmsxyw(legacyPayload) || {};
+          }
+          if (typeof signed === 'string') {
+            return JSON.stringify({ 'X-s': signed, 'X-t': String(Date.now()) });
+          }
+          return JSON.stringify(signed || {});
+        } catch (err) {
+          return '';
+        }
+      })()
+    `, true) as string
 
-      await this.captureElectronFetchRequest(
-        win,
-        [{ urlPattern: '*://edith.xiaohongshu.com/*', requestStage: 'Request' }],
-        async () => {
-          await win.webContents.executeJavaScript(`
-            (function() {
-              try {
-                const urlPath = ${JSON.stringify(urlPath)};
-                const bodyStr = ${JSON.stringify(bodyStr)};
-                const xs = ${JSON.stringify(xs)};
-                const xt = ${JSON.stringify(xt)};
-                const xhr = new XMLHttpRequest();
-                xhr.open('POST', 'https://edith.xiaohongshu.com' + urlPath, true);
-                xhr.withCredentials = true;
-                xhr.setRequestHeader('Content-Type', 'application/json;charset=UTF-8');
-                if (xs) xhr.setRequestHeader('X-s', xs);
-                if (xt) xhr.setRequestHeader('X-t', xt);
-                xhr.send(bodyStr || null);
+    if (!signature) return {}
+    const parsed = JSON.parse(signature) as Record<string, string>
+    logger.info(`[sign] XHS Electron _webmsxyw returned keys: ${Object.keys(parsed).join(', ')}`)
+    return parsed
+  }
 
-                setTimeout(function() {
-                  try {
-                    const headers = { 'Content-Type': 'application/json;charset=UTF-8' };
-                    if (xs) headers['X-s'] = xs;
-                    if (xt) headers['X-t'] = xt;
-                    fetch('https://edith.xiaohongshu.com' + urlPath, {
-                      method: 'POST',
-                      credentials: 'include',
-                      headers,
-                      body: bodyStr || undefined
-                    }).catch(function() {});
-                  } catch (err) {}
-                }, 800);
-              } catch (err) {}
-            })()
-          `, true)
-        },
-        (params) => {
-          const requestUrl = String(params?.request?.url || '')
-          if (!requestUrl.includes('edith.xiaohongshu.com')) return false
-          const method = String(params?.request?.method || '').toUpperCase()
-          if (method === 'OPTIONS') return false
+  private mergeXhsSignatureHeaders(
+    target: Record<string, string>,
+    captured: Record<string, string>
+  ): void {
+    for (const [name, value] of Object.entries(captured)) {
+      const lowerName = name.toLowerCase()
+      if (lowerName === 'x-s') target['X-s'] = value
+      else if (lowerName === 'x-t') target['X-t'] = value
+      else if (lowerName === 'x-s-common') target['X-S-Common'] = value
+      else target[name] = value
+    }
+  }
 
-          const headers = params?.request?.headers || {}
-          const xsCommon = this.getHeaderValue(headers, 'x-s-common')
-          const customHeaders = Object.keys(headers).filter((name) => name.toLowerCase().startsWith('x-'))
-          if (customHeaders.length > 0) {
-            logger.info(`[sign] XHS Electron intercepted ${method || 'request'} x-headers: ${customHeaders.join(', ')}`)
-            for (const name of customHeaders) {
-              const value = this.getHeaderValue(headers, name)
-              if (value) capturedXHeaders[name] = value
+  private async captureXhsFinalRequestHeaders(
+    win: BrowserWindow,
+    requestUrl: string,
+    body: string,
+    seedHeaders: Record<string, string>
+  ): Promise<Record<string, string>> {
+    const ses = win.webContents.session
+    const target = new URL(requestUrl)
+    const expectedMethod = body ? 'POST' : 'GET'
+    const expectedBody = body ? Buffer.from(body) : null
+    let bestCaptured: Record<string, string> = {}
+    const capturedPromise = new Promise<Record<string, string>>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        resolve(bestCaptured)
+      }, 3_000)
+
+      ses.webRequest.onBeforeSendHeaders(
+        { urls: ['https://edith.xiaohongshu.com/*'] },
+        (details, callback) => {
+          const finish = (response: { cancel?: boolean; requestHeaders?: Record<string, string | string[]> }) => {
+            callback(response)
+          }
+
+          try {
+            if (
+              details.webContentsId !== win.webContents.id ||
+              details.method.toUpperCase() !== expectedMethod ||
+              !this.isSameXhsRequestTarget(details.url, target) ||
+              !this.isSameXhsRequestBody(details.uploadData, expectedBody)
+            ) {
+              finish({ requestHeaders: details.requestHeaders })
+              return
             }
+
+            const captured: Record<string, string> = {}
+            for (const [name, value] of Object.entries(details.requestHeaders)) {
+              const lowerName = name.toLowerCase()
+              if (
+                value &&
+                (
+                  lowerName.startsWith('x-') ||
+                  lowerName === 'cookie'
+                )
+              ) {
+                captured[name] = String(value)
+              }
+            }
+            if (Object.keys(captured).length >= Object.keys(bestCaptured).length) {
+              bestCaptured = captured
+            }
+
+            const xs = this.getHeaderValue(captured, 'x-s')
+            const xt = this.getHeaderValue(captured, 'x-t')
+            const xsCommon = this.getHeaderValue(captured, 'x-s-common')
+            const rapParam = this.getHeaderValue(captured, 'x-rap-param')
+            logger.info(
+              `[sign] XHS onBeforeSendHeaders captured ${details.method} ${target.pathname}: ` +
+              `keys=${Object.keys(captured).join(',') || 'none'}, ` +
+              `X-S-Common=${xsCommon ? 'yes' : 'no'}, x-rap-param=${rapParam ? 'yes' : 'no'}`
+            )
+
+            // This is a signing probe only. Never let it reach note/create.
+            finish({ cancel: true })
+
+            if (xs && xt && (!expectedBody || xsCommon || rapParam)) {
+              clearTimeout(timeout)
+              resolve(captured)
+            }
+          } catch (err) {
+            finish({ cancel: true })
+            clearTimeout(timeout)
+            reject(err)
           }
-          if (xsCommon) {
-            capturedXSCommon = xsCommon
-            logger.info(`[sign] XHS Electron X-S-Common captured: ${capturedXSCommon.substring(0, 30)}...`)
-            return true
-          }
-          return method === 'POST'
         }
       )
+    })
 
-      if (capturedXSCommon) {
-        parsed['X-S-Common'] = capturedXSCommon
-      }
-      for (const [name, value] of Object.entries(capturedXHeaders)) {
-        const lowerName = name.toLowerCase()
-        if (lowerName === 'x-s') parsed['X-s'] = value
-        else if (lowerName === 'x-t') parsed['X-t'] = value
-        else if (lowerName === 'x-s-common') parsed['X-S-Common'] = value
-        else parsed[name] = value
-      }
+    try {
+      const xs = this.getHeaderValue(seedHeaders, 'x-s')
+      const xt = this.getHeaderValue(seedHeaders, 'x-t')
+      void win.webContents.executeJavaScript(`
+        (function() {
+          const requestUrl = ${JSON.stringify(requestUrl)};
+          const body = ${JSON.stringify(body)};
+          const xs = ${JSON.stringify(xs)};
+          const xt = ${JSON.stringify(xt)};
+          const method = body ? 'POST' : 'GET';
 
-      const rapParam = this.getHeaderValue(parsed, 'x-rap-param')
-      if ((parsed['X-s'] && parsed['X-t'] && parsed['X-S-Common']) || rapParam) {
-        return JSON.stringify(parsed)
-      }
+          const makeHeaders = function() {
+            const headers = {};
+            if (body) headers['Content-Type'] = 'application/json;charset=UTF-8';
+            if (xs) headers['X-s'] = xs;
+            if (xt) headers['X-t'] = xt;
+            return headers;
+          };
 
-      logger.warn(
-        `[sign] XHS Electron signer incomplete: ` +
-        `X-s=${parsed['X-s'] ? 'yes' : 'no'}, ` +
-        `X-t=${parsed['X-t'] ? 'yes' : 'no'}, ` +
-        `X-S-Common=${parsed['X-S-Common'] ? 'yes' : 'no'}, ` +
-        `x-rap-param=${rapParam ? 'yes' : 'no'}`
-      )
-      return ''
-    } catch (err) {
-      logger.warn('[sign] XHS Electron signing failed:', err)
-      this.resetElectronWindow('xiaohongshu', accountId)
-      return ''
+          try {
+            const options = {
+              method,
+              credentials: 'include',
+              headers: makeHeaders()
+            };
+            if (body) options.body = body;
+            fetch(requestUrl, options).catch(function() {});
+          } catch (err) {}
+
+          setTimeout(function() {
+            try {
+              const xhr = new XMLHttpRequest();
+              xhr.open(method, requestUrl, true);
+              xhr.withCredentials = true;
+              const headers = makeHeaders();
+              for (const [name, value] of Object.entries(headers)) {
+                xhr.setRequestHeader(name, String(value));
+              }
+              xhr.send(body || null);
+            } catch (err) {}
+          }, 800);
+        })()
+      `, true).catch((err) => {
+        logger.warn('[sign] Failed to trigger XHS final-header capture request:', err)
+      })
+
+      return await capturedPromise
+    } finally {
+      ses.webRequest.onBeforeSendHeaders(null)
+    }
+  }
+
+  private isSameXhsRequestTarget(actualUrl: string, expectedUrl: URL): boolean {
+    try {
+      const actual = new URL(actualUrl)
+      return actual.origin === expectedUrl.origin &&
+        actual.pathname === expectedUrl.pathname &&
+        actual.search === expectedUrl.search
+    } catch {
+      return false
+    }
+  }
+
+  private isSameXhsRequestBody(
+    uploadData: Array<{ bytes?: Buffer }> | undefined,
+    expectedBody: Buffer | null
+  ): boolean {
+    if (!expectedBody || !uploadData?.length) return true
+    const chunks = uploadData
+      .map((item) => item.bytes)
+      .filter((bytes): bytes is Buffer => Buffer.isBuffer(bytes))
+    if (chunks.length === 0) return true
+    return Buffer.concat(chunks).equals(expectedBody)
+  }
+
+  private async withXhsSignatureLock<T>(
+    key: string,
+    task: () => Promise<T>
+  ): Promise<T> {
+    const previous = this.xhsSignatureQueues.get(key) || Promise.resolve()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const tail = previous.catch(() => {}).then(() => gate)
+    this.xhsSignatureQueues.set(key, tail)
+
+    await previous.catch(() => {})
+    try {
+      return await task()
+    } finally {
+      release()
+      if (this.xhsSignatureQueues.get(key) === tail) {
+        this.xhsSignatureQueues.delete(key)
+      }
     }
   }
 
@@ -2568,8 +2838,13 @@ export class SignService {
       const previousFingerprint = this.electronCookieFingerprints.get(key)
       if (previousFingerprint !== fingerprint || this.shouldReloadElectronWindow(existing, url, platform)) {
         logger.info(`[sign] Reloading ${platform} Electron signer page after cookie/page change`)
-        await existing.loadURL(url)
-        await this.wait(5000)
+        await this.loadElectronSignerPage(existing, platform, url)
+      } else if (platform === 'xiaohongshu') {
+        const ready = await this.waitForElectronSignerReady(existing, platform)
+        if (!ready) {
+          logger.info('[sign] Reloading xiaohongshu Electron signer page because _webmsxyw is not ready')
+          await this.loadElectronSignerPage(existing, platform, url)
+        }
       }
       this.electronCookieFingerprints.set(key, fingerprint)
       return existing
@@ -2597,12 +2872,75 @@ export class SignService {
     })
 
     logger.info(`[sign] Loading ${platform} Electron signer page (${accountId ? 'auth session' : 'sign session'}): ${url}`)
-    await win.loadURL(url)
-    await this.wait(5000)
+    await this.loadElectronSignerPage(win, platform, url)
 
     this.electronWindows.set(key, win)
     this.electronCookieFingerprints.set(key, fingerprint)
     return win
+  }
+
+  private async loadElectronSignerPage(win: BrowserWindow, platform: string, url: string): Promise<void> {
+    if (platform !== 'xiaohongshu') {
+      await win.loadURL(url)
+      await this.waitForElectronSignerReady(win, platform)
+      return
+    }
+
+    const candidates = [
+      url,
+      ...XHS_SIGN_CONTEXT_FALLBACK_URLS
+    ].filter((candidate, index, urls) => urls.indexOf(candidate) === index)
+
+    for (const candidate of candidates) {
+      logger.info(`[sign] Loading xiaohongshu Electron signer candidate: ${candidate}`)
+      try {
+        await win.loadURL(candidate)
+        const ready = await this.waitForElectronSignerReady(win, platform)
+        if (ready) return
+        const diagnostics = await win.webContents.executeJavaScript(`
+          (function() {
+            return {
+              href: String(location.href || ''),
+              title: String(document.title || ''),
+              cookieNames: String(document.cookie || '').split(';').map(function(part) {
+                return part.trim().split('=')[0];
+              }).filter(Boolean).slice(0, 20)
+            };
+          })()
+        `, true).catch((err) => ({ error: String(err && err.message ? err.message : err) }))
+        logger.info(`[sign] xiaohongshu signer candidate diagnostics: ${JSON.stringify(diagnostics).substring(0, 500)}`)
+      } catch (err) {
+        logger.warn(`[sign] Failed to load xiaohongshu signer candidate ${candidate}:`, err)
+      }
+    }
+
+    logger.warn('[sign] No xiaohongshu Electron signer candidate initialized _webmsxyw')
+  }
+
+  private async waitForElectronSignerReady(win: BrowserWindow, platform: string): Promise<boolean> {
+    if (platform !== 'xiaohongshu') {
+      await this.wait(5000)
+      return true
+    }
+
+    try {
+      const ready = await win.webContents.executeJavaScript(`
+        (async function() {
+          const startedAt = Date.now();
+          while (Date.now() - startedAt < 15000) {
+            if (typeof window._webmsxyw === 'function') return true;
+            await new Promise(function(resolve) { setTimeout(resolve, 500); });
+          }
+          return false;
+        })()
+      `, true) as boolean
+      logger.info(`[sign] xiaohongshu Electron signer ready: _webmsxyw=${ready ? 'yes' : 'no'}`)
+      return ready
+    } catch (err) {
+      logger.warn('[sign] Failed while waiting for xiaohongshu Electron signer readiness:', err)
+      await this.wait(5000)
+      return false
+    }
   }
 
   private resetElectronWindow(platform: string, accountId?: string): void {
@@ -2628,12 +2966,40 @@ export class SignService {
   ): Promise<void> {
     const dbg = win.webContents.debugger
     const attachedByUs = !dbg.isAttached()
+    const networkRequests = new Map<string, { url: string; method: string }>()
 
     if (attachedByUs) {
       dbg.attach('1.3')
     }
 
     const listener = async (_event: unknown, method: string, params: any) => {
+      if (method === 'Network.requestWillBeSent') {
+        const requestId = String(params?.requestId || '')
+        const request = params?.request || {}
+        if (requestId) {
+          networkRequests.set(requestId, {
+            url: String(request.url || ''),
+            method: String(request.method || '')
+          })
+        }
+        return
+      }
+
+      if (method === 'Network.requestWillBeSentExtraInfo') {
+        const requestId = String(params?.requestId || '')
+        const request = networkRequests.get(requestId)
+        if (request) {
+          handlePausedRequest({
+            request: {
+              url: request.url,
+              method: request.method,
+              headers: params?.headers || {}
+            }
+          })
+        }
+        return
+      }
+
       if (method !== 'Fetch.requestPaused') return
 
       const handled = handlePausedRequest(params)
@@ -2655,12 +3021,16 @@ export class SignService {
 
     dbg.on('message', listener)
     try {
+      await dbg.sendCommand('Network.enable')
       await dbg.sendCommand('Fetch.enable', { patterns })
       await trigger()
       await this.wait(5000)
     } finally {
       try { await dbg.sendCommand('Fetch.disable') } catch {
         // The debugger may already be detached if the window navigated/closed.
+      }
+      try { await dbg.sendCommand('Network.disable') } catch {
+        // Network may already be disabled if the debugger detached.
       }
       dbg.removeListener('message', listener)
       if (attachedByUs && dbg.isAttached()) {
@@ -2690,6 +3060,9 @@ export class SignService {
       kuaishou: { url: 'https://cp.kuaishou.com', domain: '.kuaishou.com' }
     }
     const target = config[platform] || config.douyin
+    const hostOnlyUrls = platform === 'xiaohongshu'
+      ? ['https://creator.xiaohongshu.com', 'https://www.xiaohongshu.com']
+      : [target.url]
 
     for (const part of cookie.split(';')) {
       const trimmed = part.trim()
@@ -2701,23 +3074,26 @@ export class SignService {
       if (!name || !value) continue
 
       try {
-        const cookieDetails = name.startsWith('__Host-')
-          ? {
-              url: target.url,
+        if (name.startsWith('__Host-')) {
+          for (const url of hostOnlyUrls) {
+            await ses.cookies.set({
+              url,
               name,
               value,
               path: '/',
               secure: true
-            }
-          : {
-              url: target.url,
-              name,
-              value,
-              domain: target.domain,
-              path: '/',
-              secure: true
-            }
-        await ses.cookies.set(cookieDetails)
+            })
+          }
+        } else {
+          await ses.cookies.set({
+            url: target.url,
+            name,
+            value,
+            domain: target.domain,
+            path: '/',
+            secure: true
+          })
+        }
       } catch {
         // Keep the existing persisted Electron session cookie if setting this
         // cookie shape is rejected.

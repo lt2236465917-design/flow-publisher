@@ -16,6 +16,7 @@ import type { PublishFormData } from '@/types/publish.types'
 
 interface PublishProgressData {
   recordId: string
+  platformId?: PlatformId
   percent: number
   stage: string
 }
@@ -63,11 +64,14 @@ export function usePublishFlow() {
   useEffect(() => {
     const unsubscribe = window.electron.ipcRenderer.on(IPC_CHANNELS.PUBLISH_PROGRESS, (...args: unknown[]) => {
       const data = args[0] as PublishProgressData
-      const { recordId, percent } = data
+      const { recordId, platformId, percent } = data
       const tasks = usePublishStore.getState().tasks
-      const task = tasks.find((t) => t.id === recordId)
+      const task = tasks.find((t) =>
+        t.id === recordId ||
+        (platformId && t.platform === platformId && t.status === 'uploading')
+      )
       if (task) {
-        usePublishStore.getState().updateTask(recordId, {
+        usePublishStore.getState().updateTask(task.id, {
           progress: percent,
           status: percent >= 100 ? 'done' : 'uploading'
         })
@@ -281,6 +285,7 @@ export function usePublishFlow() {
     for (let i = 0; i < form.platforms.length; i++) {
       const platformId = form.platforms[i]
       const task = tasks[i]
+      const platformCoverFilePath = coverFilePath
 
       try {
         const accountsRes = await ipcInvoke<AccountInfo[]>(IPC_CHANNELS.ACCOUNT_LIST)
@@ -298,7 +303,7 @@ export function usePublishFlow() {
           platformId,
           filePath: video.filePath,
           publishRunId,
-          hasCustomCover: !!coverFilePath
+          hasCustomCover: !!platformCoverFilePath
         })
 
         if (!uploadRes.success) {
@@ -319,8 +324,8 @@ export function usePublishFlow() {
           platformFields: latestForm.platformOverrides[platformId as PlatformId] || {}
         }
         // Only include coverPath if it's a valid file path (avoid IPC converting undefined to "undefined")
-        if (coverFilePath) {
-          contentPayload.coverPath = coverFilePath
+        if (platformCoverFilePath) {
+          contentPayload.coverPath = platformCoverFilePath
         }
         const submitRes = await ipcInvoke<{ recordId: string; status?: string; message?: string }>(IPC_CHANNELS.PUBLISH_SUBMIT, {
           recordId,

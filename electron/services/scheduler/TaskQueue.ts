@@ -8,7 +8,7 @@ import type { CookieContext } from '../http/HttpClient'
 import { getPublishRiskGuard } from '../risk/PublishRiskGuard'
 import { getSignService } from '../sign/SignService'
 import type { IPlatformAdapter } from '../platform-adapters/IPlatformAdapter'
-import { retry, delay } from '../../utils/delays'
+import { retry } from '../../utils/delays'
 import { logger } from '../../utils/logger'
 import type { ScheduledTaskRow } from '../database/repositories/scheduled-task.repo'
 import type { ScheduledTaskRepository } from '../database/repositories/scheduled-task.repo'
@@ -308,28 +308,11 @@ export class TaskQueue {
     )
 
     const now = new Date().toISOString()
-    if (platformId === 'xiaohongshu' && submitResult?.confirmed === false) {
-      const message = '小红书已受理提交请求，但未返回 note_id；请到创作者中心的发布管理、审核中或草稿箱确认。'
-      if (submitResult.contentId) recordRepo.updateContentId(record.id, submitResult.contentId)
-      recordRepo.updateStatus(record.id, 'unconfirmed', 99, message)
-      recordRepo['db'].run(
-        'UPDATE publish_records SET title = ?, description = ?, hashtags = ?, declarations = ?, updated_at = ? WHERE id = ?',
-        [task.title, task.description, task.hashtags, task.declarations, now, record.id]
-      )
-      saveDatabase()
-
-      mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
-        taskId: task.id,
-        recordId: record.id,
-        platformId,
-        percent: 99,
-        stage: '小红书已受理，等待平台确认'
-      })
-
-      logger.info(`[TaskQueue] Xiaohongshu submit unconfirmed for task ${task.id}`)
-      return
+    if (platformId === 'xiaohongshu' && !submitResult?.contentId) {
+      throw new Error('内容提交失败: 小红书未返回 note_id，定时任务不会标记为发布成功。请保留日志并重试 API 发布。')
     }
 
+    if (submitResult?.contentId) recordRepo.updateContentId(record.id, submitResult.contentId)
     recordRepo.updateStatus(record.id, 'done', 100)
     recordRepo['db'].run(
       'UPDATE publish_records SET title = ?, description = ?, hashtags = ?, declarations = ?, updated_at = ? WHERE id = ?',

@@ -103,6 +103,11 @@ async function ensureWebSignerReadyForUpload(
   recordId: string,
   mainWindow: BrowserWindow | undefined
 ): Promise<void> {
+  if (platformId === 'xiaohongshu') {
+    logger.info('[publish] Skipping xiaohongshu signer preflight during upload; note create signature will be verified before submit')
+    return
+  }
+
   mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
     recordId,
     percent: 1,
@@ -228,6 +233,7 @@ export function registerPublishIpcHandlers(): void {
             saveDatabase()
             mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
               recordId: record.id,
+              platformId: params.platformId,
               ...progress
             })
           }
@@ -243,6 +249,7 @@ export function registerPublishIpcHandlers(): void {
               saveDatabase()
               mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
                 recordId: record.id,
+                platformId: params.platformId,
                 ...progress
               })
             },
@@ -418,33 +425,14 @@ export function registerPublishIpcHandlers(): void {
       )
 
       if (params.platformId === 'xiaohongshu' && !submitResult?.contentId) {
-        throw new Error('内容提交状态无法确认: 小红书未返回 note_id，已停止标记为发布成功。请到小红书创作者中心确认是否进入审核中或草稿箱。')
+        throw new Error('内容提交失败: 小红书未返回 note_id，已停止标记为发布成功。请保留日志并重试 API 发布。')
       }
 
       const now = new Date().toISOString()
-      const xhsUnconfirmed = params.platformId === 'xiaohongshu' && submitResult?.confirmed === false
 
       if (submitResult?.contentId) {
         recordRepo.updateContentId(params.recordId, submitResult.contentId)
         logger.info(`[publish] Saved contentId: ${submitResult.contentId} for record: ${params.recordId}`)
-      }
-
-      if (xhsUnconfirmed) {
-        const message = '小红书已受理提交请求，但未返回 note_id；请到创作者中心的发布管理、审核中或草稿箱确认。'
-        recordRepo.updateStatus(params.recordId, 'unconfirmed', 99, message)
-        recordRepo['db'].run(
-          'UPDATE publish_records SET title = ?, description = ?, hashtags = ?, declarations = ?, cover_path = ?, updated_at = ? WHERE id = ?',
-          [params.content.title, params.content.description, JSON.stringify(params.content.hashtags), JSON.stringify(params.content.declarations), params.content.coverPath || null, now, params.recordId]
-        )
-        saveDatabase()
-
-        mainWindow?.webContents.send(IPC_CHANNELS.PUBLISH_PROGRESS, {
-          recordId: params.recordId,
-          percent: 99,
-          stage: '小红书已受理，等待平台确认'
-        })
-
-        return { success: true, data: { recordId: params.recordId, status: 'unconfirmed', message } }
       }
 
       recordRepo.updateStatus(params.recordId, 'done', 100)

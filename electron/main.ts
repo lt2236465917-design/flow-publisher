@@ -60,6 +60,24 @@ function createWindow(): void {
     mainWindow.show()
   })
 
+  if (isDev) {
+    mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+      const source = sourceId ? `${sourceId}:${line}` : `line ${line}`
+      const prefix = `[renderer:${level}] ${source}`
+      if (level === 'error') {
+        logger.error(prefix, message)
+      } else if (level === 'warning') {
+        logger.warn(prefix, message)
+      } else {
+        logger.info(prefix, message)
+      }
+    })
+
+    mainWindow.webContents.on('render-process-gone', (_event, details) => {
+      logger.error('[renderer] render process gone:', details)
+    })
+  }
+
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -80,26 +98,45 @@ app.whenReady().then(async () => {
   app.setAppUserModelId('com.flow.publisher')
 
   // Handle local-file:// protocol to serve local files
-  // Security: only allow paths within the app's userData directory or temp directory.
+  // Security: only allow paths within app-owned directories or the current user's home.
   // Uses realpathSync to resolve symlinks/junction points before whitelist comparison,
   // and appends path separator to prevent prefix-confusion bypasses.
   const allowedRoots = [
     resolve(app.getPath('userData')),
-    resolve(app.getPath('temp'))
+    resolve(app.getPath('temp')),
+    resolve(app.getPath('home'))
   ]
   protocol.handle('local-file', (request) => {
     try {
       const url = new URL(request.url)
-      const filePath = decodeURIComponent(url.pathname)
+      const filePath = decodeURIComponent(url.host ? `/${url.host}${url.pathname}` : url.pathname)
       // On Windows, pathname starts with /C:/..., remove leading /
       const normalizedPath = process.platform === 'win32' && filePath.startsWith('/') ? filePath.slice(1) : filePath
-      const resolvedPath = resolve(normalizedPath)
+      let resolvedPath = resolve(normalizedPath)
+      if (!existsSync(resolvedPath)) {
+        const homeRoot = resolve(app.getPath('home'))
+        const homeParts = homeRoot.split(sep).filter(Boolean)
+        const pathParts = resolvedPath.split(sep).filter(Boolean)
+        const matchesHome = homeParts.every((part, index) =>
+          pathParts[index]?.toLowerCase() === part.toLowerCase()
+        )
+        if (matchesHome) {
+          resolvedPath = sep + [...homeParts, ...pathParts.slice(homeParts.length)].join(sep)
+        }
+      }
 
       // If file exists, resolve symlinks/junction points for security validation
       const canonicalPath = existsSync(resolvedPath) ? realpathSync(resolvedPath) : resolvedPath
 
       // Validate path is within allowed directories — append sep to prevent prefix confusion
-      const isAllowed = allowedRoots.some(root => (canonicalPath + sep).startsWith(root + sep))
+      const canonicalPathWithSep = canonicalPath + sep
+      const isAllowed = allowedRoots.some(root => {
+        const rootWithSep = root.endsWith(sep) ? root : root + sep
+        if (process.platform === 'darwin') {
+          return canonicalPathWithSep.toLowerCase().startsWith(rootWithSep.toLowerCase())
+        }
+        return canonicalPathWithSep.startsWith(rootWithSep)
+      })
       if (!isAllowed) {
         logger.warn(`[local-file] Blocked access to path outside allowed directories: ${canonicalPath}`)
         return new Response('Forbidden', { status: 403 })

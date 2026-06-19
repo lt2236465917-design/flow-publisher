@@ -41,6 +41,27 @@
 - 🔄 **登录状态检测** — 启动时 API 验证账号有效性，过期/失效账号实时提醒
 - 🍪 **Cookie 安全存储** — 基于 Electron `safeStorage` 的操作系统级加密，HTTP 客户端自动刷新合法 Cookie
 
+### 发布模式硬约束
+
+Flow 的发布链路只允许使用 API/HTTP 模式。所有平台，包括小红书，禁止使用创作者中心 UI 自动化作为发布方案或失败兜底。
+
+允许的范围：
+
+- 通过官方 OpenAPI、平台网页 API、上传接口、签名接口、状态查询接口完成发布。
+- 使用登录窗口获取用户授权会话。
+- 使用本机 signer 或隐藏签名上下文生成 API/HTTP 请求所需的签名和请求头。
+- 在 API/HTTP 返回异常、HTTP 461、缺少 `note_id`、缺少内容 ID 或结果无法确认时，保留日志并继续排查 API/HTTP 请求链路。
+
+禁止的范围：
+
+- 打开平台创作者中心发布页，自动上传视频或封面。
+- 自动填写标题、正文、话题、位置、声明、封面等页面表单。
+- 自动点击发布、提交、确认发布等 UI 按钮。
+- 使用 Playwright、Chrome、Electron BrowserWindow、DOM 注入、`setInputFiles`、键盘/鼠标事件或文件选择器模拟用户完成发布。
+- 在 API/HTTP 失败后切换到“真实页面发布”“创作者中心发布”“RPA 发布”等 UI 自动化兜底。
+
+这条约束是项目级规则。新对话、新 Agent 或新的排查方案也必须继续按 API/HTTP 发布模式推进，不得改成模拟用户在平台创作中心发布。
+
 ---
 
 ## 🚀 快速开始
@@ -137,8 +158,11 @@ SignService
   │     — 仅发送 md5(requestBody)，不发送登录 Cookie；可设 FLOW_PUBLISHER_KUAISHOU_YIXIAOER_SIGNER=disabled 关闭
   ├── 优先级 3: App 内置本机 Playwright 签名
   │     — 默认自动启用；可设置 FLOW_PUBLISHER_AUTO_CONFIRM_BUILTIN_SIGNER=false 恢复确认弹窗
-  └── 优先级 4: 旧外部签名服务
-        — 默认禁用，仅 FLOW_PUBLISHER_ALLOW_LEGACY_EXTERNAL_SIGNER=true 时启用
+  └── 优先级 4: 蚁小二兼容签名服务
+        — 小红书 note create 默认使用 newxiaohongshu signer 获取完整 X-S-Common
+        — 仅发送接口路径和最终请求 body，不发送登录 Cookie
+        — 可设置 FLOW_PUBLISHER_XHS_YIXIAOER_SIGNER=disabled 关闭
+        — 其他旧外部签名默认禁用，仅 FLOW_PUBLISHER_ALLOW_LEGACY_EXTERNAL_SIGNER=true 时启用
         — 也可通过 FLOW_PUBLISHER_LEGACY_SIGNER_URL 或按平台 URL 显式启用
         — 抖音 a_bogus / 小红书 X-s, X-t, X-S-Common / 快手 __NS_sig3
 ```
@@ -191,6 +215,14 @@ FLOW_PUBLISHER_KUAISHOU_LEGACY_SIGNER_PORTS=5004,5005,5006,5007,5008
 FLOW_PUBLISHER_XHS_LEGACY_SIGNER_PORTS=5061,5062,5063
 ```
 
+小红书发布接口必须拿到完整网页签名，至少包含 `X-s`、`X-t`、`X-S-Common`。实测只有
+`X-s` / `X-t` / `x-rap-param` 时，`/web_api/sns/v2/note` 可能返回 HTTP 461 +
+空 `success:true`，但不会生成审核中或草稿记录。因此 `x-rap-param` 只能留在生成它的
+认证浏览器会话中执行 HTTP API 请求，不能复制到 Node/Axios 跨上下文重放。蚁小二的 API 发布路径会对
+`/web_api/sns/v2/note` 的 body 调用 `newxiaohongshu` signer（默认端口
+`5061,5062,5063`），返回签名后再走 HTTP POST。这个兼容 signer 会接收待签名的
+path/body，涉及内容数据外发风险，因此本项目不默认启用，必须通过上述环境变量显式配置。
+
 风险守卫相关配置：
 
 ```bash
@@ -200,7 +232,8 @@ FLOW_PUBLISHER_MIN_SUBMIT_INTERVAL_MS=60000
 # 遇到风控/验证/403 类错误后的冷却时间，默认 600000
 FLOW_PUBLISHER_RISK_COOLDOWN_MS=600000
 
-# 是否自动启动内置托管 signer，默认关闭
+# 是否自动启动内置托管 signer，默认关闭。小红书会在官方创作页运行时
+# 捕获最终发送前的完整 x-* 请求头，并取消探测请求，再由 HTTP 发布链路提交。
 FLOW_PUBLISHER_MANAGED_SIGNER=false
 
 # 是否跳过内置本机签名确认弹窗，默认开启；设置 false/off/disabled 可恢复确认弹窗

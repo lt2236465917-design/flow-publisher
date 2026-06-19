@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { DeleteOutlined } from '@ant-design/icons'
 import type { VideoMetadata } from '@/types/video.types'
+import { toLocalFileUrl } from '@/utils/localFileUrl'
 
 interface Props {
   video: VideoMetadata
@@ -28,7 +29,7 @@ export default function VideoPreview({ video, onRemove }: Props) {
     }
   }, [video.filePath])
 
-  const videoSrc = `local-file://${video.filePath.replace(/\\/g, '/')}`
+  const videoSrc = toLocalFileUrl(video.filePath)
 
   return (
     <div

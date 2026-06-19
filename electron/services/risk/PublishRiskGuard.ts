@@ -49,6 +49,7 @@ function getPlatformName(platformId: string): string {
 function isRiskLikeFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
   if (/账号登录状态异常或已过期|请先重新登录/.test(message)) return false
+  if (/签名|signer|X-S-Common|HTTP 461 空成功|note create/.test(message)) return false
 
   const normalized = message.toLowerCase()
   return [
