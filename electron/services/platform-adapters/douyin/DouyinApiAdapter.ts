@@ -1628,8 +1628,7 @@ export class DouyinApiAdapter extends BasePlatformAdapter {
           ...headers,
           'Content-Length': body.length
         },
-        timeout: timeoutMs,
-        rejectUnauthorized: false
+        timeout: timeoutMs
       })
 
       req.on('error', reject)

@@ -587,7 +587,6 @@ export class WcApiAdapter extends BasePlatformAdapter {
         port: 443,
         path: '/applyuploaddfs',
         method: 'PUT',
-        rejectUnauthorized: false,
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(body),
@@ -667,7 +666,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
 
     // --- HTTP/1.1 with keep-alive (matching yixiaoer), bounded concurrency ---
     const https = require('https')
-    const agent = new https.Agent({ keepAlive: true, maxSockets: MAX_CONCURRENCY, maxFreeSockets: 6, rejectUnauthorized: false })
+    const agent = new https.Agent({ keepAlive: true, maxSockets: MAX_CONCURRENCY, maxFreeSockets: 6 })
 
     const uploadChunkH1 = async (i: number): Promise<{ partNum: number; etag: string }> => {
       const chunk = await reader.readChunk(i)
@@ -1336,8 +1335,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
           'Authorization': authKey,
           'Referer': 'https://channels.weixin.qq.com/',
           'Origin': 'https://channels.weixin.qq.com'
-        },
-        rejectUnauthorized: false
+        }
       }, (res: any) => {
         let data = ''
         res.on('data', (c: Buffer) => { data += c.toString() })
@@ -1372,8 +1370,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
           'Authorization': authKey,
           'Referer': 'https://channels.weixin.qq.com/platform/post/create',
           'Origin': 'https://channels.weixin.qq.com'
-        },
-        rejectUnauthorized: false
+        }
       }, (res: any) => {
         let data = ''
         res.on('data', (c: Buffer) => { data += c.toString() })
@@ -1412,8 +1409,7 @@ export class WcApiAdapter extends BasePlatformAdapter {
           'Authorization': authKey,
           'Referer': 'https://channels.weixin.qq.com/',
           'Origin': 'https://channels.weixin.qq.com'
-        },
-        rejectUnauthorized: false
+        }
       }, (res: any) => {
         let data = ''
         res.on('data', (c: Buffer) => { data += c.toString() })

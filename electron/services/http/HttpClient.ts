@@ -1,6 +1,5 @@
 import axios, { type AxiosRequestConfig, type AxiosResponse } from 'axios'
 import { logger } from '../../utils/logger'
-import { Agent as HttpsAgent } from 'https'
 import { getAccountRepository, saveDatabase } from '../database'
 import { encryptString, decryptString } from '../../utils/crypto-store'
 
@@ -34,8 +33,6 @@ export interface HttpRequestOptions {
   noCookie?: boolean
   /** When true, only send explicitly provided headers + Cookie (no browser-like defaults) */
   minimalHeaders?: boolean
-  /** When true, enforce proper TLS certificate validation. Default false for backward compat with CDN endpoints. */
-  secureTls?: boolean
 }
 
 export interface ApiResponse<T = unknown> {
@@ -72,20 +69,6 @@ const SENSITIVE_LOG_HEADERS = new Set([
   'x-secsdk-csrf-token'
 ])
 
-// CDN upload endpoints use self-signed or non-standard certificates.
-// This agent is ONLY for known CDN domains.
-const HTTPS_AGENT_CDN = new HttpsAgent({ rejectUnauthorized: false })
-
-// Secure agent for platform API calls — proper TLS certificate validation.
-const HTTPS_AGENT_SECURE = new HttpsAgent({ rejectUnauthorized: true })
-
-// Domains known to have certificate issues (CDN upload endpoints).
-// Calls to these domains use the CDN agent; everything else uses the secure agent.
-const CDN_DOMAINS = [
-  'bytedanceapi.com',      // ByteDance VOD / ImageX
-  'kuaishouzt.com',        // Kuaishou CDN upload
-]
-
 function summarizeData(data: unknown, maxLength = 1000): string {
   if (data === undefined || data === null) return ''
   if (typeof data === 'string') return data.substring(0, maxLength)
@@ -94,23 +77,6 @@ function summarizeData(data: unknown, maxLength = 1000): string {
   } catch {
     return String(data).substring(0, maxLength)
   }
-}
-
-function isCdnDomain(url: string): boolean {
-  try {
-    const host = new URL(url).hostname
-    return CDN_DOMAINS.some(d => host === d || host.endsWith('.' + d))
-  } catch {
-    return false
-  }
-}
-
-function selectAgent(url: string, options: { secureTls?: boolean }): HttpsAgent {
-  // Explicit secureTls flag always wins
-  if (options.secureTls === true) return HTTPS_AGENT_SECURE
-  if (options.secureTls === false) return HTTPS_AGENT_CDN
-  // Auto-detect: CDN domains get the permissive agent, everything else gets secure
-  return isCdnDomain(url) ? HTTPS_AGENT_CDN : HTTPS_AGENT_SECURE
 }
 
 export class HttpClient {
@@ -154,7 +120,6 @@ export class HttpClient {
       data: options.data,
       params: options.params,
       adapter: 'http',
-      httpsAgent: selectAgent(options.url, options),
       headers: {
         ...baseHeaders,
         ...(options.noCookie ? {} : { Cookie: this.context.cookies }),

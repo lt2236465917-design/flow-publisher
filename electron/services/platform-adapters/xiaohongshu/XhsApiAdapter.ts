@@ -551,8 +551,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       const target = new URL(url)
       const agent = new HttpsAgent({
         keepAlive: false,
-        maxSockets: 1,
-        rejectUnauthorized: false
+        maxSockets: 1
       })
       const req = httpsRequest({
         protocol: target.protocol,

@@ -88,7 +88,6 @@ export class BrowserManager {
       args: STEALTH_ARGS,
       viewport: { width: 1366, height: 768 },
       locale: 'zh-CN',
-      ignoreHTTPSErrors: true,
       userAgent: REALISTIC_UA,
       bypassCSP: true
     })

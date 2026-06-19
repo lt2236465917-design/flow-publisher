@@ -526,7 +526,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
     const reader = await openChunkedReader(filePath, CHUNK_SIZE)
     const totalChunks = reader.totalChunks
     const https = require('https')
-    const agent = new https.Agent({ keepAlive: true, maxSockets: 3, rejectUnauthorized: false })
+    const agent = new https.Agent({ keepAlive: true, maxSockets: 3 })
 
     let completedChunks = 0
     const uploadHost = 'upload.kuaishouzt.com'
@@ -815,7 +815,7 @@ export class KsApiAdapter extends BasePlatformAdapter {
     const cookie = client.getCookieString()
     const apiPh = this.extractApiPh(cookie)
     const https = require('https')
-    const agent = new https.Agent({ keepAlive: true, maxSockets: 3, rejectUnauthorized: false })
+    const agent = new https.Agent({ keepAlive: true, maxSockets: 3 })
 
     try {
       // Step 1: Get upload token (reuse video upload/pre endpoint)

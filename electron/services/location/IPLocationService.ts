@@ -20,7 +20,7 @@ export class IPLocationService {
 
   /**
    * 获取当前IP定位信息
-   * 优先使用ip-api.com，失败时回退到其他服务
+   * 使用支持 HTTPS 的定位服务，失败时回退到备用服务
    */
   async getLocation(): Promise<IPLocationResult> {
     // 检查缓存
@@ -31,8 +31,8 @@ export class IPLocationService {
 
     // 尝试多个IP定位服务
     const providers = [
-      this.getFromIpApi.bind(this),
-      this.getFromIpSb.bind(this)
+      this.getFromIpSb.bind(this),
+      this.getFromIpApiCo.bind(this)
     ]
 
     for (const provider of providers) {
@@ -62,33 +62,33 @@ export class IPLocationService {
   }
 
   /**
-   * 使用ip-api.com获取定位
+   * 使用 ipapi.co 获取定位（HTTPS）
    */
-  private async getFromIpApi(): Promise<IPLocationResult | null> {
+  private async getFromIpApiCo(): Promise<IPLocationResult | null> {
     try {
       const response = await axios.get<{
-        status: string
-        lat: number
-        lon: number
+        latitude: number
+        longitude: number
         city: string
-        regionName: string
-        country: string
-      }>('http://ip-api.com/json/?lang=zh-CN', {
+        region: string
+        country_name: string
+        error?: boolean
+      }>('https://ipapi.co/json/', {
         timeout: 5000
       })
 
-      if (response.data.status === 'success') {
+      if (!response.data.error && response.data.latitude && response.data.longitude) {
         return {
-          lat: response.data.lat,
-          lng: response.data.lon,
+          lat: response.data.latitude,
+          lng: response.data.longitude,
           city: response.data.city,
-          province: response.data.regionName,
-          country: response.data.country
+          province: response.data.region,
+          country: response.data.country_name
         }
       }
       return null
     } catch (err) {
-      logger.debug('[IPLocationService] ip-api.com failed:', err)
+      logger.debug('[IPLocationService] ipapi.co failed:', err)
       return null
     }
   }

@@ -6,6 +6,7 @@ import type { UploadProgress, UploadResult } from '../platform-adapters/IPlatfor
 import type { SubmitResult } from '../../../shared/types/analytics'
 import { openChunkedReader } from '../../utils/chunked-reader'
 import { logger } from '../../utils/logger'
+import { requireSecureUploadEndpoint } from '../../security/secure-transport'
 
 const START_UPLOAD_URL = 'https://open.kuaishou.com/openapi/photo/start_upload'
 const PUBLISH_URL = 'https://open.kuaishou.com/openapi/photo/publish'
@@ -140,7 +141,8 @@ export class KuaishouOpenApiPublisher {
   }
 
   private async uploadDirect(endpoint: string, uploadToken: string, filePath: string): Promise<void> {
-    const url = `http://${endpoint}/api/upload?upload_token=${encodeURIComponent(uploadToken)}`
+    const baseUrl = requireSecureUploadEndpoint(endpoint)
+    const url = `${baseUrl}/api/upload?upload_token=${encodeURIComponent(uploadToken)}`
     const response = await axios.post<{ result: number; error_msg?: string; message?: string }>(
       url,
       createReadStream(filePath),
@@ -163,11 +165,12 @@ export class KuaishouOpenApiPublisher {
     filePath: string,
     onProgress?: (p: UploadProgress) => void
   ): Promise<void> {
+    const baseUrl = requireSecureUploadEndpoint(endpoint)
     const reader = await openChunkedReader(filePath, FRAGMENT_SIZE)
     try {
       for (let i = 0; i < reader.totalChunks; i++) {
         const chunk = await reader.readChunk(i)
-        const url = `http://${endpoint}/api/upload/fragment?upload_token=${encodeURIComponent(uploadToken)}&fragment_id=${i}`
+        const url = `${baseUrl}/api/upload/fragment?upload_token=${encodeURIComponent(uploadToken)}&fragment_id=${i}`
         const response = await axios.post<{ result: number; error_msg?: string; message?: string }>(
           url,
           chunk,
@@ -187,7 +190,7 @@ export class KuaishouOpenApiPublisher {
         })
       }
 
-      const completeUrl = `http://${endpoint}/api/upload/complete?upload_token=${encodeURIComponent(uploadToken)}&fragment_count=${reader.totalChunks}`
+      const completeUrl = `${baseUrl}/api/upload/complete?upload_token=${encodeURIComponent(uploadToken)}&fragment_count=${reader.totalChunks}`
       const completeResponse = await axios.post<{ result: number; error_msg?: string; message?: string }>(
         completeUrl,
         undefined,
