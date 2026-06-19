@@ -21,7 +21,7 @@ win:
   icon: build/icon.ico
   signAndEditExecutable: false
 nsis:
-  artifactName: ${name}-${version}-setup.${ext}
+  artifactName: ${name}-${version}-windows-${arch}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
