@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { DeleteOutlined } from '@ant-design/icons'
 import type { VideoMetadata } from '@/types/video.types'
 import { toLocalFileUrl } from '@/utils/localFileUrl'
+import './VideoPreview.css'
 
 interface Props {
   video: VideoMetadata
@@ -32,101 +33,55 @@ export default function VideoPreview({ video, onRemove }: Props) {
   const videoSrc = toLocalFileUrl(video.filePath)
 
   return (
-    <div
-      style={{
-        display: 'flex',
-        gap: 16,
-        padding: 14,
-        background: '#f5f5f7',
-        borderRadius: 12,
-        marginTop: 12,
-      }}
-    >
-      <div
-        style={{
-          position: 'relative',
-          width: 180,
-          minHeight: 100,
-          borderRadius: 10,
-          overflow: 'hidden',
-          background: '#000',
-          flexShrink: 0,
-        }}
-      >
+    <div className="video-preview-card">
+      <div className="video-preview-media">
         <video
           ref={videoRef}
           src={videoSrc}
-          style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+          className="video-preview-player"
           controls
           preload="metadata"
         />
       </div>
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', minWidth: 0 }}>
-        <div>
-          <div
-            style={{
-              fontSize: 14,
-              fontWeight: 600,
-              color: '#1d1d1f',
-              wordBreak: 'break-all',
-              marginBottom: 8,
-              fontFamily: "'DM Sans', sans-serif",
-            }}
-          >
-            {video.fileName}
+      <div className="video-preview-info">
+        <div className="video-preview-content">
+          <div className="video-preview-heading">
+            <span className="video-preview-eyebrow">已选择视频</span>
+            <div className="video-preview-filename" title={video.fileName}>
+              {video.fileName}
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <MetaTag>{video.format.toUpperCase()}</MetaTag>
-            <MetaTag>{video.width}×{video.height}</MetaTag>
-            <MetaTag>{formatDuration(video.duration)}</MetaTag>
-            <MetaTag>{formatFileSize(video.fileSize)}</MetaTag>
-            {video.fps > 0 && <MetaTag>{video.fps}fps</MetaTag>}
+
+          <div className="video-preview-meta" aria-label="视频参数">
+            <MetaItem label="格式" value={video.format.toUpperCase()} />
+            <MetaItem label="分辨率" value={`${video.width} × ${video.height}`} />
+            <MetaItem label="时长" value={formatDuration(video.duration)} />
+            <MetaItem label="大小" value={formatFileSize(video.fileSize)} />
+            {video.fps > 0 && <MetaItem label="帧率" value={`${video.fps} fps`} />}
           </div>
         </div>
-        <button
-          onClick={onRemove}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 4,
-            padding: '4px 8px',
-            border: 'none',
-            background: 'transparent',
-            color: '#ff3b30',
-            fontSize: 12,
-            fontWeight: 500,
-            cursor: 'pointer',
-            borderRadius: 6,
-            transition: 'background 0.15s ease',
-            fontFamily: "'DM Sans', sans-serif",
-            alignSelf: 'flex-start',
-            marginTop: 8,
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 59, 48, 0.06)' }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent' }}
-        >
-          <DeleteOutlined style={{ fontSize: 12 }} />
-          移除
-        </button>
+
+        <div className="video-preview-actions">
+          <span className="video-preview-hint">视频参数已读取</span>
+          <button
+            type="button"
+            onClick={onRemove}
+            className="video-preview-remove"
+          >
+            <DeleteOutlined />
+            移除视频
+          </button>
+        </div>
       </div>
     </div>
   )
 }
 
-function MetaTag({ children }: { children: React.ReactNode }) {
+function MetaItem({ label, value }: { label: string; value: string }) {
   return (
-    <span
-      style={{
-        fontSize: 11,
-        fontWeight: 500,
-        color: '#86868b',
-        background: 'rgba(0, 0, 0, 0.04)',
-        padding: '2px 8px',
-        borderRadius: 6,
-        letterSpacing: '0.02em',
-      }}
-    >
-      {children}
-    </span>
+    <div className="video-preview-meta-item">
+      <span className="video-preview-meta-label">{label}</span>
+      <span className="video-preview-meta-value">{value}</span>
+    </div>
   )
 }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, protocol, net } from 'electron'
+import { app, BrowserWindow, ipcMain, protocol, net, nativeImage } from 'electron'
 import { join, resolve, sep } from 'path'
 import { pathToFileURL } from 'url'
 import { realpathSync, existsSync } from 'fs'
@@ -16,7 +16,14 @@ import { getManagedSelfHostedSignerServer } from './services/sign/ManagedSelfHos
 import { logger } from './utils/logger'
 
 const isDev = !app.isPackaged
+const APP_NAME = 'Flow'
 let scheduler: PublishScheduler | null = null
+
+// In development macOS launches Electron.app, whose bundle name is "Electron".
+// Set both Electron's internal name and the process title before app readiness
+// so the Dock and app switcher identify the running project as Flow.
+app.setName(APP_NAME)
+process.title = APP_NAME
 
 // Register custom protocol for serving local files (avoids CSP/same-origin issues)
 protocol.registerSchemesAsPrivileged([
@@ -31,12 +38,34 @@ function getAppIconPath(): string | undefined {
   return existsSync(iconPath) ? iconPath : undefined
 }
 
-function createWindow(): void {
+function applyAppBranding(): string | undefined {
   const appIconPath = getAppIconPath()
 
-  if (process.platform === 'darwin' && appIconPath && app.dock) {
-    app.dock.setIcon(appIconPath)
+  if (process.platform === 'darwin' && app.dock && appIconPath) {
+    const appIcon = nativeImage.createFromPath(appIconPath)
+    if (appIcon.isEmpty()) {
+      logger.warn(`[branding] Failed to load app icon: ${appIconPath}`)
+    } else {
+      app.dock.setIcon(appIcon)
+      logger.info(
+        `[branding] Applied ${APP_NAME} Dock icon: ` +
+        `${appIcon.getSize().width}x${appIcon.getSize().height}`
+      )
+    }
   }
+
+  app.setAboutPanelOptions({
+    applicationName: APP_NAME,
+    applicationVersion: app.getVersion(),
+    version: app.getVersion(),
+    iconPath: appIconPath
+  })
+
+  return appIconPath
+}
+
+function createWindow(): void {
+  const appIconPath = getAppIconPath()
 
   const mainWindow = new BrowserWindow({
     width: 1280,
@@ -96,6 +125,7 @@ process.on('unhandledRejection', (reason) => {
 
 app.whenReady().then(async () => {
   app.setAppUserModelId('com.flow.publisher')
+  applyAppBranding()
 
   // Handle local-file:// protocol to serve local files
   // Security: only allow paths within app-owned directories or the current user's home.
