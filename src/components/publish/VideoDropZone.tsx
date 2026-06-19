@@ -29,7 +29,7 @@ export default function VideoDropZone({ video, onSelect, onDropFile }: Props) {
     }
   }, [])
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
     e.preventDefault()
     e.stopPropagation()
     setDragging(false)
@@ -38,7 +38,13 @@ export default function VideoDropZone({ video, onSelect, onDropFile }: Props) {
     if (files.length === 0) return
 
     const file = files[0]
-    const filePath = window.api.getPathForFile(file)
+    let filePath: string
+    try {
+      filePath = await window.api.getPathForFile(file)
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : '无法读取拖拽文件')
+      return
+    }
     const ext = filePath.toLowerCase().slice(filePath.lastIndexOf('.'))
 
     if (!VIDEO_EXTENSIONS.includes(ext)) {

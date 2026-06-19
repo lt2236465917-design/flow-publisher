@@ -28,10 +28,11 @@
 
 ### 核心能力
 
-- 🚀 **API 直调发布** — 直接调用平台 HTTP API 上传视频与提交内容，速度快，稳定性高
-- 🔐 **安全登录** — 原生 Electron BrowserWindow 扫码登录（session 分区隔离），不被平台检测为自动化工具
-- 🔑 **端到端签名** — 集成平台签名服务（`a_bogus`、`X-s/X-t`、`__NS_sig3`），外部签名优先 + 本地 Playwright 签名回退，回退前弹窗确认
-- 🛡️ **签名安全确认** — 外部签名不可用时弹窗提示风险，用户知情后手动确认才启用本地签名；定时任务不弹窗、不使用本地签名
+- 🚀 **统一 API 发布** — 官方 OpenAPI 优先；未接入官方能力的平台仅在用户授权下回落到网页 API + 本机 signer
+- 🔐 **隔离登录** — 原生 Electron BrowserWindow 扫码登录，按账号使用独立 session 分区，降低串号和 Cookie 污染风险
+- 🔑 **本机自托管签名** — 平台网页签名（`a_bogus`、`X-s/X-t`、`__NS_sig3`）优先走本机 signer，不再默认依赖第三方签名服务
+- 🛡️ **签名兜底策略** — 本机 signer 不可用时默认自动启用 App 内置本机浏览器签名；可通过环境变量恢复确认弹窗
+- 🧯 **发布风险守卫** — 同账号同平台串行发布，提交默认间隔 60 秒，遇到风控/验证类错误自动冷却
 - 🖼️ **智能封面** — 自动提取推荐帧作为封面，支持横版/竖版自由裁剪
 - ✏️ **内容定制** — 话题标签、@提及、POI 地点搜索、内容声明，各平台独立字段覆盖
 - 📏 **字数智能校验** — 按平台区分标题、描述、话题标签字数限制，多平台发布自动取交集
@@ -39,6 +40,27 @@
 - 📊 **数据中心** — 视频数据自动采集、多平台分组对比、趋势图表分析
 - 🔄 **登录状态检测** — 启动时 API 验证账号有效性，过期/失效账号实时提醒
 - 🍪 **Cookie 安全存储** — 基于 Electron `safeStorage` 的操作系统级加密，HTTP 客户端自动刷新合法 Cookie
+
+### 发布模式硬约束
+
+Flow 的发布链路只允许使用 API/HTTP 模式。所有平台，包括小红书，禁止使用创作者中心 UI 自动化作为发布方案或失败兜底。
+
+允许的范围：
+
+- 通过官方 OpenAPI、平台网页 API、上传接口、签名接口、状态查询接口完成发布。
+- 使用登录窗口获取用户授权会话。
+- 使用本机 signer 或隐藏签名上下文生成 API/HTTP 请求所需的签名和请求头。
+- 在 API/HTTP 返回异常、HTTP 461、缺少 `note_id`、缺少内容 ID 或结果无法确认时，保留日志并继续排查 API/HTTP 请求链路。
+
+禁止的范围：
+
+- 打开平台创作者中心发布页，自动上传视频或封面。
+- 自动填写标题、正文、话题、位置、声明、封面等页面表单。
+- 自动点击发布、提交、确认发布等 UI 按钮。
+- 使用 Playwright、Chrome、Electron BrowserWindow、DOM 注入、`setInputFiles`、键盘/鼠标事件或文件选择器模拟用户完成发布。
+- 在 API/HTTP 失败后切换到“真实页面发布”“创作者中心发布”“RPA 发布”等 UI 自动化兜底。
+
+这条约束是项目级规则。新对话、新 Agent 或新的排查方案也必须继续按 API/HTTP 发布模式推进，不得改成模拟用户在平台创作中心发布。
 
 ---
 
@@ -130,12 +152,104 @@ IPlatformAdapter (接口)
 
 ```
 SignService
-  ├── 优先级 1: 外部签名服务 (qianming.yixiaoer.cn)
-  │     — 真实浏览器环境，稳定可靠
-  └── 优先级 2: 本地 Playwright 签名
-        — 加载平台页面，拦截反爬签名算法
+  ├── 优先级 1: 本机自托管 signer (默认 http://127.0.0.1:17321/sign)
+  │     — Cookie/请求数据不发送到第三方签名服务
+  ├── 优先级 2: 快手蚁小二兼容 __NS_sig3 signer
+  │     — 仅发送 md5(requestBody)，不发送登录 Cookie；可设 FLOW_PUBLISHER_KUAISHOU_YIXIAOER_SIGNER=disabled 关闭
+  ├── 优先级 3: App 内置本机 Playwright 签名
+  │     — 默认自动启用；可设置 FLOW_PUBLISHER_AUTO_CONFIRM_BUILTIN_SIGNER=false 恢复确认弹窗
+  └── 优先级 4: 蚁小二兼容签名服务
+        — 小红书 note create 默认使用 newxiaohongshu signer 获取完整 X-S-Common
+        — 仅发送接口路径和最终请求 body，不发送登录 Cookie
+        — 可设置 FLOW_PUBLISHER_XHS_YIXIAOER_SIGNER=disabled 关闭
+        — 其他旧外部签名默认禁用，仅 FLOW_PUBLISHER_ALLOW_LEGACY_EXTERNAL_SIGNER=true 时启用
+        — 也可通过 FLOW_PUBLISHER_LEGACY_SIGNER_URL 或按平台 URL 显式启用
         — 抖音 a_bogus / 小红书 X-s, X-t, X-S-Common / 快手 __NS_sig3
 ```
+
+官方 OpenAPI 会优先于网页私有 API。当前快手可通过
+`FLOW_PUBLISHER_KUAISHOU_OPENAPI_APP_ID` 和
+`FLOW_PUBLISHER_KUAISHOU_OPENAPI_ACCESS_TOKEN` 启用官方发布通道；未配置时
+回落到网页 API + 本机 signer。抖音内容发布 OpenAPI 仍需平台内测开通，拿到
+权限和接口参数后再启用官方通道。
+
+本机 signer 默认请求 `http://127.0.0.1:17321/sign`。未配置
+`FLOW_PUBLISHER_SIGNER_URL` 时，App 只会尝试连接本机默认端口；如果不可用，会自动启用
+App 内置本机浏览器签名。托管 signer 默认关闭，需要显式设置
+`FLOW_PUBLISHER_MANAGED_SIGNER=true` 才会启动只监听本机 loopback 的 signer。
+也可以通过 `FLOW_PUBLISHER_SIGNER_URL` 指定其他 signer。接口约定：
+
+```json
+{
+  "platform": "douyin | xiaohongshu | kuaishou",
+  "cookie": "平台登录 Cookie",
+  "data": "待签名 URL 或 JSON 字符串",
+  "body": "请求 body 字符串",
+  "url": "抖音等平台需要的完整待签名 URL",
+  "signType": "browser"
+}
+```
+
+返回：
+
+```json
+{ "signature": "签名字符串或 JSON 字符串" }
+```
+
+蚁小二兼容 signer 可配置为完整 endpoint：
+
+```bash
+# 通用：会自动补 /Sign/GetSign
+FLOW_PUBLISHER_LEGACY_SIGNER_URL=http://127.0.0.1:5061
+
+# 或按平台拆分
+FLOW_PUBLISHER_KUAISHOU_LEGACY_SIGNER_URL=http://127.0.0.1:5008
+FLOW_PUBLISHER_XHS_LEGACY_SIGNER_URL=http://127.0.0.1:5061
+```
+
+也可以配置 base + ports：
+
+```bash
+FLOW_PUBLISHER_LEGACY_SIGNER_BASE_URL=http://127.0.0.1
+FLOW_PUBLISHER_KUAISHOU_LEGACY_SIGNER_PORTS=5004,5005,5006,5007,5008
+FLOW_PUBLISHER_XHS_LEGACY_SIGNER_PORTS=5061,5062,5063
+```
+
+小红书发布接口必须拿到完整网页签名，至少包含 `X-s`、`X-t`、`X-S-Common`。实测只有
+`X-s` / `X-t` / `x-rap-param` 时，`/web_api/sns/v2/note` 可能返回 HTTP 461 +
+空 `success:true`，但不会生成审核中或草稿记录。因此 `x-rap-param` 只能留在生成它的
+认证浏览器会话中执行 HTTP API 请求，不能复制到 Node/Axios 跨上下文重放。蚁小二的 API 发布路径会对
+`/web_api/sns/v2/note` 的 body 调用 `newxiaohongshu` signer（默认端口
+`5061,5062,5063`），返回签名后再走 HTTP POST。这个兼容 signer 会接收待签名的
+path/body，涉及内容数据外发风险，因此本项目不默认启用，必须通过上述环境变量显式配置。
+
+风险守卫相关配置：
+
+```bash
+# 同账号同平台两次提交之间的最小间隔，默认 60000
+FLOW_PUBLISHER_MIN_SUBMIT_INTERVAL_MS=60000
+
+# 遇到风控/验证/403 类错误后的冷却时间，默认 600000
+FLOW_PUBLISHER_RISK_COOLDOWN_MS=600000
+
+# 是否自动启动内置托管 signer，默认关闭。小红书会在官方创作页运行时
+# 捕获最终发送前的完整 x-* 请求头，并取消探测请求，再由 HTTP 发布链路提交。
+FLOW_PUBLISHER_MANAGED_SIGNER=false
+
+# 是否跳过内置本机签名确认弹窗，默认开启；设置 false/off/disabled 可恢复确认弹窗
+FLOW_PUBLISHER_AUTO_CONFIRM_BUILTIN_SIGNER=true
+
+# 小红书网页签名加载的创作页，默认使用新版创作页
+FLOW_PUBLISHER_XHS_SIGN_CONTEXT_URL=https://creator.xiaohongshu.com/new/publish
+
+# 快手“检查登录状态”真实接口超时时间，默认 10000
+FLOW_PUBLISHER_KUAISHOU_SESSION_CHECK_TIMEOUT_MS=10000
+
+# 是否启用快手蚁小二兼容 __NS_sig3 兜底，默认启用；设置 disabled/off/false 可关闭
+FLOW_PUBLISHER_KUAISHOU_YIXIAOER_SIGNER=on
+```
+
+说明：网页 API 和本机 signer 仍属于平台网页链路自动化，不能承诺规避平台风控；生产环境应优先申请并使用官方 OpenAPI。
 
 ---
 
@@ -187,10 +301,10 @@ flow-publisher/
 │   │   │   ├── schema.ts             # 基础表结构
 │   │   │   ├── migrations/           # 7 次数据库迁移
 │   │   │   └── repositories/         # 4 个数据仓库
-│   │   ├── browser/                   # 浏览器管理
+│   │   ├── browser/                   # 登录窗口与旧浏览器配置
 │   │   │   ├── ElectronLoginWindow.ts # 原生扫码登录窗口
 │   │   │   ├── CookieStore.ts         # 加密 Cookie 存储
-│   │   │   └── StealthConfig.ts       # 反检测配置
+│   │   │   └── StealthConfig.ts       # 旧浏览器启动配置
 │   │   ├── http/                      # HTTP 客户端
 │   │   │   └── HttpClient.ts          # Axios + Cookie 自动刷新
 │   │   ├── sign/                      # 签名服务
@@ -292,7 +406,7 @@ flow-publisher/
 ## 📋 开发进度
 
 - [x] 多平台账号管理（扫码登录 + 会话持久化）
-- [x] 账号登录状态自动检测（启动时 API 验证 + 手动检查）
+- [x] 账号登录状态自动检测（启动、前台恢复及定时 API 验证）
 - [x] 视频拖拽上传 + 封面裁剪（react-easy-crop）
 - [x] 内容编辑（标题、描述、话题标签、@提及、POI、内容声明）
 - [x] 平台字段独立覆盖（各平台可定制不同内容）
@@ -300,9 +414,9 @@ flow-publisher/
 - [x] 抖音 API 直调发布（ByteDance VOD + ImageX）
 - [x] 小红书 API 直调发布（Tencent COS 分片上传）
 - [x] 微信视频号 API 直调发布
-- [x] 快手 API 直调发布（CP REST API）
-- [x] 端到端签名服务（外部 + 本地双通道，本地签名需用户确认）
-- [x] 签名降级安全确认弹窗（定时任务自动禁用本地签名）
+- [x] 快手 API 直调发布（官方 OpenAPI 优先，CP REST API 回退）
+- [x] 端到端签名服务（本机 signer + 内置本机签名，旧外部签名默认禁用）
+- [x] 签名兜底策略（默认自动启用内置本机签名，可按需恢复确认弹窗）
 - [x] 定时发布 + 任务队列（Cron + 顺序执行 + 重试）
 - [x] 发布记录追踪（含上传元数据持久化、进度恢复）
 - [x] 数据中心（视频数据采集 + 自动分组 + 跨平台对比 + 趋势分析）

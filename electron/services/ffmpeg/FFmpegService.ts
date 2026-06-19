@@ -16,15 +16,24 @@ interface VideoProbe {
   fps: number
 }
 
+function unpackedBinaryPath(binaryPath: string): string {
+  return app.isPackaged ? binaryPath.replace('app.asar', 'app.asar.unpacked') : binaryPath
+}
+
 function findFfmpegBinary(name: 'ffmpeg' | 'ffprobe'): string | null {
   const exe = process.platform === 'win32' ? `${name}.exe` : name
 
-  // 1. Check ffmpeg-static (if installed)
+  // 1. Check bundled static binaries (if installed)
   try {
-    const staticPath = require('ffmpeg-static')
-    if (staticPath && existsSync(staticPath)) {
-      const target = name === 'ffprobe' ? staticPath.replace(/ffmpeg(\.exe)?$/, 'ffprobe$1') : staticPath
-      if (existsSync(target)) return target
+    if (name === 'ffmpeg') {
+      const staticPath = require('ffmpeg-static')
+      const target = staticPath ? unpackedBinaryPath(staticPath) : null
+      if (target && existsSync(target)) return target
+    } else {
+      const staticProbe = require('ffprobe-static')
+      const staticPath = typeof staticProbe === 'string' ? staticProbe : staticProbe?.path
+      const target = staticPath ? unpackedBinaryPath(staticPath) : null
+      if (target && existsSync(target)) return target
     }
   } catch {}
 

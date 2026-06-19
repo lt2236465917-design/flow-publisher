@@ -47,6 +47,7 @@ export const IPC_CHANNELS = {
   FILE_SELECT_IMAGE: 'file:select-image',
   FILE_READ_DATA_URL: 'file:read-data-url',
   FILE_DATA_URL_TO_TEMP: 'file:data-url-to-temp',
+  FILE_AUTHORIZE_DROPPED_PATH: 'file:authorize-dropped-path',
 
   // Sign fallback warning
   PUBLISH_SIGN_FALLBACK_WARNING: 'publish:sign-fallback-warning',

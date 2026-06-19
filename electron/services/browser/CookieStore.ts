@@ -1,18 +1,12 @@
 import { getAccountRepository, saveDatabase } from '../database'
 import { logger } from '../../utils/logger'
 import { encryptString, decryptString } from '../../utils/crypto-store'
-
-// Cookie格式（兼容Playwright和Electron）
-interface CookieData {
-  name: string
-  value: string
-  domain: string
-  path: string
-  expires: number
-  httpOnly: boolean
-  secure: boolean
-  sameSite?: 'Strict' | 'Lax' | 'None'
-}
+import { session } from 'electron'
+import {
+  hasAuthenticationCookie,
+  parseStoredCookiePayload,
+  type StoredCookieData as CookieData
+} from './cookie-data'
 
 export class CookieStore {
   async saveCookies(accountId: string, cookies: CookieData[]): Promise<void> {
@@ -49,7 +43,12 @@ export class CookieStore {
     try {
       // Decrypt cookies before parsing (handles legacy plaintext transparently)
       const decrypted = decryptString(account.cookies)
-      const cookies: CookieData[] = JSON.parse(decrypted)
+      const parsed = parseStoredCookiePayload(decrypted)
+      if (typeof parsed === 'string') {
+        logger.info(`Using legacy cookie header for account ${accountId}, length: ${parsed.length}`)
+        return parsed
+      }
+      const cookies = parsed
       if (cookies.length === 0) {
         logger.warn(`Empty cookies array for account ${accountId}`)
         return null
@@ -59,6 +58,52 @@ export class CookieStore {
       return cookieStr
     } catch (err) {
       logger.error(`Failed to export cookie string for account ${accountId}:`, err)
+      return null
+    }
+  }
+
+  /**
+   * Load cookies from the database, falling back to the account's persistent
+   * Electron login session. The fallback repairs credentials that became
+   * unreadable after a safeStorage/keychain change without requiring a new
+   * login, but only when platform-specific authentication cookies are present.
+   */
+  async getCookieStringWithSessionFallback(accountId: string): Promise<string | null> {
+    const stored = this.getCookieString(accountId)
+    if (stored) return stored
+
+    const repo = getAccountRepository()
+    const account = repo.getById(accountId)
+    if (!account) return null
+
+    try {
+      const ses = session.fromPartition(`persist:auth-${accountId}`)
+      const cookies = await ses.cookies.get({})
+      if (!hasAuthenticationCookie(account.platform, cookies.map((cookie) => cookie.name))) {
+        logger.warn(`No authenticated Electron session cookies found for account ${accountId}`)
+        return null
+      }
+
+      const normalized: CookieData[] = cookies.map((cookie) => ({
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain,
+        path: cookie.path,
+        expires: cookie.expirationDate || -1,
+        httpOnly: cookie.httpOnly,
+        secure: cookie.secure,
+        sameSite: cookie.sameSite === 'unspecified' ? undefined : cookie.sameSite
+      }))
+
+      const encrypted = encryptString(JSON.stringify(normalized))
+      repo.updateSession(accountId, 'logged_in', encrypted)
+      saveDatabase()
+
+      const cookieStr = normalized.map((cookie) => `${cookie.name}=${cookie.value}`).join('; ')
+      logger.info(`Recovered cookies from Electron session for account ${accountId}, count: ${normalized.length}`)
+      return cookieStr
+    } catch (err) {
+      logger.error(`Failed to recover Electron session cookies for account ${accountId}:`, err)
       return null
     }
   }

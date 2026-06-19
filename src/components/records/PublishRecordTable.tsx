@@ -6,6 +6,7 @@ import TaskStatusTag from './TaskStatusTag'
 import { PLATFORMS } from '@/constants/platforms'
 import type { PublishRecord } from '@/types/publish.types'
 import type { PlatformId } from '@/constants/platforms'
+import PlatformIcon from '@/components/common/PlatformIcon'
 
 interface Props {
   records: PublishRecord[]
@@ -34,7 +35,7 @@ export default function PublishRecordTable({ records, loading, onRefresh }: Prop
       key: 'platform',
       width: 110,
       filters: Object.entries(PLATFORMS).map(([id, info]) => ({
-        text: `${info.icon} ${info.displayName}`,
+        text: info.displayName,
         value: id
       })),
       onFilter: (value: unknown, record: PublishRecord) => record.platform === value,
@@ -43,11 +44,7 @@ export default function PublishRecordTable({ records, loading, onRefresh }: Prop
         return info ? (
           <span style={{ fontSize: 13 }}>
             <span style={{ marginRight: 6, display: 'inline-flex', alignItems: 'center' }}>
-              {info.iconUrl ? (
-                <img src={info.iconUrl} alt={info.displayName} style={{ width: 13, height: 13, borderRadius: 2 }} />
-              ) : (
-                info.icon
-              )}
+              <PlatformIcon platformId={platform as PlatformId} size={13} radius={3} />
             </span>
             {info.displayName}
           </span>
@@ -70,6 +67,7 @@ export default function PublishRecordTable({ records, loading, onRefresh }: Prop
       width: 90,
       filters: [
         { text: '成功', value: 'done' },
+        { text: '待确认', value: 'unconfirmed' },
         { text: '失败', value: 'error' },
         { text: '上传中', value: 'uploading' },
         { text: '提交中', value: 'submitting' }

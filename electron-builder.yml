@@ -9,6 +9,9 @@ files:
   - '!electron.vite.config.*'
   - '!{.eslint*,.prettier*,tsconfig*,vitest*}'
   - out
+extraResources:
+  - from: build/icon.png
+    to: icon.png
 win:
   executableName: flow
   target:
@@ -18,7 +21,7 @@ win:
   icon: build/icon.ico
   signAndEditExecutable: false
 nsis:
-  artifactName: ${name}-${version}-setup.${ext}
+  artifactName: ${name}-${version}-windows-${arch}-setup.${ext}
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
@@ -27,6 +30,7 @@ nsis:
   allowToChangeInstallationDirectory: true
   language: 2052
 mac:
+  icon: build/icon.icns
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
     - NSCameraUsageDescription: Application requests access to the device's camera.
@@ -40,10 +44,12 @@ mac:
         - x64
         - arm64
 dmg:
-  artifactName: ${name}-${version}.${ext}
+  artifactName: ${name}-${version}-mac-${arch}.${ext}
 asar: true
 asarUnpack:
   - resources/**
+  - node_modules/ffmpeg-static/**
+  - node_modules/ffprobe-static/**
 publish:
   provider: github
   owner: lt2236465917-design

@@ -16,6 +16,7 @@ import type { PublishFormData } from '@/types/publish.types'
 
 interface PublishProgressData {
   recordId: string
+  platformId?: PlatformId
   percent: number
   stage: string
 }
@@ -58,15 +59,19 @@ export function usePublishFlow() {
   const store = usePublishStore()
   const { confirm } = useUIStore()
   const publishingRef = useRef(false)
+  const signFallbackModalOpenRef = useRef(false)
 
   useEffect(() => {
     const unsubscribe = window.electron.ipcRenderer.on(IPC_CHANNELS.PUBLISH_PROGRESS, (...args: unknown[]) => {
       const data = args[0] as PublishProgressData
-      const { recordId, percent } = data
+      const { recordId, platformId, percent } = data
       const tasks = usePublishStore.getState().tasks
-      const task = tasks.find((t) => t.id === recordId)
+      const task = tasks.find((t) =>
+        t.id === recordId ||
+        (platformId && t.platform === platformId && t.status === 'uploading')
+      )
       if (task) {
-        usePublishStore.getState().updateTask(recordId, {
+        usePublishStore.getState().updateTask(task.id, {
           progress: percent,
           status: percent >= 100 ? 'done' : 'uploading'
         })
@@ -76,30 +81,34 @@ export function usePublishFlow() {
   }, [])
 
   // Listen for sign fallback warning from main process.
-  // When external signing service is unavailable and the main process is about to
-  // fall back to local Playwright-based signing, it sends this event. The user must
-  // explicitly confirm before local signing is used.
+  // When the self-hosted signer is unavailable and the main process is about to
+  // fall back to the built-in local browser signer, it sends this event. The user
+  // must explicitly confirm before local signing is used.
   useEffect(() => {
     const unsubscribe = window.electron.ipcRenderer.on(
       IPC_CHANNELS.PUBLISH_SIGN_FALLBACK_WARNING,
       (...args: unknown[]) => {
         const { platform } = args[0] as { platform: string }
         const platformName = PLATFORMS[platform as PlatformId]?.displayName || platform
+        if (signFallbackModalOpenRef.current) return
+        signFallbackModalOpenRef.current = true
 
         Modal.confirm({
-          title: '⚠️ 签名服务降级警告',
+          title: '签名服务切换确认',
           icon: null,
-          content: `外部签名服务当前不可用。即将使用本地浏览器生成${platformName}的签名参数。\n\n此操作可能被平台检测为非正常行为，存在账号被限制发布功能的风险。\n\n是否继续？`,
-          okText: '继续发布（有风险）',
+          content: `本机自托管 signer 当前不可用。要继续发布到 ${platformName}，本轮发布需要使用 App 内置的本机浏览器生成平台签名参数。\n\n此操作仍属于网页 API 自动化，可能被平台风控识别。建议优先启动本机 signer 或配置官方 OpenAPI。\n\n请在 3 分钟内确认；取消或超时都会停止本轮发布。`,
+          okText: '启用内置本机签名',
           cancelText: '取消发布',
           okButtonProps: { danger: true },
           onOk: () => {
+            signFallbackModalOpenRef.current = false
             window.electron.ipcRenderer.invoke(
               IPC_CHANNELS.PUBLISH_CONFIRM_SIGN_FALLBACK,
               true
             )
           },
           onCancel: () => {
+            signFallbackModalOpenRef.current = false
             window.electron.ipcRenderer.invoke(
               IPC_CHANNELS.PUBLISH_CONFIRM_SIGN_FALLBACK,
               false
@@ -263,6 +272,7 @@ export function usePublishFlow() {
     const latestForm = readLatestForm()
 
     const coverFilePath = await resolveCoverFilePath(latestForm)
+    const publishRunId = `publish-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
     const tasks = form.platforms.map((p) => ({
       id: `task-${p}-${Date.now()}`,
@@ -275,6 +285,7 @@ export function usePublishFlow() {
     for (let i = 0; i < form.platforms.length; i++) {
       const platformId = form.platforms[i]
       const task = tasks[i]
+      const platformCoverFilePath = coverFilePath
 
       try {
         const accountsRes = await ipcInvoke<AccountInfo[]>(IPC_CHANNELS.ACCOUNT_LIST)
@@ -290,7 +301,9 @@ export function usePublishFlow() {
         const uploadRes = await ipcInvoke<{ recordId: string; videoId?: string }>(IPC_CHANNELS.PUBLISH_UPLOAD, {
           accountId: account.id,
           platformId,
-          filePath: video.filePath
+          filePath: video.filePath,
+          publishRunId,
+          hasCustomCover: !!platformCoverFilePath
         })
 
         if (!uploadRes.success) {
@@ -311,18 +324,23 @@ export function usePublishFlow() {
           platformFields: latestForm.platformOverrides[platformId as PlatformId] || {}
         }
         // Only include coverPath if it's a valid file path (avoid IPC converting undefined to "undefined")
-        if (coverFilePath) {
-          contentPayload.coverPath = coverFilePath
+        if (platformCoverFilePath) {
+          contentPayload.coverPath = platformCoverFilePath
         }
-        const submitRes = await ipcInvoke<{ recordId: string }>(IPC_CHANNELS.PUBLISH_SUBMIT, {
+        const submitRes = await ipcInvoke<{ recordId: string; status?: string; message?: string }>(IPC_CHANNELS.PUBLISH_SUBMIT, {
           recordId,
           platformId,
           videoId,
+          publishRunId,
           content: contentPayload
         })
 
         if (submitRes.success) {
-          store.updateTask(task.id, { status: 'done', progress: 100 })
+          if (submitRes.data?.status === 'unconfirmed') {
+            store.updateTask(task.id, { status: 'unconfirmed', progress: 99, error: submitRes.data.message })
+          } else {
+            store.updateTask(task.id, { status: 'done', progress: 100 })
+          }
         } else {
           const errorMsg = toChineseMessage(submitRes.error)
           store.updateTask(task.id, { status: 'error', error: errorMsg })
@@ -336,9 +354,15 @@ export function usePublishFlow() {
       const current = usePublishStore.getState().tasks.find((ct) => ct.id === t.id)
       return current?.status === 'error'
     }).length
+    const unconfirmedCount = tasks.filter((t) => {
+      const current = usePublishStore.getState().tasks.find((ct) => ct.id === t.id)
+      return current?.status === 'unconfirmed'
+    }).length
 
-    if (errorCount === 0) {
+    if (errorCount === 0 && unconfirmedCount === 0) {
       message.success('发布流程完成')
+    } else if (errorCount === 0) {
+      message.warning(`${unconfirmedCount} 个平台已提交但待平台确认`)
     } else {
       message.warning(`发布完成，${errorCount} 个平台失败`)
     }

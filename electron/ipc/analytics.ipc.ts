@@ -1,10 +1,11 @@
-import { ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
 import { getAnalyticsRepository } from '../services/database'
 import { AnalyticsCollectorService } from '../services/analytics/AnalyticsCollectorService'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import type { AnalyticsQuery, VideoGroupQuery } from '../../shared/contracts/analytics.contract'
 import { logger } from '../utils/logger'
+import { summarizePayload } from '../utils/log-redaction'
+import { registerTrustedIpcHandler } from '../security/trusted-ipc'
 
 let collectorService: AnalyticsCollectorService | null = null
 
@@ -17,7 +18,7 @@ function getCollector(): AnalyticsCollectorService {
 
 export function registerAnalyticsIpcHandlers(): void {
   // Fetch analytics overview data
-  ipcMain.handle(IPC_CHANNELS.ANALYTICS_FETCH, async (_event, query: AnalyticsQuery): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ANALYTICS_FETCH, async (_event, query: AnalyticsQuery): Promise<IpcResponse> => {
     try {
       const repo = getAnalyticsRepository()
       const overview = repo.getOverview(query)
@@ -29,7 +30,7 @@ export function registerAnalyticsIpcHandlers(): void {
   })
 
   // Compare platforms
-  ipcMain.handle(IPC_CHANNELS.ANALYTICS_COMPARE, async (_event, query: AnalyticsQuery): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ANALYTICS_COMPARE, async (_event, query: AnalyticsQuery): Promise<IpcResponse> => {
     try {
       const repo = getAnalyticsRepository()
       const result = repo.comparePlatforms(query)
@@ -43,7 +44,7 @@ export function registerAnalyticsIpcHandlers(): void {
   // ---- 数据采集 ----
 
   // 采集单个账号的数据
-  ipcMain.handle(IPC_CHANNELS.ANALYTICS_COLLECT, async (_event, { accountId }: { accountId: string }): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ANALYTICS_COLLECT, async (_event, { accountId }: { accountId: string }): Promise<IpcResponse> => {
     try {
       const collector = getCollector()
       const result = await collector.collectAccountData(accountId)
@@ -55,7 +56,7 @@ export function registerAnalyticsIpcHandlers(): void {
   })
 
   // 采集所有已登录账号的数据
-  ipcMain.handle(IPC_CHANNELS.ANALYTICS_COLLECT_ALL, async (): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ANALYTICS_COLLECT_ALL, async (): Promise<IpcResponse> => {
     try {
       const collector = getCollector()
       const result = await collector.collectAllAccounts()
@@ -67,7 +68,7 @@ export function registerAnalyticsIpcHandlers(): void {
   })
 
   // 采集指定视频分组的数据
-  ipcMain.handle(IPC_CHANNELS.ANALYTICS_COLLECT_GROUP, async (_event, { groupId }: { groupId: string }): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ANALYTICS_COLLECT_GROUP, async (_event, { groupId }: { groupId: string }): Promise<IpcResponse> => {
     try {
       const collector = getCollector()
       const repo = getAnalyticsRepository()
@@ -99,11 +100,15 @@ export function registerAnalyticsIpcHandlers(): void {
   // ---- 视频分组查询 ----
 
   // 获取视频分组列表
-  ipcMain.handle(IPC_CHANNELS.ANALYTICS_VIDEO_GROUPS, async (_event, query: VideoGroupQuery): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ANALYTICS_VIDEO_GROUPS, async (_event, query: VideoGroupQuery): Promise<IpcResponse> => {
     try {
       const repo = getAnalyticsRepository()
       const result = repo.getVideoGroups(query)
-      logger.info(`[Analytics] VIDEO_GROUPS: query=${JSON.stringify(query)}, groups=${result.groups.length}, total=${result.total}`)
+      logger.info(
+        `[Analytics] VIDEO_GROUPS: query=${JSON.stringify(
+          summarizePayload(query)
+        )}, groups=${result.groups.length}, total=${result.total}`
+      )
       return { success: true, data: result }
     } catch (err) {
       logger.error('ANALYTICS_VIDEO_GROUPS error:', err)
@@ -112,7 +117,7 @@ export function registerAnalyticsIpcHandlers(): void {
   })
 
   // 获取视频分组详情
-  ipcMain.handle(IPC_CHANNELS.ANALYTICS_VIDEO_DETAIL, async (_event, { groupId }: { groupId: string }): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ANALYTICS_VIDEO_DETAIL, async (_event, { groupId }: { groupId: string }): Promise<IpcResponse> => {
     try {
       const repo = getAnalyticsRepository()
       const result = repo.getVideoGroupDetail(groupId)
@@ -124,7 +129,7 @@ export function registerAnalyticsIpcHandlers(): void {
   })
 
   // 获取单条记录的趋势数据
-  ipcMain.handle(IPC_CHANNELS.ANALYTICS_RECORD_TREND, async (_event, { recordId, days }: { recordId: string; days?: number }): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ANALYTICS_RECORD_TREND, async (_event, { recordId, days }: { recordId: string; days?: number }): Promise<IpcResponse> => {
     try {
       const repo = getAnalyticsRepository()
       const result = repo.getRecordTrend(recordId, days || 30)

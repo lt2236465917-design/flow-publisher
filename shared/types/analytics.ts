@@ -38,6 +38,8 @@ export interface VideoDetailResult {
 export interface SubmitResult {
   contentId?: string
   publishUrl?: string
+  /** False means the platform accepted the request but did not return a final platform content ID. */
+  confirmed?: boolean
 }
 
 /** 数据采集结果 */

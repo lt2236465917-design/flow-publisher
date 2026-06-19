@@ -27,7 +27,7 @@ interface AccountState {
   fetchAccounts: () => Promise<void>
   startLogin: (platformId: string) => Promise<boolean>
   checkSession: (accountId: string) => Promise<void>
-  checkAllSessions: () => Promise<void>
+  checkAllSessions: () => Promise<boolean>
   logout: (accountId: string) => Promise<void>
   setQrDataUrl: (platformId: string, qrDataUrl: string | null, fallbackMessage?: string) => void
   setLoginStatus: (platformId: string, status: LoginProgress['status'], error?: string) => void
@@ -101,7 +101,7 @@ export const useAccountStore = create<AccountState>((set, get) => ({
   checkAllSessions: async () => {
     if (get().checkingSessions) {
       console.log('[accountStore] checkAllSessions: already checking, skipping')
-      return
+      return false
     }
 
     console.log('[accountStore] checkAllSessions: starting...')
@@ -120,9 +120,12 @@ export const useAccountStore = create<AccountState>((set, get) => ({
         const validCount = results.filter(r => r.sessionStatus === 'logged_in').length
 
         console.log(`[accountStore] Session check complete: ${validCount} valid, ${expiredCount} expired`)
+        return true
       }
+      return false
     } catch (err) {
       console.error('[accountStore] checkAllSessions error:', err)
+      return false
     } finally {
       set({ checkingSessions: false })
     }

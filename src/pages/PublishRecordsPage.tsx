@@ -10,6 +10,7 @@ import TaskStatusTag from '@/components/records/TaskStatusTag'
 import EmptyState from '@/components/common/EmptyState'
 import { PLATFORMS } from '@/constants/platforms'
 import type { PlatformId } from '@/constants/platforms'
+import PlatformIcon from '@/components/common/PlatformIcon'
 
 export default function PublishRecordsPage() {
   const { records, scheduledTasks, loading, fetchRecords, fetchScheduledTasks, cancelScheduledTask, deleteScheduledTask } = useRecordStore()
@@ -51,13 +52,7 @@ export default function PublishRecordsPage() {
           {platforms.map((p) => {
             const info = PLATFORMS[p as PlatformId]
             return info ? (
-              <span key={p} title={info.displayName} style={{ fontSize: 16 }}>
-                {info.iconUrl ? (
-                  <img src={info.iconUrl} alt={info.displayName} style={{ width: 16, height: 16, borderRadius: 3 }} />
-                ) : (
-                  info.icon
-                )}
-              </span>
+              <PlatformIcon key={p} platformId={p as PlatformId} size={16} radius={4} />
             ) : (
               <span key={p}>{p}</span>
             )

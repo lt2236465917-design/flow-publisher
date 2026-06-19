@@ -76,7 +76,10 @@ export class AnalyticsRepository {
 
     const successCount = statusDistribution.find((s) => s.status === 'done')?.count || 0
     const failedCount = statusDistribution.find((s) => s.status === 'error')?.count || 0
-    const pendingCount = statusDistribution.find((s) => s.status === 'pending')?.count || 0
+    const pendingStatuses = new Set(['pending', 'uploading', 'uploaded', 'submitting', 'unconfirmed'])
+    const pendingCount = statusDistribution
+      .filter((s) => pendingStatuses.has(s.status))
+      .reduce((sum, s) => sum + s.count, 0)
     const successRate = totalPublishes > 0 ? Math.round((successCount / totalPublishes) * 100) : 0
 
     return {
@@ -98,7 +101,7 @@ export class AnalyticsRepository {
         COUNT(*) as total,
         SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) as success,
         SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as failed,
-        SUM(CASE WHEN status IN ('pending', 'uploading', 'uploaded', 'submitting') THEN 1 ELSE 0 END) as pending
+        SUM(CASE WHEN status IN ('pending', 'uploading', 'uploaded', 'submitting', 'unconfirmed') THEN 1 ELSE 0 END) as pending
       FROM publish_records
       WHERE 1=1 ${clause}
       GROUP BY platform

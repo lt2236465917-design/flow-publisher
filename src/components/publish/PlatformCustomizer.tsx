@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Tabs, Empty, Spin, Form, message } from 'antd'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
+import PlatformIcon from '@/components/common/PlatformIcon'
 import type { PlatformFieldDefinition } from '@shared/types/platform-fields'
 import { ipcInvoke } from '@/utils/ipc'
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
@@ -125,11 +126,7 @@ export default function PlatformCustomizer({ platforms, overrides, onChange }: P
       key: platformId,
       label: (
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-          {info.iconUrl ? (
-            <img src={info.iconUrl} alt={info.displayName} style={{ width: 14, height: 14, borderRadius: 3 }} />
-          ) : (
-            info.icon
-          )}
+          <PlatformIcon platformId={platformId} size={14} radius={3} />
           {info.displayName}
         </span>
       ),

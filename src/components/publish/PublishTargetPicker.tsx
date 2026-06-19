@@ -1,6 +1,7 @@
-import { Checkbox, Avatar, Space } from 'antd'
+import { Checkbox, Space } from 'antd'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
+import PlatformIcon from '@/components/common/PlatformIcon'
 import { useAccountStore } from '@/stores/accountStore'
 
 interface Props {
@@ -58,21 +59,7 @@ export default function PublishTargetPicker({ value, onChange }: Props) {
               >
                 <Checkbox value={platformId}>
                   <Space size={6}>
-                    <Avatar
-                      size={22}
-                      style={{
-                        background: info.color,
-                        fontSize: 12,
-                        borderRadius: 6,
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        overflow: 'hidden',
-                      }}
-                      src={info.iconUrl}
-                    >
-                      {info.icon}
-                    </Avatar>
+                    <PlatformIcon platformId={platformId} size={22} radius={6} />
                     <span style={{ fontSize: 13, fontWeight: 500, color: '#1d1d1f' }}>{info.displayName}</span>
                     {account && (
                       <span style={{ fontSize: 11, color: '#86868b' }}>

@@ -1,14 +1,69 @@
-import { BrowserWindow } from 'electron'
+import type { BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../../src/constants/ipc-channels'
-import { getPublishRecordRepository, getAccountRepository, saveDatabase } from '../database'
+import {
+  getPublishRecordRepository,
+  getAccountRepository,
+  saveDatabase,
+  saveDatabaseSync
+} from '../database'
 import { CookieStore } from '../browser/CookieStore'
 import { getAdapter } from '../platform-adapters/PlatformAdapterRegistry'
 import { HttpClient } from '../http/HttpClient'
 import type { CookieContext } from '../http/HttpClient'
-import { retry, delay } from '../../utils/delays'
+import { getPublishRiskGuard } from '../risk/PublishRiskGuard'
+import { getSignService } from '../sign/SignService'
+import type { IPlatformAdapter } from '../platform-adapters/IPlatformAdapter'
+import { delay } from '../../utils/delays'
 import { logger } from '../../utils/logger'
 import type { ScheduledTaskRow } from '../database/repositories/scheduled-task.repo'
 import type { ScheduledTaskRepository } from '../database/repositories/scheduled-task.repo'
+import { getMainWindow } from '../../security/trusted-ipc'
+import { decideScheduledPublishAction } from './scheduled-publish-policy'
+import type { SubmitResult } from '../../../shared/types/analytics'
+import { validateUploadRelationship } from '../publish/publish-validation'
+
+async function ensureSessionHealthy(
+  adapter: IPlatformAdapter,
+  client: HttpClient,
+  accountId: string,
+  platformId: string
+): Promise<void> {
+  if (!adapter.checkSessionAPI) return
+
+  const ok = await adapter.checkSessionAPI(client)
+  if (ok) return
+
+  const accountRepo = getAccountRepository()
+  accountRepo.updateSession(accountId, 'expired', client.getCookieString())
+  saveDatabase()
+  throw new Error(`账号登录状态异常或已过期，请先重新登录 ${platformId}`)
+}
+
+async function ensureWebSignerReadyForScheduledTask(
+  platformId: string,
+  taskId: string,
+  recordId: string,
+  mainWindow: BrowserWindow | undefined
+): Promise<void> {
+  mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
+    taskId,
+    recordId,
+    platformId,
+    percent: 1,
+    stage: '正在检查平台签名服务...'
+  })
+
+  const signService = getSignService()
+  signService.clearFallbackCache()
+  signService.setFallbackConfirmer(null)
+  const result = await signService.ensureWebSignerReadyForPublish(platformId)
+  if (!result.required) return
+
+  logger.info(
+    `[TaskQueue] Signer preflight passed for ${platformId}: mode=${result.mode}` +
+    `${result.detail ? `, detail=${result.detail}` : ''}`
+  )
+}
 
 export class TaskQueue {
   private _running = false
@@ -30,7 +85,10 @@ export class TaskQueue {
     this._currentTaskId = task.id
 
     logger.info(`[TaskQueue] Starting execution of task ${task.id}`)
-    logger.info(`[TaskQueue] Task details - title: "${task.title}", platforms: ${task.platforms}, scheduled_at: ${task.scheduled_at}`)
+    logger.info(
+      `[TaskQueue] Task details: platforms=${task.platforms}, ` +
+      `scheduled_at=${task.scheduled_at}, titleLength=${task.title.length}`
+    )
 
     const results: { platform: string; success: boolean; error?: string }[] = []
 
@@ -54,18 +112,31 @@ export class TaskQueue {
 
         const accountRepo = getAccountRepository()
         const account = accountRepo.getById(accountId)
-        if (!account || account.session_status !== 'logged_in') {
-          logger.error(`[TaskQueue] Platform ${platformId} account not logged in, skipping`)
-          results.push({ platform: platformId, success: false, error: '账号未登录' })
+        if (!account) {
+          logger.error(`[TaskQueue] Platform ${platformId} account missing, skipping`)
+          results.push({ platform: platformId, success: false, error: '账号不存在' })
+          continue
+        }
+        try {
+          validateUploadRelationship(account, platformId)
+        } catch (error) {
+          logger.error(`[TaskQueue] Platform ${platformId} account validation failed`)
+          results.push({
+            platform: platformId,
+            success: false,
+            error: String(error)
+          })
           continue
         }
 
-        logger.info(`[TaskQueue] Publishing to ${platformId} with account ${accountId}`)
+        logger.info(`[TaskQueue] Publishing to ${platformId} with configured account`)
 
         try {
-          await retry(
-            () => this.publishToPlatform(task, platformId, accountId, platformOverrides[platformId] || {}),
-            { maxAttempts: task.max_retries, delayMs: 1000, backoff: 2 }
+          await this.publishToPlatform(
+            task,
+            platformId,
+            accountId,
+            platformOverrides[platformId] || {}
           )
           results.push({ platform: platformId, success: true })
           logger.info(`[TaskQueue] ✅ ${platformId} published successfully`)
@@ -101,7 +172,7 @@ export class TaskQueue {
       saveDatabase()
 
       // Send summary to frontend
-      const mainWindow = BrowserWindow.getAllWindows()[0]
+      const mainWindow = getMainWindow() || undefined
       mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
         taskId: task.id,
         percent: 100,
@@ -136,7 +207,8 @@ export class TaskQueue {
     }
 
     const recordRepo = getPublishRecordRepository()
-    const record = recordRepo.create({
+    const record = recordRepo.createScheduled({
+      sourceTaskId: task.id,
       accountId,
       platform: platformId,
       title: task.title,
@@ -146,9 +218,29 @@ export class TaskQueue {
       hashtags: JSON.parse(task.hashtags || '[]'),
       declarations: JSON.parse(task.declarations || '[]')
     })
-    saveDatabase()
+    if (record.account_id !== accountId) {
+      throw new Error('定时任务账号与已有发布记录不匹配')
+    }
+    saveDatabaseSync()
 
-    const mainWindow = BrowserWindow.getAllWindows()[0]
+    const action = decideScheduledPublishAction(record.status)
+    if (action === 'skip') {
+      if (record.status === 'unconfirmed') {
+        throw new Error('上次提交结果未知，需要人工核对，未再次提交')
+      }
+      logger.info(
+        `[TaskQueue] Reusing completed record ${record.id} for ${task.id}/${platformId}`
+      )
+      return
+    }
+    if (action === 'mark-unconfirmed') {
+      const message = '上次提交在应用退出前未确认结果，已停止自动重试'
+      recordRepo.updateStatus(record.id, 'unconfirmed', 99, message)
+      saveDatabaseSync()
+      throw new Error(message)
+    }
+
+    const mainWindow = getMainWindow() || undefined
 
     // Upload via API
     logger.info(`[TaskQueue] Uploading to ${platformId} via API`)
@@ -165,31 +257,90 @@ export class TaskQueue {
     }
     const client = new HttpClient(context)
 
-    const result = await adapter.uploadVideoAPI(client, task.video_path, (progress) => {
-      recordRepo.updateStatus(record.id, 'uploading', progress.percent)
-      saveDatabase()
-      mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
-        taskId: task.id,
-        recordId: record.id,
-        platformId,
-        ...progress
-      })
-    })
-    // Handle both legacy string return and new UploadResult (H7 + H11 fix)
-    const videoId = typeof result === 'string' ? result
-      : (result && typeof result === 'object' && 'videoId' in result) ? (result as { videoId: string; meta: Record<string, unknown> }).videoId
-      : undefined
-    if (result && typeof result === 'object' && 'meta' in result) {
-      recordRepo.saveUploadMeta(record.id, (result as { meta: Record<string, unknown> }).meta)
+    const riskGuard = getPublishRiskGuard()
+    let videoId = this.readPersistedVideoId(recordRepo.getUploadMeta(record.id))
+
+    if (action === 'upload') {
+      try {
+        const result = await this.retryUpload(task, async () => {
+          return await riskGuard.run(
+            {
+              accountId,
+              platformId,
+              stage: 'upload',
+              recordId: record.id,
+              onProgress: (progress) => {
+                recordRepo.updateStatus(record.id, 'uploading', progress.percent)
+                saveDatabase()
+                mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
+                  taskId: task.id,
+                  recordId: record.id,
+                  platformId,
+                  ...progress
+                })
+              }
+            },
+            async () => {
+              await ensureSessionHealthy(adapter, client, accountId, platformId)
+              await ensureWebSignerReadyForScheduledTask(
+                platformId,
+                task.id,
+                record.id,
+                mainWindow
+              )
+              return await adapter.uploadVideoAPI!(
+                client,
+                task.video_path,
+                (progress) => {
+                  recordRepo.updateStatus(
+                    record.id,
+                    'uploading',
+                    progress.percent
+                  )
+                  saveDatabase()
+                  mainWindow?.webContents.send(
+                    IPC_CHANNELS.SCHEDULE_PROGRESS,
+                    {
+                      taskId: task.id,
+                      recordId: record.id,
+                      platformId,
+                      ...progress
+                    }
+                  )
+                }
+              )
+            }
+          )
+        })
+
+        videoId =
+          typeof result === 'string'
+            ? result
+            : result &&
+                typeof result === 'object' &&
+                'videoId' in result
+              ? String(result.videoId)
+              : undefined
+        if (!videoId) throw new Error('平台上传成功响应缺少 videoId')
+
+        const resultMeta =
+          result && typeof result === 'object' && 'meta' in result
+            ? (result.meta as Record<string, unknown>)
+            : {}
+        recordRepo.saveUploadMeta(record.id, {
+          ...resultMeta,
+          _videoId: videoId
+        })
+        recordRepo.updateStatus(record.id, 'uploaded', 100)
+        saveDatabaseSync()
+      } catch (error) {
+        recordRepo.updateStatus(record.id, 'error', undefined, String(error))
+        saveDatabaseSync()
+        throw error
+      }
     }
 
-    recordRepo.updateStatus(record.id, 'uploaded', 100)
-    saveDatabase()
-
     // Submit via API
-    recordRepo.updateStatus(record.id, 'submitting', undefined)
-    saveDatabase()
-
     mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
       taskId: task.id,
       recordId: record.id,
@@ -207,6 +358,7 @@ export class TaskQueue {
       title: task.title,
       description: task.description,
       hashtags: JSON.parse(task.hashtags || '[]'),
+      videoPath: task.video_path,
       coverPath: task.cover_path || undefined,
       declarations: mergedDeclarations,
       platformFields
@@ -215,15 +367,68 @@ export class TaskQueue {
     logger.info(`[TaskQueue] Submitting to ${platformId} via API`)
     // Pass recordId so adapter can read upload metadata from DB (H7 + H11 fix)
     const contentWithRecord = { ...content, recordId: record.id }
-    await adapter.submitContentAPI(client, contentWithRecord, videoId)
+    let submitStarted = false
+    let submitResult: SubmitResult | undefined
+    try {
+      await ensureSessionHealthy(adapter, client, accountId, platformId)
+      await ensureWebSignerReadyForScheduledTask(
+        platformId,
+        task.id,
+        record.id,
+        mainWindow
+      )
+      submitResult = await riskGuard.run(
+        {
+          accountId,
+          platformId,
+          stage: 'submit',
+          recordId: record.id,
+          onProgress: (progress) => {
+            mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
+              taskId: task.id,
+              recordId: record.id,
+              platformId,
+              ...progress
+            })
+          }
+        },
+        async () => {
+          recordRepo.updateStatus(record.id, 'submitting', 90)
+          saveDatabaseSync()
+          submitStarted = true
+          return await adapter.submitContentAPI!(
+            client,
+            contentWithRecord,
+            videoId
+          )
+        }
+      )
 
-    recordRepo.updateStatus(record.id, 'done', 100)
+      if (platformId === 'xiaohongshu' && !submitResult?.contentId) {
+        throw new Error('内容提交失败: 小红书未返回 note_id')
+      }
+    } catch (error) {
+      if (submitStarted) {
+        recordRepo.updateStatus(
+          record.id,
+          'unconfirmed',
+          99,
+          `提交结果无法确认，已停止自动重试: ${String(error)}`
+        )
+        saveDatabaseSync()
+        throw new Error(`提交结果无法确认，已停止自动重试: ${String(error)}`)
+      }
+      throw error
+    }
+
     const now = new Date().toISOString()
+    if (submitResult?.contentId) recordRepo.updateContentId(record.id, submitResult.contentId)
+    recordRepo.updateStatus(record.id, 'done', 100)
     recordRepo['db'].run(
       'UPDATE publish_records SET title = ?, description = ?, hashtags = ?, declarations = ?, updated_at = ? WHERE id = ?',
       [task.title, task.description, task.hashtags, task.declarations, now, record.id]
     )
-    saveDatabase()
+    saveDatabaseSync()
 
     mainWindow?.webContents.send(IPC_CHANNELS.SCHEDULE_PROGRESS, {
       taskId: task.id,
@@ -234,5 +439,32 @@ export class TaskQueue {
     })
 
     logger.info(`[TaskQueue] Successfully published to ${platformId} for task ${task.id}`)
+  }
+
+  private async retryUpload<T>(
+    task: ScheduledTaskRow,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const maxAttempts = Math.max(1, task.max_retries)
+    let lastError: unknown
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await operation()
+      } catch (error) {
+        lastError = error
+        if (attempt >= maxAttempts) break
+        this.scheduledTaskRepo.incrementRetry(task.id)
+        saveDatabaseSync()
+        await delay(1000 * Math.pow(2, attempt - 1))
+      }
+    }
+    throw lastError
+  }
+
+  private readPersistedVideoId(
+    uploadMeta: Record<string, unknown> | null
+  ): string | undefined {
+    const value = uploadMeta?._videoId
+    return typeof value === 'string' && value ? value : undefined
   }
 }

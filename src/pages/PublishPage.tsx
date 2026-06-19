@@ -16,6 +16,7 @@ import { SectionCard, SectionTitle, Divider, PageHeader } from '@/components/com
 import { IPC_CHANNELS } from '@/constants/ipc-channels'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
+import PlatformIcon from '@/components/common/PlatformIcon'
 import { ipcInvoke } from '@/utils/ipc'
 
 interface AccountInfo {
@@ -35,7 +36,7 @@ export default function PublishPage() {
   }, [fetchAccounts])
 
   const hasActiveTasks = flow.tasks.some((t) => t.status === 'uploading' || t.status === 'submitting')
-  const allDone = flow.tasks.length > 0 && flow.tasks.every((t) => t.status === 'done')
+  const allDone = flow.tasks.length > 0 && flow.tasks.every((t) => t.status === 'done' || t.status === 'unconfirmed')
 
   const shortcuts = useMemo(() => ({
     'ctrl+o': () => { if (!hasActiveTasks) flow.selectVideo() },
@@ -255,15 +256,19 @@ export default function PublishPage() {
                       <div style={{ width: '100%' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
                           <Space size={6}>
-                            <span style={{ fontSize: 15 }}>{info?.icon}</span>
+                            {info && (
+                              <PlatformIcon platformId={task.platform} size={16} radius={4} />
+                            )}
                             <span style={{ fontSize: 13, fontWeight: 500, color: '#1d1d1f' }}>{info?.displayName}</span>
                             <Tag color={
                               task.status === 'done' ? 'success' :
+                              task.status === 'unconfirmed' ? 'warning' :
                               task.status === 'error' ? 'error' : 'processing'
                             } style={{ fontSize: 11 }}>
                               {task.status === 'uploading' ? '上传中' :
                                task.status === 'submitting' ? '提交中' :
                                task.status === 'done' ? '已完成' :
+                               task.status === 'unconfirmed' ? '待确认' :
                                task.status === 'error' ? '失败' : task.status}
                             </Tag>
                           </Space>
@@ -274,10 +279,10 @@ export default function PublishPage() {
                           status={task.status === 'error' ? 'exception' : task.status === 'done' ? 'success' : 'active'}
                           showInfo={false}
                           size="small"
-                          strokeColor={task.status === 'done' ? '#34c759' : task.status === 'error' ? '#ff3b30' : '#0071e3'}
+                          strokeColor={task.status === 'done' ? '#34c759' : task.status === 'error' ? '#ff3b30' : task.status === 'unconfirmed' ? '#ff9500' : '#0071e3'}
                         />
                         {task.error && (
-                          <Alert type="error" message={task.error} style={{ marginTop: 6, borderRadius: 8 }} banner />
+                          <Alert type={task.status === 'unconfirmed' ? 'warning' : 'error'} message={task.error} style={{ marginTop: 6, borderRadius: 8 }} banner />
                         )}
                       </div>
                     </List.Item>

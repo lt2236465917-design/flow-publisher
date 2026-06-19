@@ -1,13 +1,20 @@
-import { ipcMain } from 'electron'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
-import { getScheduledTaskRepository, saveDatabase } from '../services/database'
+import {
+  getAccountRepository,
+  getScheduledTaskRepository,
+  saveDatabase
+} from '../services/database'
 import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import { logger } from '../utils/logger'
 import dayjs from 'dayjs'
+import { registerTrustedIpcHandler } from '../security/trusted-ipc'
+import { requireAllowedFile } from '../security/file-access-policy'
+import { summarizePayload } from '../utils/log-redaction'
+import { validateUploadRelationship } from '../services/publish/publish-validation'
 
 export function registerSchedulerIpcHandlers(): void {
   // Create a scheduled task
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_CREATE, async (_event, params: {
+  registerTrustedIpcHandler(IPC_CHANNELS.SCHEDULE_CREATE, async (_event, params: {
     platforms: string[]
     accountIds: Record<string, string>
     videoPath: string
@@ -20,6 +27,8 @@ export function registerSchedulerIpcHandlers(): void {
     scheduledAt: string
   }): Promise<IpcResponse> => {
     try {
+      params.videoPath = requireAllowedFile(params.videoPath)
+      if (params.coverPath) params.coverPath = requireAllowedFile(params.coverPath)
       const scheduledTime = dayjs(params.scheduledAt)
       const minTime = dayjs().add(5, 'minute')
       if (!scheduledTime.isValid()) {
@@ -29,14 +38,30 @@ export function registerSchedulerIpcHandlers(): void {
         return { success: false, error: '定时时间必须在5分钟之后' }
       }
 
+      const accountRepo = getAccountRepository()
+      for (const platformId of params.platforms) {
+        const accountId = params.accountIds[platformId]
+        if (!accountId) {
+          return { success: false, error: `平台 ${platformId} 未配置账号` }
+        }
+        const account = accountRepo.getById(accountId)
+        if (!account) {
+          return { success: false, error: `平台 ${platformId} 的账号不存在` }
+        }
+        validateUploadRelationship(account, platformId)
+      }
+
       const repo = getScheduledTaskRepository()
       const task = repo.create(params)
       saveDatabase()
 
       logger.info('[Scheduler] Scheduled task created:', task.id)
-      logger.info('[Scheduler] Task details - platforms:', params.platforms, 'scheduledAt:', params.scheduledAt)
-      logger.info('[Scheduler] Video path:', params.videoPath)
-      logger.info('[Scheduler] Title:', params.title)
+      logger.info(
+        `[Scheduler] Create task: platforms=${params.platforms.length}, ` +
+        `scheduledAt=${params.scheduledAt}, payload=${JSON.stringify(
+          summarizePayload(params)
+        )}`
+      )
       return { success: true, data: task }
     } catch (err) {
       logger.error('SCHEDULE_CREATE error:', err)
@@ -45,7 +70,7 @@ export function registerSchedulerIpcHandlers(): void {
   })
 
   // List all scheduled tasks
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_LIST, async (): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.SCHEDULE_LIST, async (): Promise<IpcResponse> => {
     try {
       const repo = getScheduledTaskRepository()
       const tasks = repo.getAll()
@@ -58,7 +83,7 @@ export function registerSchedulerIpcHandlers(): void {
   })
 
   // Cancel a pending scheduled task
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_CANCEL, async (_event, taskId: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.SCHEDULE_CANCEL, async (_event, taskId: string): Promise<IpcResponse> => {
     try {
       const repo = getScheduledTaskRepository()
       const task = repo.getById(taskId)
@@ -78,7 +103,7 @@ export function registerSchedulerIpcHandlers(): void {
   })
 
   // Delete a scheduled task (only completed/failed/cancelled/partial)
-  ipcMain.handle(IPC_CHANNELS.SCHEDULE_DELETE, async (_event, taskId: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.SCHEDULE_DELETE, async (_event, taskId: string): Promise<IpcResponse> => {
     try {
       const repo = getScheduledTaskRepository()
       const task = repo.getById(taskId)

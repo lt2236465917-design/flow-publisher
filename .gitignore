@@ -1,6 +1,11 @@
 node_modules/
 out/
 dist/
+.npm-cache/
+.electron-cache/
+build/icon.iconset/
+build/icon-normalized.png
+build/flow-icon.svg.png
 *.log
 .DS_Store
 Thumbs.db
@@ -15,3 +20,6 @@ electron.vite.config.d.ts
 electron.vite.config.js
 tsconfig.node.tsbuildinfo
 screenshots/
+.worktrees/
+captured-*-payload.json
+*.har

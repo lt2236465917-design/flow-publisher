@@ -1,7 +1,7 @@
 import type { BrowserContext, Page } from 'playwright-core'
 import axios from 'axios'
 import { BasePlatformAdapter } from '../BasePlatformAdapter'
-import type { UploadProgress, SubmitContentPayload, VideoConstraints, VideoMetadata } from '../IPlatformAdapter'
+import type { UploadProgress, SubmitContentPayload, UploadResult, UploadVideoOptions, VideoConstraints, VideoMetadata } from '../IPlatformAdapter'
 import type { PlatformFieldDefinition } from '../../../shared/types/platform-fields'
 import type { SubmitResult } from '../../../../shared/types/analytics'
 import { HttpClient } from '../../http/HttpClient'
@@ -11,18 +11,55 @@ import { logger } from '../../../utils/logger'
 import { delay } from '../../../utils/delays'
 import { existsSync, statSync, readFileSync } from 'fs'
 import { createHash } from 'crypto'
+import { Agent as HttpsAgent, request as httpsRequest } from 'https'
 import { getSignService } from '../../sign/SignService'
 import { openChunkedReader } from '../../../utils/chunked-reader'
+import { getPublishRecordRepository } from '../../database'
+import {
+  extractXhsNoteId,
+  isXhsSubmitAccepted,
+  parseXhsSignature,
+  parseXhsSubmitPayload,
+  shouldUseXhsBrowserHttpTransport,
+  type XhsSubmitResponse
+} from './xhs-response'
+import { summarizePayload } from '../../../utils/log-redaction'
 
 // Xiaohongshu Creator API endpoints (reverse-engineered from yixiaoer)
 const API = {
   userInfo: 'https://creator.xiaohongshu.com/api/galaxy/user/info',
-  uploadPermit: 'https://creator.xiaohongshu.com/api/media/v1/upload/web/permit',
+  uploadCreatorPermit: 'https://creator.xiaohongshu.com/api/media/v1/upload/web/permit',
   noteCreate: 'https://edith.xiaohongshu.com/web_api/sns/v2/note',
   personalInfo: 'https://creator.xiaohongshu.com/api/galaxy/creator/home/personal_info',
   collectionList: 'https://edith.xiaohongshu.com/api/sns/v1/note/collection/pc/list_v2',
   locationSearch: 'https://edith.xiaohongshu.com/web_api/sns/v1/local/poi/creator/search',
   locationSearchV5: 'https://www.xiaohongshu.com/web_api/sns/v5/creator/poi/search'
+}
+
+type XhsUploadPermit = {
+  uploadAddr?: string
+  upload_addr?: string
+  fileIds?: string[]
+  file_ids?: string[]
+  token?: string
+}
+
+type XhsValidUploadPermit = XhsUploadPermit & {
+  uploadAddr: string
+  fileIds: [string, ...string[]]
+}
+
+type XhsUploadPermitResponse = {
+  success?: boolean
+  code?: number
+  msg?: string
+  message?: string
+  data?: {
+    uploadTempPermits?: XhsUploadPermit[]
+    upload_temp_permits?: XhsUploadPermit[]
+  }
+  uploadTempPermits?: XhsUploadPermit[]
+  upload_temp_permits?: XhsUploadPermit[]
 }
 
 export class XhsApiAdapter extends BasePlatformAdapter {
@@ -133,7 +170,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         API.userInfo,
         undefined,
         {
-          referer: 'https://creator.xiaohongshu.com/publish/publish',
+          referer: XHS_URLS.publish,
           Origin: 'https://creator.xiaohongshu.com'
         }
       )
@@ -161,19 +198,26 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         API.userInfo,
         undefined,
         {
-          referer: 'https://creator.xiaohongshu.com/publish/publish',
+          referer: XHS_URLS.publish,
           Origin: 'https://creator.xiaohongshu.com'
         }
       )
 
-      logger.info(`[xiaohongshu] getAccountInfoAPI response: ${JSON.stringify(response.data).substring(0, 500)}`)
+      logger.info(
+        `[xiaohongshu] getAccountInfoAPI response: ${JSON.stringify(
+          summarizePayload(response.data)
+        )}`
+      )
 
       if (response.data?.success && response.data?.data) {
         const data = response.data.data
         // API 返回的字段名是 userName 和 userAvatar
         const nickname = data.userName || data.nickname || data.name || ''
         const avatarUrl = data.userAvatar || data.imageb || data.avatar || ''
-        logger.info(`[xiaohongshu] getAccountInfoAPI: nickname=${nickname}, avatarUrl=${avatarUrl ? 'yes' : 'no'}`)
+        logger.info(
+          `[xiaohongshu] getAccountInfoAPI: hasNickname=${Boolean(nickname)}, ` +
+          `avatarUrl=${avatarUrl ? 'yes' : 'no'}`
+        )
         return {
           displayName: nickname || undefined,
           avatarUrl: avatarUrl || undefined
@@ -195,26 +239,42 @@ export class XhsApiAdapter extends BasePlatformAdapter {
    */
   async getCollections(client: HttpClient): Promise<Array<{ label: string; value: string }>> {
     try {
-      let cookie = client.getCookieString()
+      const cookie = client.getCookieString()
       logger.info(`[xiaohongshu] getCollections called, cookie length: ${cookie.length}`)
 
       const urlPath = '/api/sns/v1/note/collection/pc/list_v2'
       const bodyStr = JSON.stringify({ cursor: '', need_type_list: [0], target_uid: '' })
 
-      logger.info(`[xiaohongshu] Getting sign headers for collection list...`)
-      const { headers: signHeaders, a1 } = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
-      logger.info(`[xiaohongshu] Sign headers: X-s=${signHeaders['X-s'] ? 'yes' : 'no'}, X-t=${signHeaders['X-t'] ? 'yes' : 'no'}, X-S-Common=${signHeaders['X-S-Common'] ? 'yes' : 'no'}, has a1: ${!!a1}`)
-
-      if (a1) {
-        cookie = cookie.replace('a1=', 'a1old=')
-        cookie = `${cookie};a1=${a1}`
+      logger.info('[xiaohongshu] Fetching collection list via authenticated browser API')
+      const response = await getSignService().postXhsInBuiltinBrowser(
+        cookie,
+        urlPath,
+        bodyStr,
+        { 'Content-Type': 'application/json;charset=UTF-8' },
+        client.getAccountId()
+      )
+      if (!response) {
+        logger.warn('[xiaohongshu] Collections browser request unavailable')
+        return []
+      }
+      if (response.status === 403 || response.status === 406) {
+        logger.warn(
+          `[xiaohongshu] Collections browser request rejected: HTTP ${response.status}, ` +
+          `signKeys=${response.signKeys?.join(',') || 'none'}, ` +
+          `X-S-Common=${response.hasXSCommon ? 'yes' : 'no'}, ` +
+          `body=${response.text.substring(0, 300)}`
+        )
+        return []
+      }
+      if (response.status < 200 || response.status >= 300) {
+        logger.warn(
+          `[xiaohongshu] Collections browser request failed: HTTP ${response.status}, ` +
+          `body=${JSON.stringify(summarizePayload(response.text))}`
+        )
+        return []
       }
 
-      logger.info(`[xiaohongshu] POST ${API.collectionList}, body=${bodyStr}`)
-
-      // 使用 HttpClient 发送请求（和发布接口保持一致的 headers）
-      const apiClient = new HttpClient({ cookies: cookie, platform: 'xiaohongshu', accountId: '' })
-      const response = await apiClient.post<{
+      let data: {
         result: number
         msg: string
         data?: {
@@ -226,25 +286,26 @@ export class XhsApiAdapter extends BasePlatformAdapter {
             view_num?: number
           }>
         }
-      }>(
-        API.collectionList,
-        { cursor: '', need_type_list: [0], target_uid: '' },
-        {
-          Origin: 'https://creator.xiaohongshu.com',
-          referer: 'https://creator.xiaohongshu.com',
-          Authorization: '',
-          ...signHeaders
-        }
-      )
-
-      logger.info(`[xiaohongshu] Collections response: result=${response.data.result}, msg=${response.data.msg}, hasData=${!!response.data.data}, hasList=${!!response.data.data?.collection_info_list}`)
-
-      if (response.data.result !== 0 || !response.data.data?.collection_info_list) {
-        logger.warn(`[xiaohongshu] Collections fetch failed: ${response.data.msg}`)
+      }
+      try {
+        data = JSON.parse(response.text)
+      } catch {
+        logger.warn(
+          `[xiaohongshu] Collections returned non-JSON: ${JSON.stringify(
+            summarizePayload(response.text)
+          )}`
+        )
         return []
       }
 
-      return response.data.data.collection_info_list
+      logger.info(`[xiaohongshu] Collections response: result=${data.result}, msg=${data.msg}, hasData=${!!data.data}, hasList=${!!data.data?.collection_info_list}`)
+
+      if (data.result !== 0 || !data.data?.collection_info_list) {
+        logger.warn(`[xiaohongshu] Collections fetch failed: ${data.msg}`)
+        return []
+      }
+
+      return data.data.collection_info_list
         .filter((c) => c.id && c.name)
         .map((c) => ({
           label: c.name!,
@@ -252,7 +313,10 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         }))
     } catch (err: any) {
       if (err?.response) {
-        logger.error(`[xiaohongshu] getCollections error: status=${err.response.status}, data=${JSON.stringify(err.response.data)?.substring(0, 500)}`)
+        logger.error(
+          `[xiaohongshu] getCollections error: status=${err.response.status}, ` +
+          `data=${JSON.stringify(summarizePayload(err.response.data))}`
+        )
       } else {
         logger.error('[xiaohongshu] getCollections error:', err?.message || err)
       }
@@ -263,10 +327,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
   async uploadVideoAPI(
     client: HttpClient,
     filePath: string,
-    onProgress?: (p: UploadProgress) => void
-  ): Promise<string> {
+    onProgress?: (p: UploadProgress) => void,
+    options?: UploadVideoOptions
+  ): Promise<UploadResult> {
     if (!existsSync(filePath)) {
-      throw new Error(`视频文件不存在: ${filePath}`)
+      throw new Error('视频文件不存在')
     }
 
     const stats = statSync(filePath)
@@ -279,39 +344,22 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     onProgress?.({ percent: 5, stage: '正在获取上传凭证...' })
 
     // Step 1: Get upload permit (response uses uploadTempPermits array)
-    const permitResponse = await client.get<{
-      data?: {
-        uploadTempPermits?: Array<{
-          uploadAddr?: string
-          fileIds?: string[]
-          token?: string
-        }>
-      }
-    }>(
-      `${API.uploadPermit}?biz_name=spectrum&scene=video&file_count=1&version=1&source=web`,
-      undefined,
-      {
-        referer: 'https://creator.xiaohongshu.com/publish/publish',
-        Authorization: ''
-      }
-    )
-
-    const permit = permitResponse.data?.data?.uploadTempPermits?.[0]
-    if (!permit?.uploadAddr || !permit?.fileIds?.length) {
-      throw new Error('获取上传凭证失败')
-    }
+    const permit = await this.getXhsUploadPermit(client, 'video')
 
     const fileId = permit.fileIds[0]
     const uploadAddr = permit.uploadAddr
     const token = permit.token || ''
 
-    logger.info(`[xiaohongshu] Upload permit: host=${uploadAddr}, fileId=${fileId}`)
+    logger.info(
+      `[xiaohongshu] Upload permit: hasHost=${Boolean(uploadAddr)}, ` +
+      `hasFileId=${Boolean(fileId)}`
+    )
 
     onProgress?.({ percent: 10, stage: '正在上传视频...' })
 
     // Step 2: Multipart upload (matching yixiaoer's Tencent COS flow)
     // Use chunked reader — reads each chunk on-demand, never loads entire file into memory
-    const PART_SIZE = 8 * 1024 * 1024 // 8MB — matching yixiaoer's chunk size
+    const PART_SIZE = 5 * 1024 * 1024 // 5MB — matching yixiaoer's chunk size
     const reader = await openChunkedReader(filePath, PART_SIZE)
     const totalParts = reader.totalChunks
 
@@ -322,6 +370,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       Origin: 'https://creator.xiaohongshu.com',
       Authorization: ''
     }
+    let sdkVideoId: string | undefined
 
     try {
 
@@ -339,44 +388,70 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     const uploadIdMatch = initXml.match(/<UploadId>(.*?)<\/UploadId>/)
     const uploadId = uploadIdMatch?.[1]
     if (!uploadId) {
-      logger.error(`[xiaohongshu] Multipart init response: ${initXml.substring(0, 500)}`)
+      logger.error(
+        `[xiaohongshu] Multipart init response: ${JSON.stringify(
+          summarizePayload(initXml)
+        )}`
+      )
       throw new Error('初始化分片上传失败：未获取到 uploadId')
     }
-    logger.info(`[xiaohongshu] Multipart upload initiated, uploadId: ${uploadId}`)
+    logger.info(
+      `[xiaohongshu] Multipart upload initiated: hasUploadId=${Boolean(uploadId)}`
+    )
 
-    // Step 2b: Upload parts (8MB each — matching yixiaoer's chunk size)
+    // Step 2b: Upload parts (5MB each — matching yixiaoer's chunk size)
     const etags: string[] = new Array(totalParts)
     let completedParts = 0
 
-    const uploadPart = async (i: number, maxRetries = 3) => {
+    const uploadPart = async (i: number, maxRetries = 6) => {
       const part = await reader.readChunk(i)
       const partNumber = i + 1
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
-          const partResponse = await client.request<string>({
-            method: 'PUT',
-            url: `${baseUploadUrl}?partNumber=${partNumber}&uploadId=${uploadId}`,
-            data: part,
-            headers: { ...commonHeaders, 'Content-Type': 'application/octet-stream' },
-            noCookie: true,
-            timeout: 120_000,
-            responseType: 'text'
-          })
+          const partResponse = await this.uploadXhsPartNative(
+            `${baseUploadUrl}?partNumber=${partNumber}&uploadId=${uploadId}`,
+            part,
+            commonHeaders,
+            (loaded) => {
+              const uploadedBytes = completedParts * PART_SIZE + Math.min(loaded, part.length)
+              const percent = 10 + Math.min(64, Math.round((uploadedBytes / stats.size) * 65))
+              onProgress?.({
+                percent,
+                stage: `上传中 ${partNumber}/${totalParts}（${Math.min(100, Math.round((loaded / part.length) * 100))}%）`
+              })
+            }
+          )
 
-          // Strip quotes from etag if present
-          let etag = partResponse.headers?.etag || partResponse.data?.ETag || ''
-          etag = etag.replace(/^"|"$/g, '')
+          const rawEtag = partResponse.etag || ''
+          if (!rawEtag) {
+            throw new Error(`上传分片 ${partNumber} 成功但未返回 ETag`)
+          }
+          const normalizedEtag = rawEtag.replace(/^"|"$/g, '')
+          const etag = `"${normalizedEtag}"`
           etags[i] = etag
           completedParts++
           const percent = 10 + Math.round((completedParts / totalParts) * 65)
           onProgress?.({ percent, stage: `上传中 ${completedParts}/${totalParts}` })
           return
         } catch (err: any) {
-          const isRetryable = err.message?.includes('timeout') || err.message?.includes('ECONNRESET') || err.message?.includes('network')
+          const message = err.message || ''
+          const code = typeof err.code === 'string' ? err.code.toUpperCase() : ''
+          const isRetryable =
+            ['EPIPE', 'ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'EAI_AGAIN', 'ENETUNREACH'].includes(code) ||
+            message.includes('timeout') ||
+            message.includes('超时') ||
+            message.includes('ECONNRESET') ||
+            message.includes('EPIPE') ||
+            message.includes('broken pipe') ||
+            message.includes('network') ||
+            message.includes('socket hang up') ||
+            message.includes('TLS connection') ||
+            message.includes('ECONNABORTED')
           if (isRetryable && attempt < maxRetries - 1) {
-            logger.warn(`[xiaohongshu] Part ${partNumber} attempt ${attempt + 1} failed (${err.message}), retrying...`)
-            await delay(1000 * (attempt + 1))
+            const retryDelayMs = Math.min(30_000, 2000 * 2 ** attempt)
+            logger.warn(`[xiaohongshu] Part ${partNumber} attempt ${attempt + 1} failed (${err.message}), retrying in ${retryDelayMs}ms...`)
+            await delay(retryDelayMs)
           } else {
             throw err
           }
@@ -404,9 +479,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     const partsXml = etags
       .map((etag, i) => `<Part><PartNumber>${i + 1}</PartNumber><ETag>${etag}</ETag></Part>`)
       .join('')
-    const completeXml = `<CompleteMultipartUpload>${partsXml}</CompleteMultipartUpload>`
+    const completeXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n  <CompleteMultipartUpload>${partsXml}</CompleteMultipartUpload>`
 
-    await client.request({
+    const completeResponse = await client.request<string>({
       method: 'POST',
       url: `${baseUploadUrl}?uploadId=${uploadId}`,
       data: completeXml,
@@ -418,6 +493,30 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       noCookie: true,
       responseType: 'text'
     })
+    const completeText = typeof completeResponse.data === 'string' ? completeResponse.data : String(completeResponse.data || '')
+    logger.info(
+      `[xiaohongshu] Multipart complete response: status=${completeResponse.status}, ` +
+      `body=${JSON.stringify(summarizePayload(completeText))}`
+    )
+    const completeHeaders = (completeResponse.headers || {}) as Record<string, unknown>
+    const rosHeaders = Object.fromEntries(
+      Object.entries(completeHeaders).filter(([key]) => key.toLowerCase().startsWith('x-ros-'))
+    )
+    if (Object.keys(rosHeaders).length > 0) {
+      logger.info(
+        `[xiaohongshu] Multipart complete x-ros headers: ${JSON.stringify(
+          summarizePayload(rosHeaders)
+        )}`
+      )
+    }
+    sdkVideoId = this.readStringField(completeHeaders, ['x-ros-video-id', 'x-ros-videoid', 'x-ros-videoId'])
+    if (sdkVideoId) {
+      logger.info(
+        `[xiaohongshu] Multipart complete returned SDK video ID: ${Boolean(
+          sdkVideoId
+        )}`
+      )
+    }
 
     logger.info(`[xiaohongshu] Multipart upload completed`)
 
@@ -427,7 +526,480 @@ export class XhsApiAdapter extends BasePlatformAdapter {
 
     onProgress?.({ percent: 80, stage: '视频上传完成' })
 
-    return fileId
+    if (options?.waitForServerCover === false) {
+      logger.info('[xiaohongshu] Custom cover present; confirming uploaded video processing entry before submit')
+      let readyInfo: { videoId: string; firstFrameFileId?: string; transcodeVideoFileId?: string } | null = null
+      try {
+        readyInfo = await this.waitForUploadedVideoReady(
+          client,
+          fileId,
+          onProgress,
+          sdkVideoId,
+          false
+        )
+      } catch (err) {
+        logger.warn(
+          `[xiaohongshu] Custom-cover video processing preflight failed; ` +
+          `continuing with uploaded fileId and SDK videoId after a short settle delay: ${err instanceof Error ? err.message : String(err)}`
+        )
+        await delay(10_000)
+      }
+
+      return {
+        videoId: fileId,
+        meta: {
+          fileId,
+          xhsVideoId: readyInfo?.videoId || sdkVideoId,
+          firstFrameFileId: readyInfo?.firstFrameFileId,
+          transcodeVideoFileId: readyInfo?.transcodeVideoFileId,
+          uploadAddr
+        }
+      }
+    }
+
+    onProgress?.({ percent: 80, stage: '视频上传完成，正在等待平台处理...' })
+
+    const readyInfo = await this.waitForUploadedVideoReady(
+      client,
+      fileId,
+      onProgress,
+      sdkVideoId,
+      options?.waitForServerCover !== false
+    )
+
+    return {
+      videoId: fileId,
+      meta: {
+        fileId,
+        xhsVideoId: readyInfo.videoId,
+        firstFrameFileId: readyInfo.firstFrameFileId,
+        transcodeVideoFileId: readyInfo.transcodeVideoFileId,
+        uploadAddr
+      }
+    }
+  }
+
+  private uploadXhsPartNative(
+    url: string,
+    part: Buffer,
+    headers: Record<string, string>,
+    onProgress?: (loaded: number) => void
+  ): Promise<{ etag?: string }> {
+    return new Promise((resolve, reject) => {
+      const target = new URL(url)
+      const agent = new HttpsAgent({
+        keepAlive: false,
+        maxSockets: 1
+      })
+      const req = httpsRequest({
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || 443,
+        path: `${target.pathname}${target.search}`,
+        method: 'PUT',
+        family: 4,
+        agent,
+        headers: {
+          ...headers,
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(part.length),
+          Connection: 'close'
+        }
+      }, (res) => {
+        const chunks: Buffer[] = []
+        res.on('data', (chunk: Buffer) => chunks.push(chunk))
+        res.on('end', () => {
+          agent.destroy()
+          const status = res.statusCode || 0
+          if (status < 200 || status >= 300) {
+            reject(new Error(
+              `小红书分片上传失败: HTTP ${status} ${Buffer.concat(chunks).toString('utf8').substring(0, 300)}`
+            ))
+            return
+          }
+          const rawEtag = res.headers.etag
+          resolve({ etag: Array.isArray(rawEtag) ? rawEtag[0] : rawEtag })
+        })
+      })
+
+      req.setTimeout(90_000, () => {
+        req.destroy(new Error('小红书分片上传超时'))
+      })
+      req.on('error', (err) => {
+        agent.destroy()
+        reject(err)
+      })
+
+      const WRITE_SIZE = 64 * 1024
+      let offset = 0
+      const writeNext = () => {
+        try {
+          while (offset < part.length) {
+            const end = Math.min(offset + WRITE_SIZE, part.length)
+            const canContinue = req.write(part.subarray(offset, end))
+            offset = end
+            onProgress?.(offset)
+            if (!canContinue) {
+              req.once('drain', writeNext)
+              return
+            }
+          }
+          req.end()
+        } catch (err) {
+          req.destroy(err instanceof Error ? err : new Error(String(err)))
+        }
+      }
+      writeNext()
+    })
+  }
+
+  private async waitForUploadedVideoReady(
+    client: HttpClient,
+    fileId: string,
+    onProgress?: (p: UploadProgress) => void,
+    sdkVideoId?: string,
+    waitForServerCover = true
+  ): Promise<{ videoId: string; firstFrameFileId?: string; transcodeVideoFileId?: string }> {
+    onProgress?.({ percent: 82, stage: '正在生成小红书视频ID...' })
+    const videoId = sdkVideoId || await this.generateXhsVideoId(client, fileId)
+    logger.info(
+      `[xiaohongshu] Generated upload identifiers: hasVideoId=${Boolean(videoId)}, ` +
+      `hasFileId=${Boolean(fileId)}`
+    )
+
+    onProgress?.({ percent: 84, stage: '等待小红书处理视频首帧...' })
+    await delay(3000)
+
+    let lastPayload: Record<string, unknown> | null = null
+    let lastTranscodeVideoFileId: string | undefined
+    let maxAttempts = waitForServerCover ? 30 : 100
+    let queryIntervalMs = 3000
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      let payload: Record<string, unknown>
+      try {
+        payload = await this.queryXhsTranscode(client, videoId, waitForServerCover)
+      } catch (err: any) {
+        const message = err?.message || String(err)
+        logger.warn(
+          `[xiaohongshu] query_transcode attempt ${attempt} failed (${message}); ` +
+          'continuing with uploaded video'
+        )
+        onProgress?.({ percent: 88, stage: '小红书视频已上传，转码状态不可查' })
+        return { videoId, transcodeVideoFileId: lastTranscodeVideoFileId }
+      }
+      lastPayload = payload
+      const hasFirstFrame = this.readBooleanField(payload, ['hasFirstFrame', 'has_first_frame'])
+      const firstFrameFileId = this.readStringField(payload, ['firstFrameFileId', 'first_frame_file_id'])
+      const transcodeVideoFileId = this.readStringField(payload, ['transcodeVideoFileId', 'transcode_video_file_id'])
+      const progress = this.readStringField(payload, ['transProgressInfo.progress', 'trans_progress_info.progress'])
+      const serverMaxAttempts = Number(this.readStringField(payload, ['maxUnchangedQueryTimes', 'max_unchanged_query_times']))
+      const serverQueryIntervalMs = Number(this.readStringField(payload, ['queryIntervalMs', 'query_interval_ms']))
+      if (Number.isFinite(serverMaxAttempts) && serverMaxAttempts > 0) {
+        maxAttempts = waitForServerCover
+          ? Math.min(serverMaxAttempts, 30)
+          : serverMaxAttempts
+      }
+      if (Number.isFinite(serverQueryIntervalMs) && serverQueryIntervalMs > 0) {
+        queryIntervalMs = serverQueryIntervalMs
+      }
+      if (transcodeVideoFileId) {
+        lastTranscodeVideoFileId = transcodeVideoFileId
+      }
+      logger.info(
+        `[xiaohongshu] query_transcode attempt ${attempt}: ` +
+        `hasFirstFrame=${hasFirstFrame ? 'yes' : 'no'}, ` +
+        `hasFirstFrameFileId=${Boolean(firstFrameFileId)}, ` +
+        `hasTranscodeVideoFileId=${Boolean(transcodeVideoFileId)}, ` +
+        `progress=${progress || 'n/a'}`
+      )
+
+      if (hasFirstFrame || firstFrameFileId) {
+        onProgress?.({ percent: 88, stage: '小红书视频处理完成' })
+        return { videoId, firstFrameFileId, transcodeVideoFileId }
+      }
+
+      if (!waitForServerCover) {
+        logger.info('[xiaohongshu] Custom cover provided; continuing without server first-frame extraction')
+        onProgress?.({ percent: 88, stage: '小红书视频处理入口已确认' })
+        return { videoId, transcodeVideoFileId }
+      }
+
+      const percent = Math.min(87, 84 + Math.floor(attempt / 4))
+      onProgress?.({ percent, stage: `等待小红书处理视频首帧...(${attempt}/${maxAttempts})` })
+      await delay(queryIntervalMs)
+    }
+
+    logger.warn(
+      `[xiaohongshu] query_transcode did not return first-frame fields after ${maxAttempts} attempts; ` +
+      `continuing with uploaded video, last=${JSON.stringify(
+        summarizePayload(lastPayload)
+      )}`
+    )
+    onProgress?.({ percent: 88, stage: '小红书视频已上传，未返回服务端首帧' })
+    return { videoId, transcodeVideoFileId: lastTranscodeVideoFileId }
+  }
+
+  private async generateXhsVideoId(client: HttpClient, fileId: string): Promise<string> {
+    let lastError = ''
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const urlPath = `/web_api/sns/capa/postgw/videoid?fileKey=${encodeURIComponent(fileId)}&bizName=217`
+        const response = await this.getXhsSignedJson(client, urlPath)
+        const payload = this.extractXhsDataObject(response)
+        const videoId = this.readStringField(payload, ['videoId', 'video_id'])
+        logger.info(
+          `[xiaohongshu] videoid response attempt ${attempt}: ${JSON.stringify(
+            summarizePayload(response)
+          )}`
+        )
+        if (videoId && videoId !== '-1') return videoId
+        lastError = JSON.stringify(summarizePayload(response))
+      } catch (err: any) {
+        lastError = err?.message || String(err)
+        logger.warn(`[xiaohongshu] generate videoId attempt ${attempt} failed: ${lastError}`)
+      }
+      await delay(1500 * attempt)
+    }
+    throw new Error(`小红书生成 videoId 失败: last=${lastError}`)
+  }
+
+  private async queryXhsTranscode(client: HttpClient, videoId: string, needTranscode: boolean): Promise<Record<string, unknown>> {
+    const params = new URLSearchParams({
+      videoId,
+      needTranscode: String(needTranscode),
+      resourceType: '0'
+    })
+    const response = await this.getXhsSignedJson(client, `/web_api/sns/capa/postgw/query_transcode?${params.toString()}`)
+    return this.extractXhsDataObject(response)
+  }
+
+  private async getXhsSignedJson(client: HttpClient, urlPath: string): Promise<Record<string, unknown>> {
+    const cookie = client.getCookieString()
+    const browserResult = await getSignService().getXhsInBuiltinBrowser(
+      cookie,
+      urlPath,
+      { Accept: 'application/json, text/plain, */*' },
+      client.getAccountId()
+    )
+
+    if (browserResult) {
+      const status = Number(browserResult.status || 0)
+      const text = browserResult.text || ''
+      logger.info(
+        `[xiaohongshu] Browser GET ${urlPath} returned HTTP ${status}, ` +
+        `text=${text.substring(0, 300)}`
+      )
+      if (status >= 200 && status < 300) {
+        try {
+          const parsed = JSON.parse(text) as unknown
+          if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>
+        } catch {
+          throw new Error(`小红书浏览器 GET 返回非 JSON: ${text.substring(0, 300)}`)
+        }
+      }
+
+      if (status !== 0) {
+        throw new Error(`小红书浏览器 GET 失败: HTTP ${status} ${text.substring(0, 300)}`)
+      }
+      logger.warn(`[xiaohongshu] Browser GET ${urlPath} returned status=0, falling back to signed HTTP`)
+    }
+
+    let signHeaders: Record<string, string>
+    try {
+      signHeaders = (await this.getXhsSignHeaders(urlPath, cookie, undefined, client.getAccountId())).headers
+    } catch (err: any) {
+      const detail = err?.message || String(err)
+      logger.warn(`[xiaohongshu] Signed GET ${urlPath} using basic local X-s/X-t fallback: ${detail}`)
+      signHeaders = this.localXhsSign(urlPath)
+    }
+
+    const response = await axios.get<Record<string, unknown>>(
+      `https://edith.xiaohongshu.com${urlPath}`,
+      {
+        headers: {
+          cookie,
+          referer: XHS_URLS.publish,
+          Origin: 'https://creator.xiaohongshu.com',
+          Authorization: '',
+          Accept: 'application/json, text/plain, */*',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14',
+          ...signHeaders
+        },
+        timeout: 30_000,
+        responseType: 'json'
+      }
+    )
+    return response.data
+  }
+
+  private async getXhsUploadPermit(
+    client: HttpClient,
+    scene: 'video' | 'image'
+  ): Promise<XhsValidUploadPermit> {
+    const urlPath = `/api/media/v1/upload/web/permit?biz_name=spectrum&scene=${scene}&file_count=1&version=1&source=web`
+    const requestUrl = `https://creator.xiaohongshu.com${urlPath}`
+    const failures: string[] = []
+    const cookie = client.getCookieString()
+
+    try {
+      const response = await client.get<XhsUploadPermitResponse>(
+        requestUrl,
+        undefined,
+        {
+          referer: 'https://creator.xiaohongshu.com/publish/publish',
+          Authorization: ''
+        }
+      )
+
+      const permit = this.readXhsUploadPermit(response.data)
+      if (response.status >= 200 && response.status < 300 && this.isValidXhsUploadPermit(permit)) {
+        logger.info(
+          `[xiaohongshu] ${scene} upload permit via yixiaoer web/permit HTTP: ` +
+          `hasHost=${Boolean(permit.uploadAddr)}, hasFileId=${Boolean(permit.fileIds[0])}`
+        )
+        return permit
+      }
+
+      const body = this.summarizeXhsPayload(response.data)
+      failures.push(`web-http=HTTP ${response.status}${body ? ` ${body}` : ''}`)
+      logger.warn(
+        `[xiaohongshu] ${scene} upload permit via yixiaoer web/permit HTTP failed: ` +
+        `HTTP ${response.status}, body=${JSON.stringify(summarizePayload(body))}`
+      )
+    } catch (err: any) {
+      const detail = err?.message || String(err)
+      failures.push(`web-http=error ${detail}`)
+      logger.warn(`[xiaohongshu] ${scene} upload permit via yixiaoer web/permit HTTP error: ${detail}`)
+    }
+
+    try {
+      const browserResponse = await getSignService().getXhsInBuiltinBrowser(
+        cookie,
+        requestUrl,
+        { Accept: 'application/json, text/plain, */*' },
+        client.getAccountId()
+      )
+      if (browserResponse) {
+        const data = this.parseXhsUploadPermitPayload(browserResponse.text)
+        const permit = this.readXhsUploadPermit(data)
+        if (browserResponse.status >= 200 && browserResponse.status < 300 && this.isValidXhsUploadPermit(permit)) {
+          logger.info(
+            `[xiaohongshu] ${scene} upload permit via signed creator browser: ` +
+            `hasHost=${Boolean(permit.uploadAddr)}, hasFileId=${Boolean(permit.fileIds[0])}`
+          )
+          return permit
+        }
+
+        const body = this.summarizeXhsPayload(data || browserResponse.text)
+        failures.push(`browser=HTTP ${browserResponse.status}${body ? ` ${body}` : ''}`)
+        logger.warn(
+          `[xiaohongshu] ${scene} upload permit via signed creator browser failed: ` +
+          `HTTP ${browserResponse.status}, body=${JSON.stringify(
+            summarizePayload(body)
+          )}`
+        )
+      } else {
+        failures.push('browser=unavailable')
+      }
+    } catch (err: any) {
+      const detail = err?.message || String(err)
+      failures.push(`browser=error ${detail}`)
+      logger.warn(`[xiaohongshu] ${scene} upload permit via signed creator browser error: ${detail}`)
+    }
+
+    try {
+      const { headers: signHeaders } = await this.getXhsSignHeaders(
+        urlPath,
+        cookie,
+        undefined,
+        client.getAccountId()
+      )
+      const response = await client.get<XhsUploadPermitResponse>(
+        requestUrl,
+        undefined,
+        {
+          referer: XHS_URLS.publish,
+          Origin: 'https://creator.xiaohongshu.com',
+          Authorization: '',
+          ...signHeaders
+        }
+      )
+
+      const permit = this.readXhsUploadPermit(response.data)
+      if (response.status >= 200 && response.status < 300 && this.isValidXhsUploadPermit(permit)) {
+        logger.info(
+          `[xiaohongshu] ${scene} upload permit via signed creator HTTP: ` +
+          `hasHost=${Boolean(permit.uploadAddr)}, hasFileId=${Boolean(permit.fileIds[0])}`
+        )
+        return permit
+      }
+
+      const body = this.summarizeXhsPayload(response.data)
+      failures.push(`signed-http=HTTP ${response.status}${body ? ` ${body}` : ''}`)
+      logger.warn(
+        `[xiaohongshu] ${scene} upload permit via signed creator HTTP failed: ` +
+        `HTTP ${response.status}, body=${JSON.stringify(summarizePayload(body))}`
+      )
+    } catch (err: any) {
+      const detail = err?.message || String(err)
+      failures.push(`signed-http=error ${detail}`)
+      logger.warn(`[xiaohongshu] ${scene} upload permit via signed creator HTTP error: ${detail}`)
+    }
+
+    const label = scene === 'image' ? '封面上传凭证' : '上传凭证'
+    throw new Error(
+      `获取${label}失败: 已按蚁小二 web/permit 方式请求，但未拿到有效凭证（${failures.join(' | ')}）。` +
+      '请确认小红书账号登录态仍有效后重试。'
+    )
+  }
+
+  private parseXhsUploadPermitPayload(raw: unknown): XhsUploadPermitResponse | undefined {
+    if (!raw) return undefined
+    if (typeof raw === 'string') {
+      try {
+        return JSON.parse(raw) as XhsUploadPermitResponse
+      } catch {
+        return undefined
+      }
+    }
+    if (typeof raw === 'object') return raw as XhsUploadPermitResponse
+    return undefined
+  }
+
+  private readXhsUploadPermit(data: XhsUploadPermitResponse | undefined): XhsUploadPermit | undefined {
+    if (!data || typeof data !== 'object') return undefined
+    let permit: XhsUploadPermit | undefined
+    if (data.data && typeof data.data === 'object' && Array.isArray(data.data.uploadTempPermits)) {
+      permit = data.data.uploadTempPermits[0]
+    } else if (data.data && typeof data.data === 'object' && Array.isArray(data.data.upload_temp_permits)) {
+      permit = data.data.upload_temp_permits[0]
+    } else if (Array.isArray(data.uploadTempPermits)) {
+      permit = data.uploadTempPermits[0]
+    } else if (Array.isArray(data.upload_temp_permits)) {
+      permit = data.upload_temp_permits[0]
+    }
+    if (!permit) return undefined
+
+    const uploadAddr = permit.uploadAddr || permit.upload_addr
+    const fileIds = permit.fileIds || permit.file_ids
+    if (uploadAddr !== permit.uploadAddr || fileIds !== permit.fileIds) {
+      return { ...permit, uploadAddr, fileIds }
+    }
+    return permit
+  }
+
+  private isValidXhsUploadPermit(permit: XhsUploadPermit | undefined): permit is XhsValidUploadPermit {
+    return !!permit?.uploadAddr && Array.isArray(permit.fileIds) && permit.fileIds.length > 0 && !!permit.fileIds[0]
+  }
+
+  private summarizeXhsPayload(data: unknown, maxLength = 300): string {
+    if (data === undefined || data === null) return ''
+    if (typeof data === 'string') return data.substring(0, maxLength)
+    try {
+      return JSON.stringify(data).substring(0, maxLength)
+    } catch {
+      return String(data).substring(0, maxLength)
+    }
   }
 
   /**
@@ -447,33 +1019,16 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     onProgress?.({ percent: 85, stage: '正在上传封面...' })
 
     // Step 1: Get upload permit for image (scene=image)
-    const permitResponse = await client.get<{
-      data?: {
-        uploadTempPermits?: Array<{
-          uploadAddr?: string
-          fileIds?: string[]
-          token?: string
-        }>
-      }
-    }>(
-      `${API.uploadPermit}?biz_name=spectrum&scene=image&file_count=1&version=1&source=web`,
-      undefined,
-      {
-        referer: 'https://creator.xiaohongshu.com/publish/publish',
-        Authorization: ''
-      }
-    )
-
-    const permit = permitResponse.data?.data?.uploadTempPermits?.[0]
-    if (!permit?.uploadAddr || !permit?.fileIds?.length) {
-      throw new Error('获取封面上传凭证失败')
-    }
+    const permit = await this.getXhsUploadPermit(client, 'image')
 
     const fileId = permit.fileIds[0]
     const uploadAddr = permit.uploadAddr
     const token = permit.token || ''
 
-    logger.info(`[xiaohongshu] Cover upload permit: host=${uploadAddr}, fileId=${fileId}`)
+    logger.info(
+      `[xiaohongshu] Cover upload permit: hasHost=${Boolean(uploadAddr)}, ` +
+      `hasFileId=${Boolean(fileId)}`
+    )
 
     // Step 2: PUT image to COS (matching yixiaoer's uploadImage$8)
     const imageBuffer = readFileSync(imagePath)
@@ -495,7 +1050,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       responseType: 'text'
     })
 
-    logger.info(`[xiaohongshu] Cover image uploaded, fileId: ${fileId}`)
+    logger.info('[xiaohongshu] Cover image uploaded')
     onProgress?.({ percent: 90, stage: '封面上传完成' })
 
     return fileId
@@ -515,7 +1070,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     const businessBinds: Record<string, unknown> = {
       version: 1,
       noteId: 0,
-      bizType: 0,
+      bizType: 13,
       noteOrderBind: {},
       groupBind: {},
       liveNoticeBind: {},
@@ -527,7 +1082,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     // Add collection if provided (through noteCollectionBind)
     if (payload.platformFields?.collection) {
       businessBinds.noteCollectionBind = { id: payload.platformFields.collection }
-      logger.info(`[xiaohongshu] Added collection: ${payload.platformFields.collection}`)
+      logger.info('[xiaohongshu] Added collection binding')
     }
 
     // Add original declaration if provided (through optionRelationList)
@@ -559,14 +1114,14 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       source: JSON.stringify({ type: 'web', ids: '', extraInfo: JSON.stringify({ systemId: 'web' }) }),
       business_binds: JSON.stringify(businessBinds),
       ats: [],
-      biz_relations: [],
       hash_tag: payload.hashtags.map((tag) => ({
         id: '',
         name: tag,
         link: '',
         type: 'topic'
       })),
-      privacy_info: { op_type: 1, type: 0 }
+      post_loc: null,
+      privacy_info: { op_type: 1, type: 0, user_ids: [] }
     }
 
     // Add location if provided (through post_loc)
@@ -576,21 +1131,31 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       const loc = payload.platformFields.location
       if (typeof loc === 'object' && loc !== null && 'name' in loc) {
         const locObj = loc as { name: string; poi_id?: string; address?: string; extra?: Record<string, unknown> }
-        commonObj.post_loc = {
+        const postLocation = {
           poi_id: locObj.poi_id || '',
           name: locObj.name,
           poi_type: (locObj.extra?.poi_type as number) || 0,
           subname: locObj.address || ''
         }
-        logger.info(`[xiaohongshu] Location: poi_id=${commonObj.post_loc.poi_id}, name=${locObj.name}, subname=${commonObj.post_loc.subname}`)
+        commonObj.post_loc = postLocation
+        logger.info(
+          `[xiaohongshu] Location attached: hasPoiId=${Boolean(
+            postLocation.poi_id
+          )}, hasName=${Boolean(locObj.name)}, hasSubname=${Boolean(
+            postLocation.subname
+          )}`
+        )
       } else if (typeof loc === 'string') {
         commonObj.post_loc = { poi_id: '', name: loc, subname: '' }
       }
     } else {
-      logger.info(`[xiaohongshu] No location provided, platformFields.location=${JSON.stringify(payload.platformFields?.location)}`)
+      logger.info('[xiaohongshu] No location provided')
     }
 
-    logger.info(`[xiaohongshu] post_loc=${JSON.stringify(commonObj.post_loc)}, desc (first 200)=${descText.substring(0, 200)}, hash_tag count=${payload.hashtags.length}`)
+    logger.info(
+      `[xiaohongshu] submit fields: hasLocation=${Boolean(commonObj.post_loc)}, ` +
+      `descriptionLength=${descText.length}, hashtagCount=${payload.hashtags.length}`
+    )
 
     // Add content type declaration if provided (through userDeclarationBind)
     const contentTypeDeclarations = payload.platformFields?.contentTypeDeclaration as string[] || []
@@ -645,34 +1210,69 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     const vidWidth = meta?.width || 720
     const vidHeight = meta?.height || 1280
     const vidDuration = meta?.duration || 0
-    const vidFps = meta?.fps || 30
-    const vidBitrate = meta?.bitrate || 0
-
-    // Build cover object (matching yixiaoer's buildPostData$K structure)
-    const coverObj: Record<string, unknown> = {
-      height: vidHeight,
-      file_id: coverFileId || '',
-      fileid: coverFileId || '',
-      width: vidWidth,
-      frame: { ts: 0, is_user_select: !!coverFileId, is_upload: !!coverFileId }
+    let uploadMeta: Record<string, unknown> | null = null
+    if (payload.recordId) {
+      uploadMeta = getPublishRecordRepository().getUploadMeta(payload.recordId)
     }
+    const firstFrameFileId = uploadMeta
+      ? this.readStringField(uploadMeta, ['firstFrameFileId', 'first_frame_file_id'])
+      : undefined
+    const uploadedFileId = uploadMeta
+      ? this.readStringField(uploadMeta, ['fileId', 'file_id'])
+      : undefined
+    const xhsVideoId = uploadMeta
+      ? this.readStringField(uploadMeta, ['xhsVideoId', 'xhs_video_id'])
+      : undefined
+    const transcodeVideoFileId = uploadMeta
+      ? this.readStringField(uploadMeta, ['transcodeVideoFileId', 'transcode_video_file_id'])
+      : undefined
+    const effectiveVideoFileId = uploadedFileId || videoId || xhsVideoId || ''
+    const effectiveCoverFileId = coverFileId || firstFrameFileId || ''
+    if (uploadMeta) {
+      logger.info(
+        `[xiaohongshu] Upload meta: fileId=${uploadedFileId || 'none'}, ` +
+        `xhsVideoId=${xhsVideoId || 'none'}, firstFrameFileId=${firstFrameFileId || 'none'}, ` +
+        `transcodeVideoFileId=${transcodeVideoFileId || 'none'}`
+      )
+    }
+    logger.info(
+      `[xiaohongshu] Submit video identifier available=${Boolean(
+        effectiveVideoFileId
+      )} (source=${uploadedFileId ? 'uploadedFileId' : videoId ? 'submitArg' : xhsVideoId ? 'xhsVideoId' : 'none'})`
+    )
+    if (!effectiveVideoFileId) {
+      throw new Error('内容提交失败: 小红书没有可用 video file_id。视频上传结果缺少 upload fileId。')
+    }
+    if (!effectiveCoverFileId) {
+      logger.warn('[xiaohongshu] No cover file_id available; submitting video without explicit cover and requiring note_id verification')
+    }
+
+    const coverObj: Record<string, unknown> | null = effectiveCoverFileId
+      ? {
+          height: vidHeight,
+          file_id: effectiveCoverFileId,
+          fileid: effectiveCoverFileId,
+          width: vidWidth,
+          frame: { ts: 0, is_user_select: false, is_upload: false }
+        }
+      : null
 
     // Build body
     const body: Record<string, unknown> = {
       common: commonObj,
       image_info: null,
       video_info: {
-        file_id: videoId || '',
-        fileid: videoId || '',
+        file_id: effectiveVideoFileId,
+        fileid: effectiveVideoFileId,
         format_width: vidWidth,
         format_height: vidHeight,
         composite_metadata: {
           video: {
-            bitrate: vidBitrate,
+            bitrate: 0,
             colour_primaries: 'BT.709',
             duration: vidDuration,
             format: 'AVC',
-            frame_rate: vidFps,
+            frame_rate: 30,
             height: vidHeight,
             matrix_coefficients: 'BT.709',
             rotation: 0,
@@ -682,33 +1282,73 @@ export class XhsApiAdapter extends BasePlatformAdapter {
           audio: { bitrate: 0, channels: 1, duration: vidDuration, format: 'AAC', sampling_rate: 0 }
         },
         timelines: [],
-        cover: coverObj,
+        ...(coverObj ? { cover: coverObj } : {}),
         chapters: [],
         chapter_sync_text: false,
-        segments: { count: 1, need_slice: false, items: [] },
+        segments: {
+          count: 1,
+          need_slice: false,
+          items: []
+        },
         entrance: 'web'
       }
     }
 
+    let preSubmitNoteIds: Set<string> | null = null
     try {
       let cookie = client.getCookieString()
       const bodyStr = JSON.stringify(body)
       const urlPath = '/web_api/sns/v2/note'
-      const { headers: signHeaders, a1 } = await this.getXhsSignHeaders(urlPath, cookie, bodyStr)
+      preSubmitNoteIds = await this.snapshotXhsNoteIdsByTitle(client, payload.title)
+      const { headers: signHeaders, a1, cookie: signedCookie } = await this.getXhsSignHeaders(
+        urlPath,
+        cookie,
+        bodyStr,
+        client.getAccountId()
+      )
+      const useBrowserHttpTransport = shouldUseXhsBrowserHttpTransport(signHeaders)
+
+      // The current x-rap-param signature is session-bound. Reuse the exact Cookie
+      // header observed on the signing probe only for portable direct-HTTP signatures.
+      // For browser HTTP transport, changing the cookie input reloads the signer page
+      // and invalidates the probe-time x-rap-param before the real request is sent.
+      if (signedCookie && !useBrowserHttpTransport) {
+        cookie = signedCookie
+      }
 
       // Replace a1 cookie if signing returned a new one (matching yixiaoer)
-      if (a1) {
+      if (a1 && (!signedCookie || useBrowserHttpTransport)) {
         cookie = cookie.replace('a1=', 'a1old=')
         cookie = `${cookie};a1=${a1}`
       }
 
-      logger.info(`[xiaohongshu] Submit headers: X-s=${signHeaders['X-s'] ? 'yes' : 'no'}, X-t=${signHeaders['X-t'] ? 'yes' : 'no'}, X-S-Common=${signHeaders['X-S-Common'] ? 'yes' : 'no'}, a1_replaced=${!!a1}`)
-      logger.info(`[xiaohongshu] Submit common.desc (first 300)=${(commonObj.desc as string)?.substring(0, 300)}`)
-      logger.info(`[xiaohongshu] Submit common.post_loc=${JSON.stringify(commonObj.post_loc)}`)
-      logger.info(`[xiaohongshu] Submit common.hash_tag=${JSON.stringify(commonObj.hash_tag)}`)
+      const extraSignHeaders = Object.keys(signHeaders)
+        .filter((name) => {
+          const lower = name.toLowerCase()
+          return lower.startsWith('x-') && lower !== 'x-s' && lower !== 'x-t' && lower !== 'x-s-common'
+        })
+      const hasRapParam = extraSignHeaders.some((name) => name.toLowerCase() === 'x-rap-param')
+      logger.info(`[xiaohongshu] Submit headers: X-s=${signHeaders['X-s'] ? 'yes' : 'no'}, X-t=${signHeaders['X-t'] ? 'yes' : 'no'}, X-S-Common=${signHeaders['X-S-Common'] ? 'yes' : 'no'}, x-rap-param=${hasRapParam ? 'yes' : 'no'}, extra=${extraSignHeaders.join(',') || 'none'}, a1_replaced=${!!a1}`)
+      logger.info(
+        `[xiaohongshu] Submit description length=${String(commonObj.desc || '').length}`
+      )
+      logger.info(
+        `[xiaohongshu] Submit common: hasPostLocation=${Boolean(commonObj.post_loc)}, ` +
+        `hashTagCount=${Array.isArray(commonObj.hash_tag) ? commonObj.hash_tag.length : 0}`
+      )
 
-      // Use axios directly with realistic 2026 browser headers
-      // 所有版本号必须与最新真实浏览器一致，避免被检测为自动化工具
+      if (!signHeaders['X-s'] || !signHeaders['X-t'] || !signHeaders['X-S-Common']) {
+        throw new Error(
+          '内容提交失败: 蚁小二 newxiaohongshu signer 未返回完整的 X-s / X-t / X-S-Common。'
+        )
+      }
+
+      if (useBrowserHttpTransport) {
+        throw new Error('内容提交失败: 已要求蚁小二完整签名，但返回结果仍只有会话绑定 x-rap-param。')
+      }
+
+      // Send the exact string that was signed. Passing the object back through
+      // axios serialization can invalidate body-bound signatures.
       const response = await axios.post<{
         success: boolean
         data?: { note_id: string }
@@ -716,24 +1356,15 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         code?: number
       }>(
         API.noteCreate,
-        body,
+        bodyStr,
         {
           headers: {
             cookie,
-            referer: 'https://creator.xiaohongshu.com/publish/publish',
+            referer: 'https://creator.xiaohongshu.com/',
             Origin: 'https://creator.xiaohongshu.com',
             Authorization: '',
             'Content-Type': 'application/json;charset=UTF-8',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14',
-            Accept: 'application/json, text/plain, */*',
-            'Accept-Encoding': 'gzip,deflate,br',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6',
-            'sec-ch-ua': '"Microsoft Edge";v="136", "Chromium";v="136", "Not_A Brand";v="24"',
-            'sec-ch-ua-mobile': '?0',
-            'sec-ch-ua-platform': '"Windows"',
-            'Sec-Fetch-Site': 'same-origin',
-            'Sec-Fetch-Mode': 'cors',
-            'Sec-Fetch-Dest': 'empty',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/110.0.0.0',
             ...signHeaders
           },
           timeout: 30_000,
@@ -741,29 +1372,292 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         }
       )
 
-      logger.info(`[xiaohongshu] Submit response: ${JSON.stringify(response.data).substring(0, 500)}`)
+      logger.info(
+        `[xiaohongshu] Submit response: ${JSON.stringify(
+          summarizePayload(response.data)
+        )}`
+      )
+
+      const submitResult = this.parseXhsSubmitSuccess(response.data, 'signed HTTP')
+      if (submitResult) return submitResult
+
+      if (isXhsSubmitAccepted(response.data)) {
+        const verifiedResult = await this.verifyXhsSubmitByList(client, payload.title, preSubmitNoteIds, 'signed HTTP', response.status)
+        if (verifiedResult) return verifiedResult
+        throw this.createXhsUnconfirmedSubmitError('signed HTTP', response.status, response.data)
+      }
 
       if (!response.data.success) {
         throw new Error(`内容提交失败: ${response.data.msg || JSON.stringify(response.data).substring(0, 200)}`)
-      }
-
-      const noteId = response.data.data?.note_id
-      logger.info(`[xiaohongshu] Content submitted, note_id: ${noteId}`)
-
-      return {
-        contentId: noteId,
-        publishUrl: noteId ? `https://www.xiaohongshu.com/explore/${noteId}` : undefined
       }
     } catch (err: any) {
       if (axios.isAxiosError(err)) {
         const status = err.response?.status
         const data = err.response?.data
-        logger.error(`[xiaohongshu] Submit HTTP error: ${status}`, JSON.stringify(data).substring(0, 500))
+        logger.error(
+          `[xiaohongshu] Submit HTTP error: ${status}, ` +
+          `data=${JSON.stringify(summarizePayload(data))}`
+        )
+        const submitResult = this.parseXhsSubmitSuccess(data, `HTTP ${status}`)
+        if (submitResult) return submitResult
+
+        const parsedData = parseXhsSubmitPayload(data)
+        if (isXhsSubmitAccepted(parsedData)) {
+          const verifiedResult = await this.verifyXhsSubmitByList(client, payload.title, preSubmitNoteIds, `HTTP ${status}`, status)
+          if (verifiedResult) return verifiedResult
+          throw this.createXhsUnconfirmedSubmitError(`HTTP ${status}`, status, parsedData)
+        }
+
+        if (status === 406 || status === 403) {
+          const cookie = client.getCookieString()
+          const bodyStr = JSON.stringify(body)
+          const urlPath = '/web_api/sns/v2/note'
+          const fallbackHeaders = await this.getXhsSignHeaders(
+            urlPath,
+            cookie,
+            bodyStr,
+            client.getAccountId()
+          ).then((result) => result.headers)
+          const fallbackHasRapParam = Object.keys(fallbackHeaders)
+            .some((name) => name.toLowerCase() === 'x-rap-param')
+          if (
+            !fallbackHeaders['X-s'] ||
+            !fallbackHeaders['X-t'] ||
+            (!fallbackHeaders['X-S-Common'] && !fallbackHasRapParam)
+          ) {
+            throw new Error(
+              '内容提交失败: 小红书签名不完整，缺少当前发布接口所需的网页签名头。'
+            )
+          }
+          const browserResult = await this.submitXhsViaBuiltinBrowser(
+            cookie,
+            urlPath,
+            bodyStr,
+            fallbackHeaders,
+            client.getAccountId()
+          )
+          if (browserResult) return browserResult
+        }
         throw new Error(`内容提交失败: HTTP ${status} ${JSON.stringify(data).substring(0, 200)}`)
       }
       logger.error('[xiaohongshu] submitContentAPI error:', err)
       throw err
     }
+  }
+
+  private async submitXhsViaBuiltinBrowser(
+    cookie: string,
+    urlPath: string,
+    bodyStr: string,
+    signHeaders: Record<string, string>,
+    accountId?: string,
+    verification?: {
+      client: HttpClient
+      title: string
+      preSubmitNoteIds: Set<string> | null
+    }
+  ): Promise<SubmitResult | null> {
+    logger.info('[xiaohongshu] Trying built-in browser submit for note create')
+    const response = await getSignService().postXhsInBuiltinBrowser(cookie, urlPath, bodyStr, signHeaders, accountId)
+    if (!response) return null
+
+    logger.info(
+      `[xiaohongshu] Built-in browser submit response: status=${response.status}, ` +
+      `body=${JSON.stringify(summarizePayload(response.text))}`
+    )
+
+    let data: XhsSubmitResponse | null = null
+    try {
+      data = parseXhsSubmitPayload(response.text)
+    } catch {
+      data = null
+    }
+
+    const submitResult = this.parseXhsSubmitSuccess(data, `built-in browser HTTP ${response.status}`)
+    if (submitResult) return submitResult
+
+    if (isXhsSubmitAccepted(data)) {
+      if (verification) {
+        const verifiedResult = await this.verifyXhsSubmitByList(
+          verification.client,
+          verification.title,
+          verification.preSubmitNoteIds,
+          `built-in browser HTTP ${response.status}`,
+          response.status
+        )
+        if (verifiedResult) return verifiedResult
+      }
+      throw this.createXhsUnconfirmedSubmitError(`built-in browser HTTP ${response.status}`, response.status, data)
+    }
+
+    if (response.status < 200 || response.status >= 300) {
+      logger.warn(
+        `[xiaohongshu] Built-in browser submit did not create a confirmed note: ` +
+        `HTTP ${response.status}, body=${JSON.stringify(
+          summarizePayload(response.text)
+        )}`
+      )
+      return null
+    }
+
+    if (response.status === 403 || response.status === 406) {
+      const signKeys = (response.signKeys?.length
+        ? response.signKeys
+        : Object.keys(signHeaders).filter((name) => name.toLowerCase().startsWith('x-')))
+        .join(',') || 'none'
+      logger.warn(
+        `[xiaohongshu] Built-in browser submit rejected: HTTP ${response.status}, ` +
+        `signKeys=${signKeys}, X-S-Common=${response.hasXSCommon ? 'yes' : 'no'}, ` +
+        `x-rap-param=${response.hasRapParam ? 'yes' : 'no'}, ` +
+        `_webmsxyw=${response.hasWebmsxyw ? 'yes' : 'no'}, ` +
+        `signedKeys=${response.signedKeys?.join(',') || 'none'}, pageUrl=${response.pageUrl || 'unknown'}`
+      )
+      return null
+    }
+
+    if (!data) {
+      logger.warn(
+        `[xiaohongshu] Built-in browser submit returned non-JSON: ${JSON.stringify(
+          summarizePayload(response.text)
+        )}`
+      )
+      throw new Error(`内容提交失败: 小红书浏览器提交返回非 JSON 响应（HTTP ${response.status}）`)
+    }
+
+    if (!data.success) {
+      throw new Error(`内容提交失败: ${data.msg || JSON.stringify(data).substring(0, 300)}`)
+    }
+
+    return null
+  }
+
+  private async snapshotXhsNoteIdsByTitle(client: HttpClient, title: string): Promise<Set<string> | null> {
+    const normalizedTitle = title.trim()
+    if (!normalizedTitle) return null
+
+    try {
+      const list = await this.getVideoList(client, { cursor: '0' })
+      const ids = new Set(
+        list.items
+          .filter((item) => item.title.trim() === normalizedTitle)
+          .map((item) => item.contentId)
+          .filter(Boolean)
+      )
+      logger.info(
+        `[xiaohongshu] Pre-submit title snapshot: titleLength=${normalizedTitle.length}, ` +
+        `matched=${ids.size}`
+      )
+      return ids
+    } catch (err: any) {
+      logger.warn(`[xiaohongshu] Pre-submit title snapshot failed: ${err?.message || err}`)
+      return null
+    }
+  }
+
+  private async verifyXhsSubmitByList(
+    client: HttpClient,
+    title: string,
+    preSubmitNoteIds: Set<string> | null,
+    source: string,
+    status?: number
+  ): Promise<SubmitResult | null> {
+    const normalizedTitle = title.trim()
+    if (!normalizedTitle || !preSubmitNoteIds) return null
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await delay(3000 * attempt)
+      try {
+        const list = await this.getVideoList(client, { cursor: '0' })
+        const matched = list.items.find((item) =>
+          item.title.trim() === normalizedTitle && !preSubmitNoteIds.has(item.contentId)
+        )
+
+        if (matched?.contentId) {
+          logger.info(
+            `[xiaohongshu] Verified submit via note list after ${source}: ` +
+            `note_id=${matched.contentId}, title="${normalizedTitle}", status=${status || 'n/a'}`
+          )
+          return {
+            contentId: matched.contentId,
+            publishUrl: `https://www.xiaohongshu.com/explore/${matched.contentId}`
+          }
+        }
+        logger.info(`[xiaohongshu] Submit verification attempt ${attempt}: no new matching note yet`)
+      } catch (err: any) {
+        logger.warn(`[xiaohongshu] Submit verification attempt ${attempt} failed: ${err?.message || err}`)
+      }
+    }
+
+    return null
+  }
+
+  private extractXhsDataObject(raw: unknown): Record<string, unknown> {
+    if (!raw || typeof raw !== 'object') return {}
+    const obj = raw as Record<string, unknown>
+    const data = obj.data
+    if (data && typeof data === 'object') return data as Record<string, unknown>
+    return obj
+  }
+
+  private readStringField(obj: Record<string, unknown>, paths: string[]): string | undefined {
+    for (const path of paths) {
+      const value = this.readNestedField(obj, path)
+      if (typeof value === 'string' || typeof value === 'number') {
+        const text = String(value).trim()
+        if (text) return text
+      }
+    }
+    return undefined
+  }
+
+  private readBooleanField(obj: Record<string, unknown>, paths: string[]): boolean {
+    for (const path of paths) {
+      const value = this.readNestedField(obj, path)
+      if (value === true || value === 'true' || value === 1 || value === '1') return true
+      if (value === false || value === 'false' || value === 0 || value === '0') return false
+    }
+    return false
+  }
+
+  private readNestedField(obj: Record<string, unknown>, path: string): unknown {
+    let current: unknown = obj
+    for (const key of path.split('.')) {
+      if (!current || typeof current !== 'object') return undefined
+      current = (current as Record<string, unknown>)[key]
+    }
+    return current
+  }
+
+  private parseXhsSubmitSuccess(raw: unknown, source: string): SubmitResult | null {
+    const data = parseXhsSubmitPayload(raw)
+    if (!data) return null
+
+    if (!isXhsSubmitAccepted(data)) return null
+
+    const noteId = extractXhsNoteId(data)
+    if (!noteId) {
+      logger.warn(
+        `[xiaohongshu] Submit acknowledged via ${source}, but note_id is missing; ` +
+        `treating as not created; response=${JSON.stringify(data).substring(0, 500)}`
+      )
+      return null
+    }
+
+    logger.info(`[xiaohongshu] Content submitted via ${source}, note_id: ${noteId || 'none'}`)
+
+    return {
+      contentId: noteId,
+      publishUrl: noteId ? `https://www.xiaohongshu.com/explore/${noteId}` : undefined
+    }
+  }
+
+  private createXhsUnconfirmedSubmitError(source: string, status?: number, data?: XhsSubmitResponse | null): Error {
+    const statusPart = typeof status === 'number' ? `HTTP ${status}` : source
+    const msgPart = data?.msg ? `，平台消息：${data.msg}` : ''
+    return new Error(
+      `内容提交失败: 小红书${source}返回成功标记但没有 note_id（${statusPart}）${msgPart}。` +
+      '实测该响应不会生成审核中或草稿箱记录，已停止标记为待确认。请保留日志并重试 API 发布；不要把本次响应视为发布成功。'
+    )
   }
 
   /**
@@ -779,7 +1673,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
     const cookie = client.getCookieString()
 
     // 获取签名 headers (参考蚁小二的 getSign$6)
-    const { headers: signHeaders } = await this.getXhsSignHeaders(urlPath, cookie)
+    const { headers: signHeaders } = await this.getXhsSignHeaders(urlPath, cookie, undefined, client.getAccountId())
 
     const response = await axios.get<{
       code: number
@@ -807,7 +1701,7 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       {
         headers: {
           cookie,
-          referer: 'https://creator.xiaohongshu.com/publish/publish',
+          referer: XHS_URLS.publish,
           Origin: 'https://creator.xiaohongshu.com/',
           Accept: 'application/json, text/plain, */*',
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.3240.14',
@@ -848,92 +1742,43 @@ export class XhsApiAdapter extends BasePlatformAdapter {
   /**
    * Generate XHS request signature headers.
    *
-   * Primary: yixiaoer external signing service (ports 5061-5063, newxiaohongshu).
-   * Returns X-s, X-t, X-S-Common, and optionally a1 cookie.
-   *
-   * Fallback: local MD5 signing (no X-S-Common).
+   * Uses the unified SignService so Xiaohongshu follows the same self-hosted
+   * signer path as the other platforms.
    */
   private async getXhsSignHeaders(
     urlPath: string,
     cookie: string,
-    body?: string
-  ): Promise<{ headers: Record<string, string>; a1?: string }> {
-    // Primary: try yixiaoer external signing service (returns X-S-Common)
-    const signPorts = ['5061', '5062', '5063']
-    const signBase = 'http://qianming.yixiaoer.cn'
+    body?: string,
+    accountId?: string
+  ): Promise<{ headers: Record<string, string>; a1?: string; cookie?: string }> {
+    const signService = getSignService()
+    const signature = await signService.getSignature(
+      'xiaohongshu',
+      cookie,
+      JSON.stringify({ url: urlPath, body: body || '' }),
+      body,
+      accountId
+    )
+    if (!signature) {
+      throw new Error('小红书签名服务未返回签名')
+    }
+    const { headers, a1, cookie: signedCookie } = parseXhsSignature(signature)
+    const xs = headers['X-s']
+    const xt = headers['X-t']
+    const rapParamEntry = Object.entries(headers)
+      .find(([name, value]) => name.toLowerCase() === 'x-rap-param' && !!value)
 
-    for (let i = 0; i < 3; i++) {
-      try {
-        const port = signPorts[i]
-        const url = `${signBase}:${port}/Sign/GetSign`
-        const cookieArr: string[] = [urlPath]
-        if (body) {
-          cookieArr.push(encodeURIComponent(body))
-        }
-        const payload = {
-          url: '',
-          cookie: JSON.stringify(cookieArr),
-          signType: 'browser',
-          signCommand: 'newxiaohongshu'
-        }
-
-        const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), 10_000)
-        const resp = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: controller.signal
-        })
-        clearTimeout(timeout)
-
-        const result = (await resp.json()) as { signature?: string }
-        let signature = result.signature?.toString().replace(/\\/g, '"')
-
-        // Retry once if first attempt returned empty
-        if (!signature) {
-          await delay(1000)
-          const retryController = new AbortController()
-          const retryTimeout = setTimeout(() => retryController.abort(), 10_000)
-          const retryResp = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-            signal: retryController.signal
-          })
-          clearTimeout(retryTimeout)
-          const retryResult = (await retryResp.json()) as { signature?: string }
-          signature = retryResult.signature?.toString().replace(/\\/g, '"')
-        }
-
-        if (signature) {
-          const parsed = JSON.parse(signature) as {
-            'X-s'?: string
-            'X-t'?: string
-            'X-S-Common'?: string
-            a1?: string
-          }
-          if (parsed['X-s'] && parsed['X-t']) {
-            const headers: Record<string, string> = {
-              'X-s': parsed['X-s'],
-              'X-t': String(parsed['X-t'])
-            }
-            if (parsed['X-S-Common']) {
-              headers['X-S-Common'] = parsed['X-S-Common']
-            }
-            logger.info(`[xiaohongshu] Sign from port ${port}, X-S-Common: ${parsed['X-S-Common'] ? 'yes' : 'no'}, has a1: ${!!parsed.a1}`)
-            return { headers, a1: parsed.a1 }
-          }
-        }
-        await delay(1000)
-      } catch (err) {
-        logger.warn(`[xiaohongshu] Sign attempt ${i + 1} failed:`, err)
-      }
+    if ((!xs || !xt) && !rapParamEntry) {
+      throw new Error('小红书签名服务未返回有效的 X-s / X-t 或 x-rap-param')
     }
 
-    // Fallback: local MD5 signing (no X-S-Common)
-    logger.warn('[xiaohongshu] External signing failed, using local algorithm (no X-S-Common)')
-    return { headers: this.localXhsSign(urlPath, body) }
+    const extraHeaders = Object.keys(headers)
+      .filter((name) => {
+        const lowerName = name.toLowerCase()
+        return lowerName.startsWith('x-') && lowerName !== 'x-s' && lowerName !== 'x-t' && lowerName !== 'x-s-common'
+      })
+    logger.info(`[xiaohongshu] Sign headers from unified signer, X-S-Common: ${headers['X-S-Common'] ? 'yes' : 'no'}, x-rap-param=${rapParamEntry ? 'yes' : 'no'}, extra=${extraHeaders.join(',') || 'none'}, has a1: ${!!a1}`)
+    return { headers, a1, cookie: signedCookie }
   }
 
   /**
@@ -962,7 +1807,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       result += i + 2 < inputBytes.length ? CUSTOM_B64_ALPHABET[b2 & 0x3f] : '='
     }
 
-    logger.info(`[xiaohongshu] Local signing: X-s=${result.substring(0, 10)}..., X-t=${timestamp}`)
+    logger.info(
+      `[xiaohongshu] Local signing completed: timestampAvailable=${Boolean(timestamp)}`
+    )
     return {
       'X-s': result,
       'X-t': String(timestamp)
@@ -991,7 +1838,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         type: 3
       }
 
-      logger.info(`[xiaohongshu] POI recommend request body:`, body)
+      logger.info(
+        `[xiaohongshu] POI recommend request body: ${JSON.stringify(
+          summarizePayload(body)
+        )}`
+      )
 
       const response = await axios.post<{
         success: boolean
@@ -1040,7 +1891,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       // Log first item to debug field names
       const firstItem = response.data.data.poi_list[0]
       if (firstItem) {
-        logger.info(`[xiaohongshu] First POI item fields:`, JSON.stringify(firstItem).substring(0, 500))
+        logger.info(
+          `[xiaohongshu] First POI item fields: ${Object.keys(firstItem).join(',')}`
+        )
       }
 
       const results: import('../IPlatformAdapter').LocationResult[] = response.data.data.poi_list.map((item) => ({
@@ -1082,7 +1935,11 @@ export class XhsApiAdapter extends BasePlatformAdapter {
         type: 3
       }
 
-      logger.info(`[xiaohongshu] POI search request body:`, body)
+      logger.info(
+        `[xiaohongshu] POI search request body: ${JSON.stringify(
+          summarizePayload(body)
+        )}`
+      )
 
       const response = await axios.post<{
         success: boolean
@@ -1131,7 +1988,9 @@ export class XhsApiAdapter extends BasePlatformAdapter {
       // Log first search result to debug field names
       const firstItem = response.data.data.poi_list[0]
       if (firstItem) {
-        logger.info(`[xiaohongshu] First search POI fields:`, JSON.stringify(firstItem).substring(0, 500))
+        logger.info(
+          `[xiaohongshu] First search POI fields: ${Object.keys(firstItem).join(',')}`
+        )
       }
 
       return response.data.data.poi_list.map((item) => ({

@@ -5,6 +5,9 @@
 const ERROR_MAP: Record<string, string> = {
   // 网络相关
   ECONNREFUSED: '无法连接到服务器，请检查网络',
+  ECONNRESET: '上传连接被服务器中断，已重试仍未成功',
+  ECONNABORTED: '上传连接超时，已重试仍未成功',
+  EPIPE: '视频上传连接意外断开，已重试仍未成功',
   ETIMEDOUT: '连接超时，请稍后重试',
   ENOTFOUND: '网络地址无法解析，请检查网络连接',
   NETWORK_ERROR: '网络异常，请检查网络连接',

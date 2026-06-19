@@ -1,9 +1,11 @@
 import { BrowserWindow, session } from 'electron'
 import { logger } from '../../utils/logger'
+import { hardenPlatformWindow } from '../../security/platform-window-security'
+import { redactUrl, summarizePayload } from '../../utils/log-redaction'
 
 /**
  * 使用Electron内置BrowserWindow进行登录
- * 这种方式与yixiaoer相同，不会被检测为自动化工具
+ * 每个账号使用独立 session 分区，减少 Cookie 串用和登录态污染。
  */
 export class ElectronLoginWindow {
   private loginWindow: BrowserWindow | null = null
@@ -55,9 +57,11 @@ export class ElectronLoginWindow {
       webPreferences: {
         nodeIntegration: false,
         contextIsolation: true,
+        sandbox: true,
         partition
       }
     })
+    hardenPlatformWindow(this.loginWindow, this.platformId)
 
     // 为视频号设置微信浏览器的User-Agent
     if (this.platformId === 'wechat-channels') {
@@ -98,10 +102,12 @@ export class ElectronLoginWindow {
       // Track navigation listeners for cleanup
       const onNavigate = (_event: any, url: string) => {
         if (resolved) return
-        logger.info(`[ElectronLoginWindow] Navigate: ${url}`)
+        logger.info(`[ElectronLoginWindow] Navigate: ${redactUrl(url)}`)
         for (const domain of checkDomains) {
           if (url.includes(domain) && !this.isLoginPage(url)) {
-            logger.info(`[ElectronLoginWindow] Login detected via navigation: ${url}`)
+            logger.info(
+              `[ElectronLoginWindow] Login detected via navigation: ${redactUrl(url)}`
+            )
             setTimeout(() => resolveOnce(true), 1000)
             return
           }
@@ -157,14 +163,16 @@ export class ElectronLoginWindow {
         try {
           const url = loginWin.webContents.getURL()
           if (url !== lastUrl) {
-            logger.info(`[ElectronLoginWindow] URL poll: ${url}`)
+            logger.info(`[ElectronLoginWindow] URL poll: ${redactUrl(url)}`)
             lastUrl = url
           }
 
           // 检查URL是否包含成功页面的关键词
           for (const domain of checkDomains) {
             if (url.includes(domain) && !this.isLoginPage(url)) {
-              logger.info(`[ElectronLoginWindow] Login detected via URL poll: ${url}`)
+              logger.info(
+                `[ElectronLoginWindow] Login detected via URL poll: ${redactUrl(url)}`
+              )
               setTimeout(() => resolveOnce(true), 1000)
               return
             }
@@ -231,7 +239,7 @@ export class ElectronLoginWindow {
   async navigateTo(url: string): Promise<void> {
     if (this.loginWindow && !this.loginWindow.isDestroyed()) {
       await this.loginWindow.loadURL(url)
-      logger.info(`[ElectronLoginWindow] Navigated to: ${url}`)
+      logger.info(`[ElectronLoginWindow] Navigated to: ${redactUrl(url)}`)
     }
   }
 
@@ -243,7 +251,7 @@ export class ElectronLoginWindow {
 
     this.loginWindow.webContents.on('did-start-navigation', (event: any, url: string) => {
       if (url.includes(domainFilter)) {
-        logger.info(`[NET-MON] Navigation: ${url}`)
+        logger.info(`[NET-MON] Navigation: ${redactUrl(url)}`)
       }
     })
 
@@ -261,14 +269,13 @@ export class ElectronLoginWindow {
           const req = params.request
           const url = req.url
           if (url.includes(domainFilter) && url.includes('/cgi-bin/')) {
-            logger.info(`[NET-MON] ${req.method} ${url}`)
+            logger.info(`[NET-MON] ${req.method} ${redactUrl(url)}`)
             if (req.postData) {
-              try {
-                const parsed = JSON.parse(req.postData)
-                logger.info(`[NET-MON] Body: ${JSON.stringify(parsed, null, 2).substring(0, 2000)}`)
-              } catch {
-                logger.info(`[NET-MON] Body (raw): ${req.postData.substring(0, 500)}`)
-              }
+              logger.info(
+                `[NET-MON] Body summary: ${JSON.stringify(
+                  summarizePayload(req.postData)
+                )}`
+              )
             }
           }
         }
@@ -276,12 +283,16 @@ export class ElectronLoginWindow {
           const resp = params.response
           const url = resp.url
           if (url.includes(domainFilter) && url.includes('/cgi-bin/')) {
-            logger.info(`[NET-MON] Response ${resp.status} ${url}`)
+            logger.info(`[NET-MON] Response ${resp.status} ${redactUrl(url)}`)
             // 获取响应体
             const requestId = params.requestId
             dbg.sendCommand('Network.getResponseBody', { requestId }).then((result: any) => {
               if (result.body) {
-                logger.info(`[NET-MON] Resp body: ${result.body.substring(0, 3000)}`)
+                logger.info(
+                  `[NET-MON] Response body summary: ${JSON.stringify(
+                    summarizePayload(result.body)
+                  )}`
+                )
               }
             }).catch(() => {})
           }

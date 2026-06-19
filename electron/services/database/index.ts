@@ -8,6 +8,7 @@ import { runMigration004 } from './migrations/004_analytics_snapshots'
 import { runMigration005 } from './migrations/005_content_analytics'
 import { runMigration006 } from './migrations/006_upload_meta'
 import { runMigration007 } from './migrations/007_progress_tracking'
+import { runMigration008 } from './migrations/008_scheduled_publish_source'
 import { AccountRepository } from './repositories/account.repo'
 import { PublishRecordRepository } from './repositories/publish-record.repo'
 import { ScheduledTaskRepository } from './repositories/scheduled-task.repo'
@@ -104,6 +105,7 @@ export async function initDatabase(): Promise<void> {
     { version: 5, name: '005_content_analytics', run: () => runMigration005(dbInstance) },
     { version: 6, name: '006_upload_meta', run: () => runMigration006(dbInstance) },
     { version: 7, name: '007_progress_tracking', run: () => runMigration007(dbInstance) },
+    { version: 8, name: '008_scheduled_publish_source', run: () => runMigration008(dbInstance) },
   ]
 
   for (const mig of migrations) {

@@ -1,5 +1,6 @@
 import { PLATFORMS } from '@/constants/platforms'
 import type { PlatformId } from '@/constants/platforms'
+import PlatformIcon from '@/components/common/PlatformIcon'
 
 interface Props {
   platform: PlatformId
@@ -32,11 +33,7 @@ export default function PublishPreviewCard({ platform, title, description, cover
           gap: 8,
         }}
       >
-        {info.iconUrl ? (
-          <img src={info.iconUrl} alt={info.displayName} style={{ width: 16, height: 16, borderRadius: 3 }} />
-        ) : (
-          <span style={{ fontSize: 16 }}>{info.icon}</span>
-        )}
+        <PlatformIcon platformId={platform} size={16} radius={4} />
         <span
           style={{
             fontFamily: "'Sora', sans-serif",

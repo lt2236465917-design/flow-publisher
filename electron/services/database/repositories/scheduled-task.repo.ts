@@ -63,7 +63,7 @@ export class ScheduledTaskRepository {
     // the stored scheduled_at and SQLite's datetime('now') output.
     const stmt = this.db.prepare(
       `SELECT * FROM scheduled_tasks
-       WHERE status = 'pending'
+       WHERE status IN ('pending', 'running')
        AND strftime('%s', scheduled_at) <= strftime('%s', 'now')
        ORDER BY scheduled_at ASC`
     )

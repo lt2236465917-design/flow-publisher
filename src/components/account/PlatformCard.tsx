@@ -1,8 +1,8 @@
-import { Avatar } from 'antd'
 import { LoginOutlined, ReloadOutlined, WarningOutlined } from '@ant-design/icons'
 import type { PlatformId } from '@/constants/platforms'
 import { PLATFORMS } from '@/constants/platforms'
 import type { AccountInfo } from '@/types/platform.types'
+import PlatformIcon from '@/components/common/PlatformIcon'
 import SessionStatusBadge from './SessionStatusBadge'
 
 interface Props {
@@ -82,21 +82,7 @@ export default function PlatformCard({ platformId, account, onLogin }: Props) {
     >
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 18 }}>
-        <Avatar
-          size={44}
-          style={{
-            background: platform.color,
-            fontSize: 20,
-            borderRadius: 12,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            overflow: 'hidden',
-          }}
-          src={platform.iconUrl}
-        >
-          {platform.icon}
-        </Avatar>
+        <PlatformIcon platformId={platformId} size={44} radius={12} />
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 2 }}>
             <span

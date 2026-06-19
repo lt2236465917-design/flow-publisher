@@ -19,6 +19,8 @@ export interface PublishRecordRow {
   updated_at: string
   content_id: string | null
   group_id: string | null
+  upload_meta: string | null
+  source_task_id: string | null
 }
 
 export class PublishRecordRepository {
@@ -72,6 +74,22 @@ export class PublishRecordRepository {
     return rows
   }
 
+  getBySourceTaskAndPlatform(
+    taskId: string,
+    platform: string
+  ): PublishRecordRow | null {
+    const stmt = this.db.prepare(
+      'SELECT * FROM publish_records WHERE source_task_id = ? AND platform = ? LIMIT 1'
+    )
+    stmt.bind([taskId, platform])
+    let row: PublishRecordRow | null = null
+    if (stmt.step()) {
+      row = stmt.getAsObject() as unknown as PublishRecordRow
+    }
+    stmt.free()
+    return row
+  }
+
   create(data: {
     accountId: string
     platform: string
@@ -81,12 +99,13 @@ export class PublishRecordRepository {
     coverPath?: string
     hashtags?: string[]
     declarations?: string[]
+    sourceTaskId?: string
   }): PublishRecordRow {
     const id = uuidv4()
     const now = new Date().toISOString()
     this.db.run(
-      `INSERT INTO publish_records (id, account_id, platform, title, description, video_path, cover_path, hashtags, declarations, status, progress, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO publish_records (id, account_id, platform, title, description, video_path, cover_path, hashtags, declarations, status, progress, source_task_id, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         data.accountId,
@@ -99,6 +118,7 @@ export class PublishRecordRepository {
         JSON.stringify(data.declarations || []),
         'pending',
         0,
+        data.sourceTaskId || null,
         now,
         now
       ]
@@ -106,6 +126,25 @@ export class PublishRecordRepository {
     const row = this.getById(id)
     if (!row) throw new Error(`Failed to create publish record: INSERT succeeded but getById returned null`)
     return row
+  }
+
+  createScheduled(data: {
+    sourceTaskId: string
+    accountId: string
+    platform: string
+    title: string
+    description: string
+    videoPath: string
+    coverPath?: string
+    hashtags?: string[]
+    declarations?: string[]
+  }): PublishRecordRow {
+    const existing = this.getBySourceTaskAndPlatform(
+      data.sourceTaskId,
+      data.platform
+    )
+    if (existing) return existing
+    return this.create(data)
   }
 
   updateStatus(id: string, status: string, progress?: number, error?: string, publishUrl?: string): void {

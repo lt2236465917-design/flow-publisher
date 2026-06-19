@@ -2,6 +2,7 @@ const STATUS_MAP: Record<string, { bg: string; color: string; label: string }> =
   pending: { bg: 'rgba(142, 142, 147, 0.1)', color: '#8e8e93', label: '待执行' },
   running: { bg: 'rgba(0, 113, 227, 0.08)', color: '#0071e3', label: '执行中' },
   done: { bg: 'rgba(52, 199, 89, 0.08)', color: '#34c759', label: '已完成' },
+  unconfirmed: { bg: 'rgba(255, 149, 0, 0.08)', color: '#ff9500', label: '待确认' },
   error: { bg: 'rgba(255, 59, 48, 0.08)', color: '#ff3b30', label: '失败' },
   cancelled: { bg: 'rgba(255, 149, 0, 0.08)', color: '#ff9500', label: '已取消' },
   uploading: { bg: 'rgba(0, 113, 227, 0.08)', color: '#0071e3', label: '上传中' },

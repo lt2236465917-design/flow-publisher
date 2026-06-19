@@ -1,8 +1,8 @@
 import axios, { type AxiosRequestConfig, type AxiosResponse } from 'axios'
 import { logger } from '../../utils/logger'
-import { Agent as HttpsAgent } from 'https'
 import { getAccountRepository, saveDatabase } from '../database'
 import { encryptString, decryptString } from '../../utils/crypto-store'
+import { redactUrl, summarizePayload } from '../../utils/log-redaction'
 
 const DEFAULT_TIMEOUT = 30_000
 const UPLOAD_TIMEOUT = 300_000
@@ -34,8 +34,6 @@ export interface HttpRequestOptions {
   noCookie?: boolean
   /** When true, only send explicitly provided headers + Cookie (no browser-like defaults) */
   minimalHeaders?: boolean
-  /** When true, enforce proper TLS certificate validation. Default false for backward compat with CDN endpoints. */
-  secureTls?: boolean
 }
 
 export interface ApiResponse<T = unknown> {
@@ -63,36 +61,19 @@ const BROWSER_HEADERS: Record<string, string> = {
   'Sec-Fetch-Dest': 'empty'
 }
 
-// CDN upload endpoints use self-signed or non-standard certificates.
-// This agent is ONLY for known CDN domains.
-const HTTPS_AGENT_CDN = new HttpsAgent({ rejectUnauthorized: false })
-
-// Secure agent for platform API calls — proper TLS certificate validation.
-const HTTPS_AGENT_SECURE = new HttpsAgent({ rejectUnauthorized: true })
-
-// Domains known to have certificate issues (CDN upload endpoints).
-// Calls to these domains use the CDN agent; everything else uses the secure agent.
-const CDN_DOMAINS = [
-  'bytedanceapi.com',      // ByteDance VOD / ImageX
-  'kuaishouzt.com',        // Kuaishou CDN upload
-]
-
-function isCdnDomain(url: string): boolean {
-  try {
-    const host = new URL(url).hostname
-    return CDN_DOMAINS.some(d => host === d || host.endsWith('.' + d))
-  } catch {
-    return false
-  }
-}
-
-function selectAgent(url: string, options: { secureTls?: boolean }): HttpsAgent {
-  // Explicit secureTls flag always wins
-  if (options.secureTls === true) return HTTPS_AGENT_SECURE
-  if (options.secureTls === false) return HTTPS_AGENT_CDN
-  // Auto-detect: CDN domains get the permissive agent, everything else gets secure
-  return isCdnDomain(url) ? HTTPS_AGENT_CDN : HTTPS_AGENT_SECURE
-}
+const SENSITIVE_LOG_HEADERS = new Set([
+  'authorization',
+  '__ns_sig3',
+  'bd-ticket-guard-client-data',
+  'bd-ticket-guard-ree-public-key',
+  'cookie',
+  'proxy-authorization',
+  'x-rap-param',
+  'x-s',
+  'x-s-common',
+  'x-secsdk-csrf-token',
+  'x-t'
+])
 
 export class HttpClient {
   private context: CookieContext
@@ -135,7 +116,6 @@ export class HttpClient {
       data: options.data,
       params: options.params,
       adapter: 'http',
-      httpsAgent: selectAgent(options.url, options),
       headers: {
         ...baseHeaders,
         ...(options.noCookie ? {} : { Cookie: this.context.cookies }),
@@ -159,21 +139,34 @@ export class HttpClient {
 
     try {
       // Log the actual request for debugging
-      logger.info(`[HttpClient] ${options.method} ${options.url}`)
+      logger.info(`[HttpClient] ${options.method} ${redactUrl(options.url)}`)
       // Log headers without Cookie value to avoid credential leakage
       const safeHeaders: Record<string, unknown> = { ...config.headers }
-      if (safeHeaders['Cookie']) safeHeaders['Cookie'] = `*** (${String(safeHeaders['Cookie']).length} chars)`
+      for (const key of Object.keys(safeHeaders)) {
+        if (SENSITIVE_LOG_HEADERS.has(key.toLowerCase())) {
+          safeHeaders[key] = `*** (${String(safeHeaders[key]).length} chars)`
+        }
+      }
       logger.info(`[HttpClient] Headers: ${JSON.stringify(safeHeaders)}`)
-      if (typeof options.data === 'string') {
-        logger.info(`[HttpClient] Body (string, first 3000): ${options.data.substring(0, 3000)}`)
+      if (options.data !== undefined) {
+        logger.info(
+          `[HttpClient] Body summary: ${JSON.stringify(summarizePayload(options.data))}`
+        )
       }
 
       const response: AxiosResponse<T> = await axios(config)
 
-      logger.info(`[HttpClient] Response: status=${response.status}, url=${response.request?.res?.responseUrl || response.config?.url || 'unknown'}`)
+      logger.info(
+        `[HttpClient] Response: status=${response.status}, url=${redactUrl(
+          response.request?.res?.responseUrl ||
+            response.config?.url ||
+            'unknown'
+        )}`
+      )
 
-      // Detect 401/403 — likely session expired. Mark account as expired so the user gets a clear notification.
-      if (response.status === 401 || response.status === 403) {
+      // Detect clear authentication expiry. A 403 is often platform risk-control
+      // or signature rejection, so don't mark the account expired from 403 alone.
+      if (response.status === 401) {
         logger.warn(`[HttpClient] ${response.status} response for ${this.context.platform} — session may be expired`)
         try {
           const repo = getAccountRepository()
@@ -186,6 +179,8 @@ export class HttpClient {
         } catch (e) {
           logger.warn('[HttpClient] Failed to update session expiry:', e)
         }
+      } else if (response.status === 403) {
+        logger.warn(`[HttpClient] 403 response for ${this.context.platform} — possible signature rejection or risk control`)
       }
 
       // Refresh cookies from Set-Cookie response headers
@@ -199,9 +194,18 @@ export class HttpClient {
     } catch (err: unknown) {
       if (axios.isAxiosError(err)) {
         const status = err.response?.status
-        const data = err.response?.data
-        logger.error(`[${this.context.platform}] HTTP ${options.method} ${options.url} failed: ${status}`, data)
-        throw new Error(`HTTP ${options.method} ${options.url} failed: ${status} ${JSON.stringify(data)}`)
+        const code = err.code || 'none'
+        const message = err.message || 'unknown error'
+        const dataSummary = summarizePayload(err.response?.data)
+        logger.error(
+          `[${this.context.platform}] HTTP ${options.method} ${redactUrl(options.url)} failed: ` +
+          `status=${status ?? 'none'}, code=${code}, message=${message}, ` +
+          `response=${JSON.stringify(dataSummary)}`
+        )
+        throw new Error(
+          `HTTP ${options.method} ${redactUrl(options.url)} failed: ` +
+          `status=${status ?? 'none'} code=${code} message=${message}`
+        )
       }
       throw err
     }

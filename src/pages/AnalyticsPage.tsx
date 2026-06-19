@@ -29,7 +29,7 @@ import type {
 
 function getPlatformName(platform: string): string {
   const info = PLATFORMS[platform as PlatformId]
-  return info ? `${info.icon} ${info.displayName}` : platform
+  return info ? info.displayName : platform
 }
 
 function getPlatformColor(platform: string): string {
@@ -61,7 +61,6 @@ export default function AnalyticsPage() {
     videoDetail,
     videoDetailLoading,
     collecting,
-    collectResult,
     fetchVideoGroups,
     fetchVideoDetail,
     collectAll,
@@ -76,14 +75,16 @@ export default function AnalyticsPage() {
 
   const handleCollect = async () => {
     try {
-      await collectAll()
-      if (collectResult?.errors.length) {
-        message.warning(`采集完成，但有 ${collectResult.errors.length} 个错误`)
+      const result = await collectAll()
+      if (result.errors.length) {
+        message.warning(`采集完成：更新 ${result.updatedRecords} 条，${result.errors[0]}`)
+      } else if (result.updatedRecords === 0) {
+        message.info('没有采集到可更新的数据')
       } else {
-        message.success('数据采集完成')
+        message.success(`数据采集完成，更新 ${result.updatedRecords} 条`)
       }
-    } catch {
-      message.error('数据采集失败')
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : '数据采集失败')
     }
   }
 

@@ -1,12 +1,9 @@
-import { ipcMain, BrowserWindow } from 'electron'
 import { IPC_CHANNELS } from '../../src/constants/ipc-channels'
 import { getAccountRepository, saveDatabase } from '../services/database'
 import { CookieStore } from '../services/browser/CookieStore'
 import { ElectronLoginWindow } from '../services/browser/ElectronLoginWindow'
 import { getAdapter } from '../services/platform-adapters/PlatformAdapterRegistry'
 import { registerAdapter } from '../services/platform-adapters/PlatformAdapterRegistry'
-import { existsSync, rmSync } from 'fs'
-import { join } from 'path'
 import { DouyinApiAdapter } from '../services/platform-adapters/douyin/DouyinApiAdapter'
 import { XhsApiAdapter } from '../services/platform-adapters/xiaohongshu/XhsApiAdapter'
 import { WcApiAdapter } from '../services/platform-adapters/wechat-channels/WcApiAdapter'
@@ -15,6 +12,12 @@ import type { IpcResponse } from '../../shared/contracts/ipc.contract'
 import { HttpClient } from '../services/http/HttpClient'
 import { encryptString } from '../utils/crypto-store'
 import { logger } from '../utils/logger'
+import { summarizePayload } from '../utils/log-redaction'
+import {
+  getMainWindow,
+  registerTrustedIpcHandler
+} from '../security/trusted-ipc'
+import { selectReusableAccount } from '../services/account/account-policy'
 
 const cookieStore = new CookieStore()
 
@@ -25,31 +28,8 @@ registerAdapter(new WcApiAdapter())
 registerAdapter(new KsApiAdapter())
 
 export function registerAccountIpcHandlers(): void {
-  // 启动时清理重复账号：每个平台只保留最新的一个
-  try {
-    const repo = getAccountRepository()
-    const all = repo.getAll()
-    const seen = new Map<string, string>() // platform -> latest id
-    for (const a of all) {
-      const existing = seen.get(a.platform)
-      if (!existing || a.updated_at > (all.find(x => x.id === existing)?.updated_at || '')) {
-        if (existing) repo.deleteById(existing)
-        seen.set(a.platform, a.id)
-      } else {
-        repo.deleteById(a.id)
-      }
-    }
-    const deleted = all.length - seen.size
-    if (deleted > 0) {
-      saveDatabase()
-      logger.info(`[account] Cleaned up ${deleted} duplicate accounts`)
-    }
-  } catch (e) {
-    logger.warn('[account] Failed to cleanup duplicate accounts:', e)
-  }
-
   // List all accounts
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_LIST, async (): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ACCOUNT_LIST, async (): Promise<IpcResponse> => {
     try {
       const repo = getAccountRepository()
       const rows = repo.getAll()
@@ -68,9 +48,9 @@ export function registerAccountIpcHandlers(): void {
     }
   })
 
-  // Start login flow for a platform
-  // 使用Electron内置BrowserWindow进行登录，与yixiaoer相同方式，不会被检测为自动化
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_LOGIN, async (event, platformId: string): Promise<IpcResponse> => {
+  // Start login flow for a platform.
+  // Use Electron BrowserWindow with an isolated session partition per account.
+  registerTrustedIpcHandler(IPC_CHANNELS.ACCOUNT_LOGIN, async (event, platformId: string): Promise<IpcResponse> => {
     let loginWindow: ElectronLoginWindow | null = null
     try {
       const adapter = getAdapter(platformId)
@@ -80,11 +60,12 @@ export function registerAccountIpcHandlers(): void {
 
       const repo = getAccountRepository()
       const existing = repo.getByPlatform(platformId)
+      const reusableAccount = selectReusableAccount(existing)
       let accountId: string
 
       // 复用已有账号，如果不存在则创建
-      if (existing.length > 0) {
-        accountId = existing[0].id
+      if (reusableAccount) {
+        accountId = reusableAccount.id
         logger.info(`[account] Reusing existing account for ${platformId}: ${accountId}`)
       } else {
         const account = repo.create({ platform: platformId, displayName: adapter.platformName })
@@ -96,12 +77,12 @@ export function registerAccountIpcHandlers(): void {
       // 使用accountId作为partition，确保session隔离
       loginWindow = new ElectronLoginWindow(platformId, accountId)
 
-      // 使用Electron内置浏览器打开登录页面（与yixiaoer相同方式）
+      // 使用Electron内置浏览器打开登录页面，避免共享主浏览器 Cookie
       logger.info(`[account] Opening login window for ${platformId}, accountId: ${accountId}...`)
       await loginWindow.open(adapter.loginUrl)
 
       // 通知渲染进程
-      const mainWindow = BrowserWindow.getAllWindows()[0]
+      const mainWindow = getMainWindow() || undefined
       mainWindow?.webContents.send('account:qr-code', {
         accountId, platformId,
         qrDataUrl: null,
@@ -181,7 +162,7 @@ export function registerAccountIpcHandlers(): void {
                 })()
               `)
               if (displayName) {
-                logger.info(`[account] Got displayName from page DOM: ${displayName}`)
+                logger.info('[account] Got display name from page DOM')
               }
             }
           } catch (e) {
@@ -196,7 +177,11 @@ export function registerAccountIpcHandlers(): void {
               const apiClient = new HttpClient({ cookies: cookieStr, platform: platformId, accountId: accountId! })
               if ('getAccountInfoAPI' in adapter && typeof (adapter as any).getAccountInfoAPI === 'function') {
                 const apiInfo = await (adapter as any).getAccountInfoAPI(apiClient)
-                logger.info(`[account] getAccountInfoAPI result: ${JSON.stringify(apiInfo)}`)
+                logger.info(
+                  `[account] getAccountInfoAPI result: ${JSON.stringify(
+                    summarizePayload(apiInfo)
+                  )}`
+                )
                 if (apiInfo?.displayName) {
                   displayName = apiInfo.displayName
                 }
@@ -211,7 +196,7 @@ export function registerAccountIpcHandlers(): void {
             const encrypted = encryptString(JSON.stringify(filteredCookies))
             repo.updateSession(accountId!, 'logged_in', encrypted, displayName)
             saveDatabase()
-            logger.info(`[account] Account name updated: ${displayName}`)
+            logger.info('[account] Account display name updated')
           } else {
             logger.warn('[account] Could not get displayName from any source')
           }
@@ -239,13 +224,13 @@ export function registerAccountIpcHandlers(): void {
   })
 
   // Check session status — call platform API to verify real login status
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_CHECK_SESSION, async (_event, accountId: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ACCOUNT_CHECK_SESSION, async (_event, accountId: string): Promise<IpcResponse> => {
     try {
       const repo = getAccountRepository()
       const account = repo.getById(accountId)
       if (!account) return { success: false, error: '账号不存在' }
 
-      const cookieStr = cookieStore.getCookieString(accountId)
+      const cookieStr = await cookieStore.getCookieStringWithSessionFallback(accountId)
       if (!cookieStr || account.session_status !== 'logged_in') {
         return { success: true, data: { sessionStatus: 'not_logged_in' } }
       }
@@ -302,7 +287,7 @@ export function registerAccountIpcHandlers(): void {
   })
 
   // Batch check all logged-in accounts (for startup auto-check)
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_CHECK_ALL_SESSIONS, async (): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ACCOUNT_CHECK_ALL_SESSIONS, async (): Promise<IpcResponse> => {
     try {
       const repo = getAccountRepository()
       const allAccounts = repo.getAll()
@@ -314,10 +299,11 @@ export function registerAccountIpcHandlers(): void {
 
       for (const account of loggedInAccounts) {
         try {
-          const cookieStr = cookieStore.getCookieString(account.id)
+          const cookieStr = await cookieStore.getCookieStringWithSessionFallback(account.id)
           if (!cookieStr) {
-            repo.updateSession(account.id, 'not_logged_in', '[]')
-            results.push({ accountId: account.id, platform: account.platform, sessionStatus: 'not_logged_in' })
+            // An unreadable safeStorage payload is not proof that the remote
+            // session expired. Never destroy credentials during a health check.
+            results.push({ accountId: account.id, platform: account.platform, sessionStatus: account.session_status })
             continue
           }
 
@@ -353,7 +339,7 @@ export function registerAccountIpcHandlers(): void {
   })
 
   // Logout
-  ipcMain.handle(IPC_CHANNELS.ACCOUNT_LOGOUT, async (_event, accountId: string): Promise<IpcResponse> => {
+  registerTrustedIpcHandler(IPC_CHANNELS.ACCOUNT_LOGOUT, async (_event, accountId: string): Promise<IpcResponse> => {
     try {
       const repo = getAccountRepository()
       const account = repo.getById(accountId)
